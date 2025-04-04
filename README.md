@@ -2,9 +2,9 @@
 
 ## Requirements
 
-* Access to the ChatGPT API
-* A secret key
-* Money
+* Access to the ChatGPT API.
+* A secret key.
+* Money (Yeah, there is a subscription fee for the API).
 
 ## What is this?
 
