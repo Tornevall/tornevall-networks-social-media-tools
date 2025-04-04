@@ -43,11 +43,5 @@ interestingly fine with Twitter/X.
 
 ## TO DO
 
-* Find a better way to detect the output comment field, as the script sometimes opens parent comment fields (especially
-  when comment sections are opened in modal).
-* Check if the script works at all with other forums (X, Threads, BlueSky, etc.) out of the box (probably not).
-* Currently the secret key for OpenAI must be added within the extension config. This is considered not safe, so how do
-  we centralize this?
-* Add configuration validation to prevent users from saving incomplete or invalid settings.
-* Make sure we can unmark elements when done or during element selection.
-* 
+* Compatibility? (X, BlueSky, Facebook, LinkedIn, Reddit, etc.)
+* Centralize the API key and project ID to avoid having to enter them every time.
