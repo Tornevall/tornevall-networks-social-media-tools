@@ -23,7 +23,8 @@ Facebook once that milestone is reached.
 Currently, the extension works by requiring you to input your secret key provided by OpenAI. You also need to have a
 project set up through which all OpenAI API calls are routed. Eventually, this can of course be centralized using a
 general server that handles all requests, but that’s something for later. Since OpenAI is not free, some costs are
-associated with using the extension.
+associated wit
+h using the extension.
 
 The second thing you currently need to do - unless you opt to use the default settings - is enter your name and a "
 default behaviour". This behaviour defines the base template for comments that will be posted when you activate the
