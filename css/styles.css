@@ -35,3 +35,6 @@ body {
   box-shadow: 0 0 10px #00c853;
 }
 
+.socialgpt-marked {
+  outline: 1px solid red !important;
+}

@@ -96,7 +96,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 console.log("Element unmarked.");
             } else {
                 // Mark field.
-                lastRightClickedElement.style.outline = "2px solid red";
+                lastRightClickedElement.classList.add("socialgpt-marked");
                 lastRightClickedElement.scrollIntoView({behavior: "smooth", block: "center"});
                 markedElements.push(lastRightClickedElement);
                 console.log("Element marked.");
@@ -133,7 +133,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse?.({status: "NO_OUTPUT", text: ""});
         }
     } else if (request.type === "RESET_MARKED_ELEMENTS") {
-        markedElements.forEach(el => el.style.outline = ""); // remove visual outlines
+        document.querySelectorAll('.socialgpt-marked').forEach(el => {
+            el.classList.remove('socialgpt-marked');
+        });
         markedElements = [];
         outputElement = null;
         console.log("Marked elements and output element have been reset.");
