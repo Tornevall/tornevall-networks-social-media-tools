@@ -1,12 +1,51 @@
 // contentScript.js
-// Injected into all webpages via manifest.json
-// Handles DOM-level logic like element selection, highlighting, response display, and output targeting.
-
 console.log("SocialGPT: content script loaded.");
 
 let markedElements = [];
 let outputElement = null;
 let lastRightClickedElement = null;
+
+// Inject loader element into the current webpage
+function injectLoader() {
+    if (!document.getElementById("socialgpt-loader")) {
+        const loader = document.createElement("div");
+        loader.id = "socialgpt-loader";
+        document.body.appendChild(loader);
+    }
+}
+
+function showLoader() {
+    const loader = document.getElementById("socialgpt-loader");
+    if (loader) loader.style.display = "block";
+}
+
+function hideLoader() {
+    const loader = document.getElementById("socialgpt-loader");
+    if (loader) loader.style.display = "none";
+}
+
+function markOutputWithOverlay(target) {
+    const overlay = document.createElement("div");
+
+    overlay.style.position = "absolute";
+    overlay.style.top = `${target.offsetTop}px`;
+    overlay.style.left = `${target.offsetLeft}px`;
+    overlay.style.width = `${target.offsetWidth}px`;
+    overlay.style.height = `${target.offsetHeight}px`;
+
+    overlay.style.border = "none";
+    overlay.style.boxShadow = "0 0 10px 2px #00c853";
+    overlay.style.backgroundColor = "rgba(0, 200, 83, 0.1)";
+    overlay.style.borderRadius = "6px";
+
+    overlay.style.pointerEvents = "none";
+    overlay.style.zIndex = "9999";
+    overlay.className = "socialgpt-overlay-marker";
+
+    target.parentElement?.appendChild(overlay);
+
+    setTimeout(() => overlay.remove(), 3000);
+}
 
 function findFullContextNode(node) {
     return (
@@ -18,56 +57,87 @@ function findFullContextNode(node) {
     );
 }
 
+function findOutputField(startNode) {
+    const searchRoots = [
+        startNode?.closest("article, [role='feed'], form, div"),
+        document.body
+    ];
+
+    for (const root of searchRoots) {
+        if (!root) continue;
+        const candidate = root.querySelector("[contenteditable='true'], [role='textbox'], textarea");
+        if (candidate) return candidate;
+    }
+
+    return null;
+}
+
+injectLoader();
+
 document.addEventListener("contextmenu", (event) => {
     lastRightClickedElement = findFullContextNode(event.target);
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    chrome.storage.sync.get("openaiApiKey", (data) => {
+        if (!data.openaiApiKey || data.openaiApiKey.trim() === "") {
+            alert("⚠️ You need to set your OpenAI API key in the SocialGPT settings to use this tool.");
+        }
+    });
+
     if (request.type === "HIGHLIGHT_LAST_ELEMENT") {
         if (lastRightClickedElement) {
             lastRightClickedElement.style.outline = "2px solid red";
+            lastRightClickedElement.scrollIntoView({behavior: "smooth", block: "center"});
             markedElements.push(lastRightClickedElement);
 
-            const localRoot = lastRightClickedElement.closest("article, [role='feed'], form, div") || document.body;
-            let candidate = localRoot.querySelector("[contenteditable='true'], [role='textbox']");
-
-            if (!candidate) {
-                candidate = document.querySelector("[contenteditable='true'], [role='textbox']");
-            }
-
-            if (candidate) {
-                outputElement = candidate;
-                candidate.style.outline = "2px dashed green";
-                console.log("Auto-selected output field:", candidate);
-            } else {
-                console.log("Output field not found.");
-            }
-
-            sendResponse({
+            sendResponse?.({
                 status: "OK",
                 text: lastRightClickedElement.innerText || ""
             });
         } else {
-            sendResponse({status: "NO_TARGET", text: ""});
+            sendResponse?.({status: "NO_TARGET", text: ""});
         }
-    } else if (request.type === "GET_ALL_MARKED_TEXT") {
+    }
+
+    else if (request.type === "MARK_OUTPUT_FIELD") {
+        const candidate = findOutputField(lastRightClickedElement);
+        if (candidate) {
+            outputElement = candidate;
+            candidate.scrollIntoView({behavior: "smooth", block: "center"});
+            candidate.style.backgroundColor = "#eaffea";
+            markOutputWithOverlay(candidate);
+            console.log("Output field marked.");
+        } else {
+            console.warn("No output field found on MARK_OUTPUT_FIELD.");
+        }
+    }
+
+    else if (request.type === "GET_ALL_MARKED_TEXT") {
         const combinedText = markedElements
             .map((el, index) => `[${index + 1}]\n${el.innerText.trim()}`)
             .join("\n\n---\n\n");
 
-        sendResponse({status: "OK", text: combinedText || ""});
-    } else if (request.type === "GET_OUTPUT_TEXT") {
-        // Get existing output text from the selected element
+        sendResponse?.({status: "OK", text: combinedText || ""});
+    }
+
+    else if (request.type === "GET_OUTPUT_TEXT") {
         if (outputElement && outputElement.innerText) {
-            sendResponse({status: "OK", text: outputElement.innerText});
+            sendResponse?.({status: "OK", text: outputElement.innerText});
         } else {
-            sendResponse({status: "NO_OUTPUT", text: ""});
+            sendResponse?.({status: "NO_OUTPUT", text: ""});
         }
-    } else if (request.type === "RESET_MARKED_ELEMENTS") {
+    }
+
+    else if (request.type === "RESET_MARKED_ELEMENTS") {
         markedElements = [];
         console.log("Marked elements have been reset.");
-        sendResponse({status: "OK"});
-    } else if (request.type === "GPT_RESPONSE") {
+        sendResponse?.({status: "OK"});
+    }
+
+    else if (request.type === "GPT_RESPONSE") {
+        hideLoader();
+
         if (!outputElement) {
             console.warn("No output element set. Falling back to alert.");
             alert("Response from ChatGPT:\n\n" + request.payload);
@@ -75,21 +145,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
 
         try {
-            // The inserter here is very much (as I get it) based on Facebook's ways of handling comments.
-            // This behaviour is probably unique to Facebook, so we should eventually consider a rewrite or
-            // separation of this code, so we can adapt into more social medias without collisions.
             outputElement.focus();
             document.execCommand("selectAll", false, null);
             document.execCommand("insertText", false, request.payload);
             outputElement.scrollIntoView({behavior: "smooth", block: "center"});
             outputElement.style.backgroundColor = "#e2ffe2";
             setTimeout(() => outputElement.style.backgroundColor = "", 1500);
-            // Reset only after confirming insertion happened
             chrome.runtime.sendMessage({type: "RESET_MARKED_ELEMENTS"});
         } catch (e) {
             console.warn("Direct insertion failed:", e);
             alert("Response from ChatGPT:\n\n" + request.payload);
         }
+    }
+
+    else if (request.type === "SHOW_LOADER") {
+        showLoader();
     }
 
     return false;

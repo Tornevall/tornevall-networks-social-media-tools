@@ -29,15 +29,26 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === "replyToThis") {
         console.log("Context menu clicked: Reply to this");
 
-        // Ask user for guidance before proceeding
-        chrome.scripting.executeScript({
-            target: {tabId: tab.id},
-            func: () => {
-                const instructions = prompt("How would you like to reply to this?");
-                chrome.runtime.sendMessage({type: "USER_REPLY_INSTRUCTIONS", instructions});
-            }
-        });
-    } else if (info.menuItemId === "markWithGPT") {
+        chrome.tabs.sendMessage(tab.id, {type: "HIGHLIGHT_LAST_ELEMENT"});
+
+        setTimeout(() => {
+            chrome.tabs.sendMessage(tab.id, {type: "MARK_OUTPUT_FIELD"}); // ⬅ NYTT!
+
+            chrome.scripting.executeScript({
+                target: {tabId: tab.id},
+                func: () => {
+                    const instructions = prompt("How would you like to reply to this?");
+                    if (instructions) {
+                        chrome.runtime.sendMessage({type: "USER_REPLY_INSTRUCTIONS", instructions});
+                    } else {
+                        alert("Aborted.");
+                    }
+                }
+            });
+        }, 300); // Delay to allow visual marking
+    }
+
+    else if (info.menuItemId === "markWithGPT") {
         chrome.tabs.sendMessage(tab.id, {type: "HIGHLIGHT_LAST_ELEMENT"});
     }
 });
@@ -51,6 +62,8 @@ chrome.runtime.onMessage.addListener((request, sender) => {
                 console.warn("No marked text found.");
                 return;
             }
+
+            chrome.tabs.sendMessage(tabId, {type: "SHOW_LOADER"});
 
             chrome.storage.sync.get(["openaiApiKey", "chatGptSystemPrompt", "responderName"], async (data) => {
                 const apiKey = data.openaiApiKey;
@@ -91,6 +104,17 @@ ${response.text}
                 });
             });
         });
+    } else if (request.type === "MARK_OUTPUT_FIELD") {
+        const candidate = findOutputField(lastRightClickedElement);
+        if (candidate) {
+            outputElement = candidate;
+            candidate.scrollIntoView({behavior: "smooth", block: "center"});
+            candidate.style.backgroundColor = "#eaffea";
+            markOutputWithOverlay(candidate);
+            console.log("Output field marked.");
+        } else {
+            console.warn("No output field found on MARK_OUTPUT_FIELD.");
+        }
     }
 });
 
