@@ -74,6 +74,28 @@ function findOutputField(startNode) {
 
 injectLoader();
 
+document.addEventListener("click", (event) => {
+    if (!isClickMarkingActive) return;
+
+    const target = findFullContextNode(event.target);
+    if (!target) return;
+
+    const index = markedElements.indexOf(target);
+
+    if (index !== -1) {
+        target.style.outline = "";
+        markedElements.splice(index, 1);
+        console.log("Element unmarked via click.");
+    } else {
+        target.style.outline = "2px solid red";
+        target.scrollIntoView({behavior: "smooth", block: "center"});
+        markedElements.push(target);
+        console.log("Element marked via click.");
+    }
+
+    event.preventDefault(); // förhindrar ev. oönskade defaultbeteenden
+}, true);
+
 document.addEventListener("contextmenu", (event) => {
     lastRightClickedElement = findFullContextNode(event.target);
 });
@@ -161,6 +183,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } finally {
             chrome.runtime.sendMessage({type: "RESET_MARKED_ELEMENTS"});
         }
+    } else if (request.type === "TOGGLE_MARK_MODE") {
+        isClickMarkingActive = request.enabled;
+        console.log("Click-marking mode is now", isClickMarkingActive ? "ON" : "OFF");
     } else if (request.type === "SHOW_LOADER") {
         showLoader();
     }
