@@ -29,10 +29,8 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === "replyToThis") {
         console.log("Context menu clicked: Reply to this");
 
-        chrome.tabs.sendMessage(tab.id, {type: "HIGHLIGHT_LAST_ELEMENT"});
-
         setTimeout(() => {
-            chrome.tabs.sendMessage(tab.id, {type: "MARK_OUTPUT_FIELD"}); // ⬅ NYTT!
+            chrome.tabs.sendMessage(tab.id, {type: "MARK_OUTPUT_FIELD"});
 
             chrome.scripting.executeScript({
                 target: {tabId: tab.id},
@@ -45,7 +43,7 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
                     }
                 }
             });
-        }, 300); // Delay to allow visual marking
+        }, 300);
     } else if (info.menuItemId === "markWithGPT") {
         isMarkingActive = !isMarkingActive;
 
@@ -82,14 +80,11 @@ chrome.runtime.onMessage.addListener((request, sender) => {
                     return;
                 }
 
-                // Prompt user wrote just now
                 const userInstruction = request.instructions?.trim();
 
-                // Check if there's already text in output field
                 chrome.tabs.sendMessage(tabId, {type: "GET_OUTPUT_TEXT"}, (outputResponse) => {
                     const previousReply = outputResponse && outputResponse.text ? outputResponse.text.trim() : "";
 
-                    // Build final prompt
                     const finalPrompt = `
 You are ${responderName}, and you're about to write a response to a comment thread on a social media platform.
 
@@ -101,13 +96,16 @@ The thread you are responding to is:
 ${response.text}
                     `;
 
-                    // Now send to GPT
-                    sendTextToChatGPT(apiKey, finalPrompt, systemPrompt).then(gptResponse => {
-                        chrome.tabs.sendMessage(tabId, {
-                            type: "GPT_RESPONSE",
-                            payload: gptResponse
+                    sendTextToChatGPT(apiKey, finalPrompt, systemPrompt)
+                        .then(gptResponse => {
+                            chrome.tabs.sendMessage(tabId, {
+                                type: "GPT_RESPONSE",
+                                payload: gptResponse
+                            });
+                        })
+                        .finally(() => {
+                            chrome.tabs.sendMessage(tabId, {type: "RESET_MARKED_ELEMENTS"});
                         });
-                    });
                 });
             });
         });

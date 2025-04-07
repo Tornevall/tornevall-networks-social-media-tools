@@ -4,8 +4,9 @@ console.log("SocialGPT: content script loaded.");
 let markedElements = [];
 let outputElement = null;
 let lastRightClickedElement = null;
+let isClickMarkingActive = false;
 
-// Inject loader element into the current webpage
+// Inject a loader element into the current webpage
 function injectLoader() {
     if (!document.getElementById("socialgpt-loader")) {
         const loader = document.createElement("div");
@@ -74,6 +75,9 @@ function findOutputField(startNode) {
 
 injectLoader();
 
+/**
+ * Mark all elements until not marking anymore (the right click fixture).
+ */
 document.addEventListener("click", (event) => {
     if (!isClickMarkingActive) return;
 
@@ -83,17 +87,17 @@ document.addEventListener("click", (event) => {
     const index = markedElements.indexOf(target);
 
     if (index !== -1) {
-        target.style.outline = "";
+        target.classList.remove("socialgpt-marked");
         markedElements.splice(index, 1);
         console.log("Element unmarked via click.");
     } else {
-        target.style.outline = "2px solid red";
+        target.classList.add("socialgpt-marked");
         target.scrollIntoView({behavior: "smooth", block: "center"});
         markedElements.push(target);
         console.log("Element marked via click.");
     }
 
-    event.preventDefault(); // förhindrar ev. oönskade defaultbeteenden
+    event.preventDefault();
 }, true);
 
 document.addEventListener("contextmenu", (event) => {
@@ -112,12 +116,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             const index = markedElements.indexOf(lastRightClickedElement);
 
             if (index !== -1) {
-                // Unmark field.
-                lastRightClickedElement.style.outline = "";
+                lastRightClickedElement.classList.remove("socialgpt-marked");
                 markedElements.splice(index, 1);
                 console.log("Element unmarked.");
             } else {
-                // Mark field.
                 lastRightClickedElement.classList.add("socialgpt-marked");
                 lastRightClickedElement.scrollIntoView({behavior: "smooth", block: "center"});
                 markedElements.push(lastRightClickedElement);
@@ -173,18 +175,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
 
         try {
+            if (!outputElement || !outputElement.isConnected) {
+                throw new Error("outputElement was lost before insert");
+            }
+
             outputElement.focus();
             document.execCommand("selectAll", false, null);
             document.execCommand("insertText", false, request.payload);
             outputElement.scrollIntoView({behavior: "smooth", block: "center"});
             outputElement.style.backgroundColor = "#e2ffe2";
-            setTimeout(() => outputElement.style.backgroundColor = "", 1500);
+            setTimeout(() => {
+                if (outputElement && outputElement.isConnected) {
+                    outputElement.style.backgroundColor = "";
+                }
+            }, 1500);
         } catch (e) {
             console.warn("Direct insertion failed:", e);
             alert("Response from ChatGPT:\n\n" + request.payload);
         } finally {
             chrome.runtime.sendMessage({type: "RESET_MARKED_ELEMENTS"});
         }
+
     } else if (request.type === "TOGGLE_MARK_MODE") {
         isClickMarkingActive = request.enabled;
         console.log("Click-marking mode is now", isClickMarkingActive ? "ON" : "OFF");
