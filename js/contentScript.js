@@ -87,9 +87,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.type === "HIGHLIGHT_LAST_ELEMENT") {
         if (lastRightClickedElement) {
-            lastRightClickedElement.style.outline = "2px solid red";
-            lastRightClickedElement.scrollIntoView({behavior: "smooth", block: "center"});
-            markedElements.push(lastRightClickedElement);
+            const index = markedElements.indexOf(lastRightClickedElement);
+
+            if (index !== -1) {
+                // Unmark field.
+                lastRightClickedElement.style.outline = "";
+                markedElements.splice(index, 1);
+                console.log("Element unmarked.");
+            } else {
+                // Mark field.
+                lastRightClickedElement.style.outline = "2px solid red";
+                lastRightClickedElement.scrollIntoView({behavior: "smooth", block: "center"});
+                markedElements.push(lastRightClickedElement);
+                console.log("Element marked.");
+            }
 
             sendResponse?.({
                 status: "OK",
@@ -98,9 +109,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } else {
             sendResponse?.({status: "NO_TARGET", text: ""});
         }
-    }
-
-    else if (request.type === "MARK_OUTPUT_FIELD") {
+    } else if (request.type === "MARK_OUTPUT_FIELD") {
         const candidate = findOutputField(lastRightClickedElement);
         if (candidate) {
             outputElement = candidate;
@@ -111,36 +120,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } else {
             console.warn("No output field found on MARK_OUTPUT_FIELD.");
         }
-    }
-
-    else if (request.type === "GET_ALL_MARKED_TEXT") {
+    } else if (request.type === "GET_ALL_MARKED_TEXT") {
         const combinedText = markedElements
             .map((el, index) => `[${index + 1}]\n${el.innerText.trim()}`)
             .join("\n\n---\n\n");
 
         sendResponse?.({status: "OK", text: combinedText || ""});
-    }
-
-    else if (request.type === "GET_OUTPUT_TEXT") {
+    } else if (request.type === "GET_OUTPUT_TEXT") {
         if (outputElement && outputElement.innerText) {
             sendResponse?.({status: "OK", text: outputElement.innerText});
         } else {
             sendResponse?.({status: "NO_OUTPUT", text: ""});
         }
-    }
-
-    else if (request.type === "RESET_MARKED_ELEMENTS") {
+    } else if (request.type === "RESET_MARKED_ELEMENTS") {
+        markedElements.forEach(el => el.style.outline = ""); // remove visual outlines
         markedElements = [];
-        console.log("Marked elements have been reset.");
+        outputElement = null;
+        console.log("Marked elements and output element have been reset.");
         sendResponse?.({status: "OK"});
-    }
-
-    else if (request.type === "GPT_RESPONSE") {
+    } else if (request.type === "GPT_RESPONSE") {
         hideLoader();
 
         if (!outputElement) {
             console.warn("No output element set. Falling back to alert.");
             alert("Response from ChatGPT:\n\n" + request.payload);
+            chrome.runtime.sendMessage({type: "RESET_MARKED_ELEMENTS"});
             return;
         }
 
@@ -151,14 +155,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             outputElement.scrollIntoView({behavior: "smooth", block: "center"});
             outputElement.style.backgroundColor = "#e2ffe2";
             setTimeout(() => outputElement.style.backgroundColor = "", 1500);
-            chrome.runtime.sendMessage({type: "RESET_MARKED_ELEMENTS"});
         } catch (e) {
             console.warn("Direct insertion failed:", e);
             alert("Response from ChatGPT:\n\n" + request.payload);
+        } finally {
+            chrome.runtime.sendMessage({type: "RESET_MARKED_ELEMENTS"});
         }
-    }
-
-    else if (request.type === "SHOW_LOADER") {
+    } else if (request.type === "SHOW_LOADER") {
         showLoader();
     }
 

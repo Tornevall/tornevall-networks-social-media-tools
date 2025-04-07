@@ -13,7 +13,7 @@ chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({
         id: "replyToThis",
         parentId: "socialGptRoot",
-        title: "Reply to this",
+        title: "Reply/Add text",
         contexts: ["all"]
     });
 
