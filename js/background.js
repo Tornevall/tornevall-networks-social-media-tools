@@ -1,7 +1,7 @@
 // background.js (Manifest V3 Service Worker)
 // Handles context menu creation and OpenAI API calls
 
-console.log("SocialGPT: Background service worker loaded.");
+let isMarkingActive = false;
 
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({
@@ -46,10 +46,17 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
                 }
             });
         }, 300); // Delay to allow visual marking
-    }
+    } else if (info.menuItemId === "markWithGPT") {
+        isMarkingActive = !isMarkingActive;
 
-    else if (info.menuItemId === "markWithGPT") {
-        chrome.tabs.sendMessage(tab.id, {type: "HIGHLIGHT_LAST_ELEMENT"});
+        chrome.contextMenus.update("markWithGPT", {
+            title: isMarkingActive ? "Stop marking for GPT" : "Mark element for GPT reading"
+        });
+
+        chrome.tabs.sendMessage(tab.id, {
+            type: "TOGGLE_MARK_MODE",
+            enabled: isMarkingActive
+        });
     }
 });
 
@@ -149,3 +156,5 @@ async function sendTextToChatGPT(apiKey, prompt, systemInstruction) {
         return "Error calling OpenAI API.";
     }
 }
+
+console.log("SocialGPT: Background service worker loaded.");
