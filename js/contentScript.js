@@ -246,6 +246,32 @@ document.addEventListener('click', e => {
     e.preventDefault();
 }, true);
 
+function resetMarksAndContext() {
+    markedElements.forEach(el => el.classList.remove('socialgpt-marked'));
+    markedElements = [];
+
+    if (panel) {
+        chrome.runtime.sendMessage({type: 'RESET_MARK_MODE'});
+
+        const fields = [
+            ['#sgpt-modifier', '']
+/*
+            ['#sgpt-context', ''],
+            ['#sgpt-prompt', ''],
+            ['#sgpt-out', ''],
+            ['#sgpt-custom', ''],
+            ['#sgpt-mood', 'Friendly'],
+            ['#sgpt-model', 'gpt-4o']
+*/
+        ];
+
+        for (const [selector, value] of fields) {
+            const el = panel.querySelector(selector);
+            if (el) el.value = value;
+        }
+    }
+}
+
 // ---------------------------------------------
 // MAIN LISTENER
 // ---------------------------------------------
@@ -255,9 +281,9 @@ chrome.runtime.onMessage.addListener(req => {
 
     if (req.type === 'TOGGLE_MARK_MODE') {
         isClickMarkingActive = req.enabled;
-
     } else if (req.type === 'OPEN_REPLY_PANEL') {
         const p = createPanel();
+
         p.dataset.collapsed = 'false';
         p.querySelector('#sgpt-context').value = markedElements.map((el, i) => `[${i + 1}]\n${el.innerText.trim()}`).join('\n\n---\n\n') || '(No elements marked)';
         p.querySelector('#sgpt-prompt').focus();
@@ -278,12 +304,14 @@ chrome.runtime.onMessage.addListener(req => {
                 if (label) label.textContent = frontResponserName;
             }
         });
-
     } else if (req.type === 'GPT_RESPONSE') {
         hideLoader();
         if (panel) {
             const outputElement = panel.querySelector('#sgpt-out');
-            if (outputElement) outputElement.value = req.payload;
+            if (outputElement) {
+                outputElement.value = req.payload;
+                resetMarksAndContext();
+            }
         }
     }
 });

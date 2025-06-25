@@ -65,7 +65,18 @@ async function callChatGPT(apiKey, messages) {
     }
 }
 
+
+
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
+    if (req.type === 'RESET_MARK_MODE') {
+        const tabId = sender.tab.id;
+        setTabMarking(tabId, false);
+        chrome.contextMenus.update('markWithGPT', {title: 'Mark element for GPT reading'});
+        chrome.tabs.sendMessage(tabId, {type: 'TOGGLE_MARK_MODE', enabled: false});
+        return;
+    }
+
+
     if (req.type === 'GPT_REQUEST') {
         const tabId = sender.tab.id;
         chrome.storage.sync.get(['openaiApiKey', 'chatGptSystemPrompt', 'responderName'], async data => {
