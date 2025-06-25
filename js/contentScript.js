@@ -3,6 +3,7 @@
 // ==============================
 
 let markedElements = [], isClickMarkingActive = false, panel;
+let frontResponserName = '';
 
 // ---------------------------------------------
 // LOADER HANDLING
@@ -67,6 +68,7 @@ function detectFacebookUserNameViaObserver(callback) {
     const observer = new MutationObserver(() => {
         const name = extractFacebookUserName();
         if (name) {
+            frontResponserName = name;
             observer.disconnect();
             callback(name);
         }
@@ -75,19 +77,32 @@ function detectFacebookUserNameViaObserver(callback) {
 
     const name = extractFacebookUserName();
     if (name) {
+        frontResponserName = name;
         observer.disconnect();
         callback(name);
     }
 }
 
 function extractFacebookUserName() {
+    const scripts = document.querySelectorAll('script[type="application/json"]');
+    for (const script of scripts) {
+        try {
+            const json = JSON.parse(script.textContent);
+            const name = json?.require?.[0]?.[3]?.[0]?.__bbox?.require?.[0]?.[3]?.[1]?.__bbox?.result?.data?.viewer?.actor?.name;
+            if (name) return name;
+        } catch (e) {
+        }
+    }
+
     const img = document.querySelector('img[alt][src*="scontent"]');
     if (img && img.alt && img.alt.length > 1) return img.alt.trim();
+
     const spans = [...document.querySelectorAll('span')];
     for (const span of spans) {
         const txt = span.textContent?.trim();
         if (txt && txt.length >= 4 && /^[A-ZÅÄÖ][a-zåäö]+(?: [A-ZÅÄÖ][a-zåäö]+)?$/.test(txt)) return txt;
     }
+
     return null;
 }
 
@@ -207,7 +222,8 @@ function sendGPT(mod) {
         mood: panel.querySelector('#sgpt-mood').value,
         customMood: panel.querySelector('#sgpt-custom').value.trim(),
         previousReply: panel.querySelector('#sgpt-out').value,
-        model
+        model,
+        responderName: frontResponserName || 'Anonymous'
     });
 }
 
@@ -249,21 +265,18 @@ chrome.runtime.onMessage.addListener(req => {
         isClickMarkingActive = false;
         chrome.runtime.sendMessage({type: 'TOGGLE_MARK_MODE', enabled: false});
 
-        chrome.storage.sync.get('responderName', (data) => {
-            const rName = data.responderName || 'Anonymous';
+        chrome.storage.sync.get(['responderName', 'autoDetectResponder'], (data) => {
             const label = p.querySelector('#sgpt-responder-name');
-            if (label) label.textContent = rName;
-        });
 
-        detectFacebookUserNameViaObserver((name) => {
-            chrome.storage.sync.get('responderName', (data) => {
-                if (!data.responderName || data.responderName === 'Anonymous') {
-                    chrome.storage.sync.set({responderName: name});
-                    const label = p.querySelector('#sgpt-responder-name');
-                    if (label && name) label.textContent = name;
-                    console.log('[SocialGPT] Auto-detected name:', name);
-                }
-            });
+            if (data.autoDetectResponder) {
+                detectFacebookUserNameViaObserver((name) => {
+                    frontResponserName = name;
+                    if (label) label.textContent = name;
+                });
+            } else {
+                frontResponserName = data.responderName || 'Anonymous';
+                if (label) label.textContent = frontResponserName;
+            }
         });
 
     } else if (req.type === 'GPT_RESPONSE') {

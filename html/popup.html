@@ -49,18 +49,36 @@
             margin-top: 6px;
             color: green
         }
+
+        .checkbox-inline {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: normal;
+            margin-top: -8px;
+            margin-bottom: 12px;
+        }
     </style>
 </head>
 <body>
 <h1>SocialGPT Settings</h1>
 <label for="apiKey">OpenAI API Key:</label>
 <input type="text" id="apiKey" placeholder="Enter your API key here"/>
+
 <label for="responderName">Responder name:</label>
 <input type="text" id="responderName" placeholder="Who are you?"/>
+
+<div class="checkbox-inline">
+    <input type="checkbox" id="autoDetectName">
+    <label for="autoDetectName">Auto detect Facebook name</label>
+</div>
+
 <label for="systemPrompt">ChatGPT Behavior (system message):</label>
 <textarea id="systemPrompt" rows="4">You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.</textarea>
+
 <button id="saveKeyBtn">Save Settings</button>
 <button id="resetPromptBtn">Reset Prompt</button>
+
 <p id="status"></p>
 <script src="../js/popup.js"></script>
 </body>
