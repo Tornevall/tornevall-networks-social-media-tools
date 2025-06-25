@@ -1,12 +1,69 @@
-// contentScript.js
-console.log("SocialGPT: content script loaded.");
+// ==============================
+//  SocialGPT – COMPLETE CODEBASE (restores loader)
 
-let markedElements = [];
-let outputElement = null;
-let lastRightClickedElement = null;
-let isClickMarkingActive = false;
+//  June 2025 snapshot (with Facebook name detection + responder name in UI)
+// ==============================
 
-// Inject a loader element into the current webpage
+let markedElements = [], isClickMarkingActive = false, panel;
+
+// ---------------------------------------------
+// LOADER HANDLING (restored)
+// ---------------------------------------------
+function injectLoader() {
+    if (!document.getElementById("socialgpt-loader")) {
+        const loader = document.createElement("div");
+        loader.id = "socialgpt-loader";
+        loader.style.position = "fixed";
+        loader.style.bottom = "10px";
+        loader.style.left = "10px";
+        loader.style.width = "30px";
+        loader.style.height = "30px";
+        loader.style.border = "4px solid transparent";
+        loader.style.borderTop = "4px solid #008CBA";
+        loader.style.borderRadius = "50%";
+        loader.style.animation = "spin 1s linear infinite";
+        loader.style.display = "none";
+        loader.style.zIndex = "999999";
+        document.body.appendChild(loader);
+
+        const style = document.createElement("style");
+        style.textContent = `
+      #socialgpt-loader {
+        position: fixed;
+        bottom: 10px;
+        left: 10px;
+        width: 30px;
+        height: 30px;
+        border: 4px solid transparent;
+        border-top: 4px solid #008CBA;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        display: none;
+        z-index: 9999;
+      }
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }`;
+        document.head.appendChild(style);
+    }
+}
+
+function showLoader() {
+    const loader = document.getElementById("socialgpt-loader");
+    if (loader) loader.style.display = "block";
+}
+
+function hideLoader() {
+    const loader = document.getElementById("socialgpt-loader");
+    if (loader) loader.style.display = "none";
+}
+
+injectLoader();
+
+// ---------------------------------------------
+// LOADER INJECT & CONTROL
+// ---------------------------------------------
 function injectLoader() {
     if (!document.getElementById("socialgpt-loader")) {
         const loader = document.createElement("div");
@@ -25,183 +82,232 @@ function hideLoader() {
     if (loader) loader.style.display = "none";
 }
 
-function markOutputWithOverlay(target) {
-    const overlay = document.createElement("div");
+injectLoader();
 
-    overlay.style.position = "absolute";
-    overlay.style.top = `${target.offsetTop}px`;
-    overlay.style.left = `${target.offsetLeft}px`;
-    overlay.style.width = `${target.offsetWidth}px`;
-    overlay.style.height = `${target.offsetHeight}px`;
+// ---------------------------------------------
+// FACEBOOK NAME DETECTION (facebook.com only)
+// ---------------------------------------------
+function detectFacebookUserNameViaObserver(callback) {
+    if (!location.hostname.includes("facebook.com")) return; // Only run on Facebook
 
-    overlay.style.border = "none";
-    overlay.style.boxShadow = "0 0 10px 2px #00c853";
-    overlay.style.backgroundColor = "rgba(0, 200, 83, 0.1)";
-    overlay.style.borderRadius = "6px";
+    const observer = new MutationObserver(() => {
+        const name = extractFacebookUserName();
+        if (name) {
+            observer.disconnect();
+            callback(name);
+        }
+    });
 
-    overlay.style.pointerEvents = "none";
-    overlay.style.zIndex = "9999";
-    overlay.className = "socialgpt-overlay-marker";
+    observer.observe(document.body, { childList: true, subtree: true });
 
-    target.parentElement?.appendChild(overlay);
-
-    setTimeout(() => overlay.remove(), 3000);
+    const name = extractFacebookUserName();
+    if (name) {
+        observer.disconnect();
+        callback(name);
+    }
 }
 
-function findFullContextNode(node) {
-    return (
-        node.closest("[data-ad-preview='message'], [data-ad-comet-preview='message']") ||
-        node.closest("[role='article'], article") ||
-        node.closest("[data-pagelet], .userContentWrapper") ||
-        node.closest("form, div") ||
-        node.parentElement
-    );
-}
+function extractFacebookUserName() {
+    const img = document.querySelector('img[alt][src*="scontent"]');
+    if (img && img.alt && img.alt.length > 1) {
+        return img.alt.trim();
+    }
 
-function findOutputField(startNode) {
-    const searchRoots = [
-        startNode?.closest("article, [role='feed'], form, div"),
-        document.body
-    ];
-
-    for (const root of searchRoots) {
-        if (!root) continue;
-        const candidate = root.querySelector("[contenteditable='true'], [role='textbox'], textarea");
-        if (candidate) return candidate;
+    const avatar = document.querySelector('[aria-label*="–"]');
+    if (avatar && avatar.ariaLabel) {
+        const match = avatar.ariaLabel.match(/–\s*(.+)$/);
+        if (match) return match[1].trim();
     }
 
     return null;
 }
 
-injectLoader();
+// ---------------------------------------------
+// MARK CONTEXT LOOKUP
+// ---------------------------------------------
+function findFullContextNode(n) {
+    return (
+        n.closest('[data-ad-preview="message"],[data-ad-comet-preview="message"],[role="article"],article,[data-pagelet],.userContentWrapper') ||
+        n.closest('form,div') ||
+        n.parentElement
+    );
+}
 
-/**
- * Mark all elements until not marking anymore (the right click fixture).
- */
-document.addEventListener("click", (event) => {
-    if (!isClickMarkingActive) return;
+// ---------------------------------------------
+// PANEL HTML
+// ---------------------------------------------
+function panelHTML() {
+    return `
+  <style id="sgpt-style">
+    #sgpt-panel{position:fixed;bottom:16px;right:16px;width:360px;max-height:70vh;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,0.15);z-index:2147483647;display:flex;flex-direction:column;font-family:system-ui,sans-serif;font-size:14px}
+    #sgpt-panel[data-collapsed="true"]{transform:translateX(calc(100% - 42px));transition:transform .3s}
+    #sgpt-head{display:flex;align-items:center;background:#008CBA;color:#fff;padding:4px 8px;cursor:move;border-top-left-radius:6px;border-top-right-radius:6px}
+    #sgpt-close{margin-left:auto;background:transparent;border:none;color:#fff;font-size:18px;cursor:pointer}
+    #sgpt-body{flex:1;display:flex;flex-direction:column;padding:8px;overflow:hidden}
+    #sgpt-body input[type=text],#sgpt-body textarea,#sgpt-body select{width:100%;margin-bottom:6px;border:1px solid #aaa;border-radius:4px;padding:4px;font-family:monospace}
+    #sgpt-body textarea{resize:vertical;min-height:60px;max-height:160px}
+    #sgpt-send,#sgpt-mod{margin-right:4px;padding:4px 10px;border:none;border-radius:4px;background:#008CBA;color:#fff;cursor:pointer}
+    #sgpt-foot{display:flex;justify-content:flex-end}
+    #sgpt-responder-label{font-size:12px;color:#666;margin-bottom:6px;text-align:right}
+  </style>
+  <div id="sgpt-head">SocialGPT&nbsp;↔<button id="sgpt-close">×</button></div>
+  <div id="sgpt-body">
+    <div id="sgpt-responder-label">Responder: <span id="sgpt-responder-name">(loading...)</span></div>
+    <label>Prompt<input type="text" id="sgpt-prompt"></label>
+    <label>Context<textarea id="sgpt-context" readonly></textarea></label>
+    <label>Output<textarea id="sgpt-out"></textarea></label>
+    <label>Modifier<input type="text" id="sgpt-modifier"></label>
+    <label>Mood<select id="sgpt-mood">
+      <option value="Friendly">Friendly</option>
+      <option value="Sarcastic">Sarcastic</option>
+      <option value="Formal">Formal</option>
+      <option value="Aggressive">Aggressive</option>
+    </select></label>
+    <label>Custom mood<input type="text" id="sgpt-custom"></label>
+    <div id="sgpt-foot"><button id="sgpt-send">Send</button><button id="sgpt-mod">Modify</button></div>
+  </div>`;
+}
 
-    const target = findFullContextNode(event.target);
-    if (!target) return;
+// ---------------------------------------------
+// PANEL CREATION
+// ---------------------------------------------
+function createPanel() {
+    if (panel) return panel;
 
-    const index = markedElements.indexOf(target);
+    panel = document.createElement('div');
+    panel.id = 'sgpt-panel';
+    panel.innerHTML = panelHTML();
+    document.body.appendChild(panel);
 
-    if (index !== -1) {
-        target.classList.remove("socialgpt-marked");
-        markedElements.splice(index, 1);
-        console.log("Element unmarked via click.");
-    } else {
-        target.classList.add("socialgpt-marked");
-        target.scrollIntoView({behavior: "smooth", block: "center"});
-        markedElements.push(target);
-        console.log("Element marked via click.");
-    }
+    const head = panel.querySelector('#sgpt-head');
+    let drag = false, sx, sy;
 
-    event.preventDefault();
-}, true);
-
-document.addEventListener("contextmenu", (event) => {
-    lastRightClickedElement = findFullContextNode(event.target);
-});
-
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    chrome.storage.sync.get("openaiApiKey", (data) => {
-        if (!data.openaiApiKey || data.openaiApiKey.trim() === "") {
-            alert("⚠️ You need to set your OpenAI API key in the SocialGPT settings to use this tool.");
-        }
+    head.addEventListener('mousedown', e => {
+        drag = true;
+        sx = e.clientX;
+        sy = e.clientY;
     });
 
-    if (request.type === "HIGHLIGHT_LAST_ELEMENT") {
-        if (lastRightClickedElement) {
-            const index = markedElements.indexOf(lastRightClickedElement);
+    document.addEventListener('mousemove', e => {
+        if (!drag) return;
+        const dx = e.clientX - sx, dy = e.clientY - sy;
+        const r = panel.getBoundingClientRect();
+        panel.style.right = (window.innerWidth - r.right - dx) + 'px';
+        panel.style.bottom = (window.innerHeight - r.bottom - dy) + 'px';
+        sx = e.clientX;
+        sy = e.clientY;
+    });
 
-            if (index !== -1) {
-                lastRightClickedElement.classList.remove("socialgpt-marked");
-                markedElements.splice(index, 1);
-                console.log("Element unmarked.");
-            } else {
-                lastRightClickedElement.classList.add("socialgpt-marked");
-                lastRightClickedElement.scrollIntoView({behavior: "smooth", block: "center"});
-                markedElements.push(lastRightClickedElement);
-                console.log("Element marked.");
-            }
+    document.addEventListener('mouseup', () => drag = false);
 
-            sendResponse?.({
-                status: "OK",
-                text: lastRightClickedElement.innerText || ""
-            });
-        } else {
-            sendResponse?.({status: "NO_TARGET", text: ""});
-        }
-    } else if (request.type === "MARK_OUTPUT_FIELD") {
-        const candidate = findOutputField(lastRightClickedElement);
-        if (candidate) {
-            outputElement = candidate;
-            candidate.scrollIntoView({behavior: "smooth", block: "center"});
-            candidate.style.backgroundColor = "#eaffea";
-            markOutputWithOverlay(candidate);
-            console.log("Output field marked.");
-        } else {
-            console.warn("No output field found on MARK_OUTPUT_FIELD.");
-        }
-    } else if (request.type === "GET_ALL_MARKED_TEXT") {
-        const combinedText = markedElements
-            .map((el, index) => `[${index + 1}]\n${el.innerText.trim()}`)
-            .join("\n\n---\n\n");
+    head.addEventListener('dblclick', () => {
+        panel.dataset.collapsed = panel.dataset.collapsed === 'true' ? 'false' : 'true';
+    });
 
-        sendResponse?.({status: "OK", text: combinedText || ""});
-    } else if (request.type === "GET_OUTPUT_TEXT") {
-        if (outputElement && outputElement.innerText) {
-            sendResponse?.({status: "OK", text: outputElement.innerText});
-        } else {
-            sendResponse?.({status: "NO_OUTPUT", text: ""});
-        }
-    } else if (request.type === "RESET_MARKED_ELEMENTS") {
-        document.querySelectorAll('.socialgpt-marked').forEach(el => {
-            el.classList.remove('socialgpt-marked');
-        });
-        markedElements = [];
-        outputElement = null;
-        console.log("Marked elements and output element have been reset.");
-        sendResponse?.({status: "OK"});
-    } else if (request.type === "GPT_RESPONSE") {
-        hideLoader();
+    panel.querySelector('#sgpt-close').addEventListener('click', () => {
+        panel.remove();
+        panel = null;
+    });
 
-        if (!outputElement) {
-            console.warn("No output element set. Falling back to alert.");
-            alert("Response from ChatGPT:\n\n" + request.payload);
-            chrome.runtime.sendMessage({type: "RESET_MARKED_ELEMENTS"});
-            return;
-        }
+    panel.querySelector('#sgpt-send').addEventListener('click', () => sendGPT(false));
+    panel.querySelector('#sgpt-mod').addEventListener('click', () => sendGPT(true));
 
-        try {
-            if (!outputElement || !outputElement.isConnected) {
-                throw new Error("outputElement was lost before insert");
-            }
+    return panel;
+}
 
-            outputElement.focus();
-            document.execCommand("selectAll", false, null);
-            document.execCommand("insertText", false, request.payload);
-            outputElement.scrollIntoView({behavior: "smooth", block: "center"});
-            outputElement.style.backgroundColor = "#e2ffe2";
-            setTimeout(() => {
-                if (outputElement && outputElement.isConnected) {
-                    outputElement.style.backgroundColor = "";
-                }
-            }, 1500);
-        } catch (e) {
-            console.warn("Direct insertion failed:", e);
-            alert("Response from ChatGPT:\n\n" + request.payload);
-        } finally {
-            chrome.runtime.sendMessage({type: "RESET_MARKED_ELEMENTS"});
-        }
-
-    } else if (request.type === "TOGGLE_MARK_MODE") {
-        isClickMarkingActive = request.enabled;
-        console.log("Click-marking mode is now", isClickMarkingActive ? "ON" : "OFF");
-    } else if (request.type === "SHOW_LOADER") {
-        showLoader();
+// ---------------------------------------------
+// SEND TO GPT
+// ---------------------------------------------
+function sendGPT(mod) {
+    const ctx = panel.querySelector('#sgpt-context').value;
+    const prompt = panel.querySelector('#sgpt-prompt').value.trim();
+    const modifier = mod ? panel.querySelector('#sgpt-modifier').value.trim() : '';
+    if (!prompt && !mod) {
+        alert('Enter prompt');
+        return;
     }
+    showLoader();
+    chrome.runtime.sendMessage({
+        type: 'GPT_REQUEST',
+        context: ctx,
+        userPrompt: prompt,
+        modifier,
+        mood: panel.querySelector('#sgpt-mood').value,
+        customMood: panel.querySelector('#sgpt-custom').value.trim(),
+        previousReply: panel.querySelector('#sgpt-out').value
+    });
+}
 
-    return false;
+// ---------------------------------------------
+// MARK-MODE CLICK HANDLER
+// ---------------------------------------------
+function isInsidePanel(target) {
+    return target.closest('#sgpt-panel') !== null;
+}
+
+document.addEventListener('click', e => {
+    if (!isClickMarkingActive) return;
+    if (isInsidePanel(e.target)) return;
+    const t = findFullContextNode(e.target);
+    if (!t) return;
+    const already = markedElements.includes(t);
+    if (already) {
+        t.classList.remove('socialgpt-marked');
+        markedElements = markedElements.filter(el => el !== t);
+    } else {
+        t.classList.add('socialgpt-marked');
+        markedElements.push(t);
+    }
+    e.preventDefault();
+}, true);
+
+// ---------------------------------------------
+// MAIN LISTENER
+// ---------------------------------------------
+chrome.runtime.onMessage.addListener(req => {
+    if (req.type === 'SHOW_LOADER') {
+        showLoader();
+    } else if (req.type === 'HIDE_LOADER') {
+        hideLoader();
+    }
+    if (req.type === 'TOGGLE_MARK_MODE') {
+        isClickMarkingActive = req.enabled;
+
+    } else if (req.type === 'OPEN_REPLY_PANEL') {
+        const p = createPanel();
+        p.dataset.collapsed = 'false';
+        p.querySelector('#sgpt-context').value = markedElements
+            .map((el, i) => `[${i + 1}]\n${el.innerText.trim()}`)
+            .join('\n\n---\n\n') || '(No elements marked)';
+        p.querySelector('#sgpt-prompt').focus();
+
+        isClickMarkingActive = false;
+        chrome.runtime.sendMessage({ type: 'TOGGLE_MARK_MODE', enabled: false });
+
+        chrome.storage.sync.get('responderName', (data) => {
+            const rName = data.responderName || 'Anonymous';
+            const label = p.querySelector('#sgpt-responder-name');
+            if (label) label.textContent = rName;
+        });
+
+        detectFacebookUserNameViaObserver((name) => {
+            chrome.storage.sync.get('responderName', (data) => {
+                if (!data.responderName || data.responderName === 'Anonymous') {
+                    chrome.storage.sync.set({ responderName: name });
+                    console.log('[SocialGPT] Auto-detected name:', name);
+                }
+            });
+        });
+
+    } else if (req.type === 'GPT_RESPONSE') {
+        hideLoader();
+        if (panel) {
+            const outputElement = panel.querySelector('#sgpt-out');
+            if (outputElement) {
+                outputElement.value = req.payload;
+            }
+        }
+    }
 });
+
+console.log('[SocialGPT] content script ready');

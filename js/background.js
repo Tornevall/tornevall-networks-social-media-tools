@@ -1,158 +1,105 @@
-// background.js (Manifest V3 Service Worker)
-// Handles context menu creation and OpenAI API calls
+// ===================================================
+//  FILE: js/background.js (FINAL w/ responderName persona)
+//  Includes:
+//  – responderName embedded as a personality
+//  – tab-based markMode management
+//  – GPT_REQUEST + GPT_RESPONSE via reply-panel
+// ===================================================
 
-let isMarkingActive = false;
+// Helper to store mark-state per tab
+function setTabMarking(tabId, val) {
+    chrome.storage.session.set({['marking_' + tabId]: val});
+}
+
+function getTabMarking(tabId) {
+    return new Promise(r => chrome.storage.session.get('marking_' + tabId, d => r(d['marking_' + tabId] || false)));
+}
 
 chrome.runtime.onInstalled.addListener(() => {
+    chrome.contextMenus.create({id: 'socialGptRoot', title: 'SocialGPT Tools', contexts: ['all']});
     chrome.contextMenus.create({
-        id: "socialGptRoot",
-        title: "SocialGPT Tools",
-        contexts: ["all"]
+        id: 'replyToThis',
+        parentId: 'socialGptRoot',
+        title: 'Reply/Add text',
+        contexts: ['all']
     });
-
     chrome.contextMenus.create({
-        id: "replyToThis",
-        parentId: "socialGptRoot",
-        title: "Reply/Add text",
-        contexts: ["all"]
-    });
-
-    chrome.contextMenus.create({
-        id: "markWithGPT",
-        parentId: "socialGptRoot",
-        title: "Mark element for GPT reading",
-        contexts: ["all"]
+        id: 'markWithGPT',
+        parentId: 'socialGptRoot',
+        title: 'Mark element for GPT reading',
+        contexts: ['all']
     });
 });
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId === "replyToThis") {
-        console.log("Context menu clicked: Reply to this");
-
-        setTimeout(() => {
-            chrome.tabs.sendMessage(tab.id, {type: "MARK_OUTPUT_FIELD"});
-
-            chrome.scripting.executeScript({
-                target: {tabId: tab.id},
-                func: () => {
-                    const instructions = prompt("How would you like to reply to this?");
-                    if (instructions) {
-                        chrome.runtime.sendMessage({type: "USER_REPLY_INSTRUCTIONS", instructions});
-                    } else {
-                        alert("Aborted.");
-                    }
-                }
-            });
-        }, 300);
-    } else if (info.menuItemId === "markWithGPT") {
-        isMarkingActive = !isMarkingActive;
-
-        chrome.contextMenus.update("markWithGPT", {
-            title: isMarkingActive ? "Stop marking for GPT" : "Mark element for GPT reading"
-        });
-
-        chrome.tabs.sendMessage(tab.id, {
-            type: "TOGGLE_MARK_MODE",
-            enabled: isMarkingActive
-        });
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+    if (info.menuItemId === 'replyToThis') {
+        chrome.tabs.sendMessage(tab.id, {type: 'OPEN_REPLY_PANEL'});
+    } else if (info.menuItemId === 'markWithGPT') {
+        const curr = await getTabMarking(tab.id);
+        const next = !curr;
+        setTabMarking(tab.id, next);
+        chrome.contextMenus.update('markWithGPT', {title: next ? 'Stop marking for GPT' : 'Mark element for GPT reading'});
+        chrome.tabs.sendMessage(tab.id, {type: 'TOGGLE_MARK_MODE', enabled: next});
     }
 });
 
-chrome.runtime.onMessage.addListener((request, sender) => {
-    if (request.type === "USER_REPLY_INSTRUCTIONS") {
-        const tabId = sender.tab.id;
-
-        chrome.tabs.sendMessage(tabId, {type: "GET_ALL_MARKED_TEXT"}, async (response) => {
-            if (!response || !response.text) {
-                console.warn("No marked text found.");
-                return;
-            }
-
-            chrome.tabs.sendMessage(tabId, {type: "SHOW_LOADER"});
-
-            chrome.storage.sync.get(["openaiApiKey", "chatGptSystemPrompt", "responderName"], async (data) => {
-                const apiKey = data.openaiApiKey;
-                const responderName = data.responderName || "Anonymous";
-                const systemPrompt = data.chatGptSystemPrompt || "You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.";
-
-                if (!apiKey) {
-                    console.warn("No OpenAI API key found!");
-                    return;
-                }
-
-                const userInstruction = request.instructions?.trim();
-
-                chrome.tabs.sendMessage(tabId, {type: "GET_OUTPUT_TEXT"}, (outputResponse) => {
-                    const previousReply = outputResponse && outputResponse.text ? outputResponse.text.trim() : "";
-
-                    const finalPrompt = `
-You are ${responderName}, and you're about to write a response to a comment thread on a social media platform.
-
-${userInstruction ? "Custom instruction:\n" + userInstruction + "\n\n" : ""}
-${previousReply ? "Existing reply (use or customize this):\n" + previousReply + "\n\n" : ""}
-
-The thread you are responding to is:
-
-${response.text}
-                    `;
-
-                    sendTextToChatGPT(apiKey, finalPrompt, systemPrompt)
-                        .then(gptResponse => {
-                            chrome.tabs.sendMessage(tabId, {
-                                type: "GPT_RESPONSE",
-                                payload: gptResponse
-                            });
-                        })
-                        .finally(() => {
-                            chrome.tabs.sendMessage(tabId, {type: "RESET_MARKED_ELEMENTS"});
-                        });
-                });
-            });
-        });
-    } else if (request.type === "MARK_OUTPUT_FIELD") {
-        const candidate = findOutputField(lastRightClickedElement);
-        if (candidate) {
-            outputElement = candidate;
-            candidate.scrollIntoView({behavior: "smooth", block: "center"});
-            candidate.style.backgroundColor = "#eaffea";
-            markOutputWithOverlay(candidate);
-            console.log("Output field marked.");
-        } else {
-            console.warn("No output field found on MARK_OUTPUT_FIELD.");
-        }
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+    if (info.status === 'loading') {
+        setTabMarking(tabId, false);
+        chrome.contextMenus.update('markWithGPT', {title: 'Mark element for GPT reading'});
     }
 });
 
-async function sendTextToChatGPT(apiKey, prompt, systemInstruction) {
+async function callChatGPT(apiKey, messages) {
     try {
-        const bodyData = {
-            model: "gpt-4o",
-            messages: [
-                {role: "system", content: systemInstruction},
-                {role: "user", content: prompt}
-            ],
-            max_tokens: 300,
-            temperature: 0.7
-        };
-
-        const apiUrl = "https://api.openai.com/v1/chat/completions";
-        const response = await fetch(apiUrl, {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${apiKey}`
-            },
-            body: JSON.stringify(bodyData)
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}`},
+            body: JSON.stringify({model: 'gpt-4o', messages, max_tokens: 300, temperature: 0.7})
         });
-
-        const data = await response.json();
-        return (data.choices && data.choices.length)
-            ? data.choices[0].message.content.trim()
-            : "No response from GPT.";
-    } catch (error) {
-        console.error("OpenAI error:", error);
-        return "Error calling OpenAI API.";
+        const d = await res.json();
+        return d.choices?.[0]?.message?.content?.trim() || 'No response from GPT.';
+    } catch (e) {
+        console.error('OpenAI error', e);
+        return 'Error calling OpenAI.';
     }
 }
 
-console.log("SocialGPT: Background service worker loaded.");
+chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
+    if (req.type === 'GPT_REQUEST') {
+        const tabId = sender.tab.id;
+        chrome.storage.sync.get(['openaiApiKey', 'chatGptSystemPrompt', 'responderName'], async data => {
+            if (!data.openaiApiKey) {
+                sendResponse({ok: false, error: 'Missing key'});
+                return;
+            }
+
+            const responder = data.responderName || 'Anonymous';
+            const system = data.chatGptSystemPrompt || '';
+
+            const userMsg = `You are a person named ${responder} responding in a public social media thread.
+
+Your tone should reflect the mood: ${req.mood}.
+${req.customMood ? 'Custom mood adjustment: ' + req.customMood + '.' : ''}
+
+Always write as if it's really ${responder} replying directly but never mention yourself.
+
+Context:
+${req.context}
+
+Instruction:
+${req.userPrompt}${req.modifier ? '\n\nModifier: ' + req.modifier : ''}${req.previousReply ? '\n\nExisting reply:\n' + req.previousReply : ''}`;
+
+            const gpt = await callChatGPT(data.openaiApiKey, [
+                {role: 'system', content: system},
+                {role: 'user', content: userMsg}
+            ]);
+
+            chrome.tabs.sendMessage(tabId, {type: 'GPT_RESPONSE', payload: gpt});
+            sendResponse({ok: true});
+        });
+        return true; // async
+    }
+});
+
+console.log('[SocialGPT] Background SW ready');
