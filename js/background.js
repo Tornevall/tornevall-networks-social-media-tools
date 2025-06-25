@@ -18,16 +18,10 @@ function getTabMarking(tabId) {
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({id: 'socialGptRoot', title: 'SocialGPT Tools', contexts: ['all']});
     chrome.contextMenus.create({
-        id: 'replyToThis',
-        parentId: 'socialGptRoot',
-        title: 'Reply/Add text',
-        contexts: ['all']
+        id: 'replyToThis', parentId: 'socialGptRoot', title: 'Reply/Add text', contexts: ['all']
     });
     chrome.contextMenus.create({
-        id: 'markWithGPT',
-        parentId: 'socialGptRoot',
-        title: 'Mark element for GPT reading',
-        contexts: ['all']
+        id: 'markWithGPT', parentId: 'socialGptRoot', title: 'Mark element for GPT reading', contexts: ['all']
     });
 });
 
@@ -65,8 +59,6 @@ async function callChatGPT(apiKey, messages) {
     }
 }
 
-
-
 chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
     if (req.type === 'RESET_MARK_MODE') {
         const tabId = sender.tab.id;
@@ -101,10 +93,10 @@ ${req.context}
 Instruction:
 ${req.userPrompt}${req.modifier ? '\n\nModifier: ' + req.modifier : ''}${req.previousReply ? '\n\nExisting reply:\n' + req.previousReply : ''}`;
 
-            const gpt = await callChatGPT(data.openaiApiKey, [
-                {role: 'system', content: system},
-                {role: 'user', content: userMsg}
-            ]);
+            const gpt = await callChatGPT(data.openaiApiKey, [{role: 'system', content: system}, {
+                role: 'user',
+                content: userMsg
+            }]);
 
             chrome.tabs.sendMessage(tabId, {type: 'GPT_RESPONSE', payload: gpt});
             sendResponse({ok: true});

@@ -110,11 +110,7 @@ function extractFacebookUserName() {
 // FIND CONTEXT NODE
 // ---------------------------------------------
 function findFullContextNode(n) {
-    return (
-        n.closest('[data-ad-preview="message"],[data-ad-comet-preview="message"],[role="article"],article,[data-pagelet],.userContentWrapper') ||
-        n.closest('form,div') ||
-        n.parentElement
-    );
+    return (n.closest('[data-ad-preview="message"],[data-ad-comet-preview="message"],[role="article"],article,[data-pagelet],.userContentWrapper') || n.closest('form,div') || n.parentElement);
 }
 
 // ---------------------------------------------
@@ -253,17 +249,15 @@ function resetMarksAndContext() {
     if (panel) {
         chrome.runtime.sendMessage({type: 'RESET_MARK_MODE'});
 
-        const fields = [
-            ['#sgpt-modifier', '']
-/*
-            ['#sgpt-context', ''],
-            ['#sgpt-prompt', ''],
-            ['#sgpt-out', ''],
-            ['#sgpt-custom', ''],
-            ['#sgpt-mood', 'Friendly'],
-            ['#sgpt-model', 'gpt-4o']
-*/
-        ];
+        const fields = [['#sgpt-modifier', '']
+            /*
+                        ['#sgpt-context', ''],
+                        ['#sgpt-prompt', ''],
+                        ['#sgpt-out', ''],
+                        ['#sgpt-custom', ''],
+                        ['#sgpt-mood', 'Friendly'],
+                        ['#sgpt-model', 'gpt-4o']
+            */];
 
         for (const [selector, value] of fields) {
             const el = panel.querySelector(selector);
