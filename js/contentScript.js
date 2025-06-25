@@ -98,7 +98,7 @@ function detectFacebookUserNameViaObserver(callback) {
         }
     });
 
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, {childList: true, subtree: true});
 
     const name = extractFacebookUserName();
     if (name) {
@@ -113,14 +113,23 @@ function extractFacebookUserName() {
         return img.alt.trim();
     }
 
-    const avatar = document.querySelector('[aria-label*="–"]');
-    if (avatar && avatar.ariaLabel) {
-        const match = avatar.ariaLabel.match(/–\s*(.+)$/);
-        if (match) return match[1].trim();
+    const menuItems = document.querySelectorAll('[role="menu"] [role="menuitem"] span');
+    for (const el of menuItems) {
+        const txt = el.textContent?.trim();
+        // Leta efter namnliknande text, t.ex. Tornevall eller "Thomas Tornevall"
+        if (txt && txt.length >= 4 && /^[A-ZÅÄÖ][a-zåäö]+(?: [A-ZÅÄÖ][a-zåäö]+)?$/.test(txt)) {
+            return txt;
+        }
+    }
+
+    const button = document.querySelector('div[aria-label="Din profil"]');
+    if (button && button.title) {
+        return button.title.trim();
     }
 
     return null;
 }
+
 
 // ---------------------------------------------
 // MARK CONTEXT LOOKUP
@@ -190,10 +199,13 @@ function createPanel() {
 
     document.addEventListener('mousemove', e => {
         if (!drag) return;
-        const dx = e.clientX - sx, dy = e.clientY - sy;
+        const dx = e.clientX - sx;
+        const dy = e.clientY - sy;
         const r = panel.getBoundingClientRect();
-        panel.style.right = (window.innerWidth - r.right - dx) + 'px';
-        panel.style.bottom = (window.innerHeight - r.bottom - dy) + 'px';
+        const newRight = parseFloat(panel.style.right || '16') - dx;
+        const newBottom = parseFloat(panel.style.bottom || '16') - dy;
+        panel.style.right = Math.max(newRight, 0) + 'px';
+        panel.style.bottom = Math.max(newBottom, 0) + 'px';
         sx = e.clientX;
         sy = e.clientY;
     });
@@ -282,7 +294,7 @@ chrome.runtime.onMessage.addListener(req => {
         p.querySelector('#sgpt-prompt').focus();
 
         isClickMarkingActive = false;
-        chrome.runtime.sendMessage({ type: 'TOGGLE_MARK_MODE', enabled: false });
+        chrome.runtime.sendMessage({type: 'TOGGLE_MARK_MODE', enabled: false});
 
         chrome.storage.sync.get('responderName', (data) => {
             const rName = data.responderName || 'Anonymous';
@@ -293,7 +305,7 @@ chrome.runtime.onMessage.addListener(req => {
         detectFacebookUserNameViaObserver((name) => {
             chrome.storage.sync.get('responderName', (data) => {
                 if (!data.responderName || data.responderName === 'Anonymous') {
-                    chrome.storage.sync.set({ responderName: name });
+                    chrome.storage.sync.set({responderName: name});
                     console.log('[SocialGPT] Auto-detected name:', name);
                 }
             });
