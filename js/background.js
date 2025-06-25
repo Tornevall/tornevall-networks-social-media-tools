@@ -1,11 +1,3 @@
-// ===================================================
-//  FILE: js/background.js (FINAL w/ responderName persona)
-//  Includes:
-//  – responderName embedded as a personality
-//  – tab-based markMode management
-//  – GPT_REQUEST + GPT_RESPONSE via reply-panel
-// ===================================================
-
 // Helper to store mark-state per tab
 function setTabMarking(tabId, val) {
     chrome.storage.session.set({['marking_' + tabId]: val});

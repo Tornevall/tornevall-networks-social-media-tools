@@ -1,7 +1,3 @@
-// ==============================
-//  SocialGPT – COMPLETE CODEBASE (restores loader + name fix + model select)
-// ==============================
-
 let markedElements = [], isClickMarkingActive = false, panel;
 let frontResponserName = '';
 
