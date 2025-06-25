@@ -1,58 +1,77 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>SocialGPT Settings</title>
-  <link rel="stylesheet" href="../css/styles.css" />
-  <style>
-    body {
-      font-family: system-ui, sans-serif;
-      padding: 16px;
-      width: 320px;
-    }
-    h1 {
-      font-size: 18px;
-      margin-bottom: 12px;
-    }
-    label {
-      display: block;
-      font-weight: bold;
-      margin-top: 12px;
-    }
-    input, textarea {
-      width: 100%;
-      margin-top: 4px;
-      margin-bottom: 12px;
-      padding: 6px;
-      box-sizing: border-box;
-      font-family: monospace;
-    }
-    button {
-      background: #222;
-      color: #fff;
-      border: none;
-      padding: 6px 12px;
-      cursor: pointer;
-      margin-right: 8px;
-    }
-    button:hover {
-      background: #444;
-    }
-    #status {
-      font-size: 12px;
-      margin-top: 6px;
-      color: green;
-    }
-  </style>
+    <meta charset="UTF-8"/>
+    <title>SocialGPT Settings</title>
+    <link rel="stylesheet" href="./css/styles.css"/>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            padding: 16px;
+            width: 320px
+        }
+
+        h1 {
+            font-size: 18px;
+            margin-bottom: 12px
+        }
+
+        label {
+            display: block;
+            font-weight: bold;
+            margin-top: 12px
+        }
+
+        input, textarea {
+            width: 100%;
+            margin-top: 4px;
+            margin-bottom: 12px;
+            padding: 6px;
+            box-sizing: border-box;
+            font-family: monospace
+        }
+
+        button {
+            background: #222;
+            color: #fff;
+            border: none;
+            padding: 6px 12px;
+            cursor: pointer;
+            margin-right: 8px
+        }
+
+        button:hover {
+            background: #444
+        }
+
+        #status {
+            font-size: 12px;
+            margin-top: 6px;
+            color: green
+        }
+
+        .checkbox-inline {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: normal;
+            margin-top: -8px;
+            margin-bottom: 12px;
+        }
+    </style>
 </head>
 <body>
 <h1>SocialGPT Settings</h1>
-
 <label for="apiKey">OpenAI API Key:</label>
 <input type="text" id="apiKey" placeholder="Enter your API key here" />
 
 <label for="responderName">Responder name:</label>
 <input type="text" id="responderName" placeholder="Who are you?" />
+
+<div class="checkbox-inline">
+    <input type="checkbox" id="autoDetectName">
+    <label for="autoDetectName">Auto detect Facebook name</label>
+</div>
 
 <label for="systemPrompt">ChatGPT Behavior (system message):</label>
 <textarea id="systemPrompt" rows="4">You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.</textarea>
@@ -61,7 +80,6 @@
 <button id="resetPromptBtn">Reset Prompt</button>
 
 <p id="status"></p>
-
-<script src="../js/popup.js"></script>  <!-- Link to the external JS file -->
+<script src="../js/popup.js"></script>
 </body>
 </html>
