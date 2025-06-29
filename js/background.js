@@ -69,21 +69,48 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
                 return;
             }
 
-            const responder = data.responderName || 'Anonymous';
+            const responder = req.responderName || data.responderName || 'Anonymous';
             const system = data.chatGptSystemPrompt || '';
 
-            const userMsg = `You are a person named ${responder} responding in a public social media thread.
+            const tone = req.customMood?.trim() || req.mood || 'Neutral';
+            let lengthInstruction = '';
+            switch (req.responseLength) {
+                case 'as-short-as-possible':
+                    lengthInstruction = 'Keep your reply as short as possible.';
+                    break;
+                case 'shortest-possible':
+                    lengthInstruction = 'Keep your reply at maximum of one sentence. Try to reach a oneliner comment.';
+                    break;
+                case 'very-short':
+                    lengthInstruction = 'Limit your reply to 2–3 short sentences. Be direct and impactful.';
+                    break;
+                case 'short':
+                    lengthInstruction = 'Keep your reply within 4–6 sentences. Be clear and focused.';
+                    break;
+                case 'medium':
+                    lengthInstruction = 'Reply in 6–10 sentences. Provide full context, but stay concise.';
+                    break;
+                case 'long':
+                    lengthInstruction = 'Use as much detail as needed to deliver the full message effectively.';
+                    break;
+                case 'extreme':
+                    lengthInstruction = 'Write it as a book. It may be delivered with its on ISBN number.';
+                    break;
+                case 'auto':
+                default:
+                    // Do nothing – GPT decides
+                    break;
+            }
 
-Your tone should reflect the mood: ${req.mood}.
-${req.customMood ? 'Custom mood adjustment: ' + req.customMood + '.' : ''}
-
-Always write as if it's really ${responder} replying directly but never mention yourself.
+            const userMsg = `You are writing as ${responder} in a public social media thread.
+Your tone is: ${tone}.
+${lengthInstruction ? lengthInstruction + '\n' : ''}Write directly and naturally, as if ${responder} is replying – but never mention yourself in third person or refer to being an AI.
 
 Context:
-${req.context}
+${req.context.trim()}
 
 Instruction:
-${req.userPrompt}${req.modifier ? '\n\nModifier: ' + req.modifier : ''}${req.previousReply ? '\n\nExisting reply:\n' + req.previousReply : ''}`;
+${req.userPrompt.trim()}${req.modifier ? '\n\nModifier: ' + req.modifier.trim() : ''}${req.previousReply ? '\n\nPrevious draft:\n' + req.previousReply.trim() : ''}`;
 
             const gpt = await callChatGPT(data.openaiApiKey, [{role: 'system', content: system}, {
                 role: 'user',
