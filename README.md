@@ -15,6 +15,18 @@ perfect for crafting quick replies, sarcastic roasts, or fact-based rebuttals.
 - Modify previous replies in-place
 - Supports multiple models: gpt-4o, gpt-4, and o3-mini
 
+### 🚧 Known Limitations (Work in Progress)
+
+While SocialGPT aims to extract relevant context including media and link previews, it’s not perfect yet.
+Certain visual elements like shared article blocks, background images, or embedded videos may not always be picked up.
+We're working on improving detection for:
+
+- Background images styled via CSS (common in Facebook photo/video posts)
+- Link preview containers with metadata (e.g. news articles or Instagram embeds)
+- Image-only posts with no accompanying `<img>` tag (rendered via inline styles)
+
+If something seems missing in the prompt – it probably is. :)
+
 ## How it is written
 
 Yeah, I am not a front end developer so I asked my way through this one.
