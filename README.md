@@ -15,6 +15,11 @@ perfect for crafting quick replies, sarcastic roasts, or fact-based rebuttals.
 - Modify previous replies in-place
 - Supports multiple models: gpt-4o, gpt-4, and o3-mini
 
+## How it is written
+
+Yeah, I am not a front end developer so I asked my way through this one.
+Built with help from OpenAI, model o3 and 4o.
+
 ## How it works
 
 1. Right-click any comment, post, or thread block
