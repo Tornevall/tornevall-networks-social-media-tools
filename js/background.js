@@ -69,21 +69,21 @@ chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
                 return;
             }
 
-            const responder = data.responderName || 'Anonymous';
+
+            const responder = req.responderName || data.responderName || 'Anonymous';
             const system = data.chatGptSystemPrompt || '';
 
-            const userMsg = `You are a person named ${responder} responding in a public social media thread.
+            const tone = req.customMood?.trim() || req.mood || 'Neutral';
+            const userMsg = `You are writing as ${responder} in a public social media thread.
 
-Your tone should reflect the mood: ${req.mood}.
-${req.customMood ? 'Custom mood adjustment: ' + req.customMood + '.' : ''}
-
-Always write as if it's really ${responder} replying directly but never mention yourself.
+Your tone is: ${tone}.
+Write directly and naturally, as if ${responder} is replying – but never mention yourself in third person or refer to being an AI.
 
 Context:
-${req.context}
+${req.context.trim()}
 
 Instruction:
-${req.userPrompt}${req.modifier ? '\n\nModifier: ' + req.modifier : ''}${req.previousReply ? '\n\nExisting reply:\n' + req.previousReply : ''}`;
+${req.userPrompt.trim()}${req.modifier ? '\n\nModifier: ' + req.modifier.trim() : ''}${req.previousReply ? '\n\nPrevious draft:\n' + req.previousReply.trim() : ''}`;
 
             const gpt = await callChatGPT(data.openaiApiKey, [{role: 'system', content: system}, {
                 role: 'user',
