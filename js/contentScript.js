@@ -160,6 +160,18 @@ function panelHTML() {
           </select>
         </label>
       <label>Custom mood<input type="text" id="sgpt-custom"></label>
+      <label>Response length
+          <select id="sgpt-length">
+            <option value="auto">Let GPT decide</option>
+            <option value="as-short-as-possible">As short as possible</option>
+            <option value="shortest-possible">At maxmium one sentence. Possibly a oneliner.</option>
+            <option value="very-short">2–3 sentences (very short)</option>
+            <option value="short">4–6 sentences (short)</option>
+            <option value="medium">6–10 sentences (medium)</option>
+            <option value="extreme">Extreme. You want your own book.</option>
+            <option value="long">Extended (whatever is needed)</option>
+          </select>
+      </label>
       <label>Model<select id="sgpt-model">
         <option value="gpt-4o">gpt-4o</option>
         <option value="gpt-4">gpt-4</option>
@@ -174,6 +186,7 @@ function panelHTML() {
 // ---------------------------------------------
 function createPanel() {
     if (panel) return panel;
+
     panel = document.createElement('div');
     panel.id = 'sgpt-panel';
     panel.innerHTML = panelHTML();
@@ -226,12 +239,17 @@ function sendGPT(mod) {
     const model = panel.querySelector('#sgpt-model').value;
     if (!prompt && !mod) return alert('Enter prompt');
     showLoader();
+
+    const selectedLength = panel.querySelector('#sgpt-length').value;
+    chrome.storage.sync.set({ lastResponseLength: selectedLength });
+
     chrome.runtime.sendMessage({
         type: 'GPT_REQUEST',
         context: ctx,
         userPrompt: prompt,
         modifier,
         mood: panel.querySelector('#sgpt-mood').value,
+        responseLength: panel.querySelector('#sgpt-length').value,
         customMood: panel.querySelector('#sgpt-custom').value.trim(),
         previousReply: panel.querySelector('#sgpt-out').value,
         model,
