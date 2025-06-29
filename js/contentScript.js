@@ -151,11 +151,107 @@ function extractFacebookUserName() {
     return null;
 }
 
+
 // ---------------------------------------------
 // FIND CONTEXT NODE
 // ---------------------------------------------
 function findFullContextNode(n) {
     return (n.closest('[data-ad-preview="message"],[data-ad-comet-preview="message"],[role="article"],article,[data-pagelet],.userContentWrapper') || n.closest('form,div') || n.parentElement);
+}
+
+
+// ---------------------------------------------
+// EXTRACT READABLE CONTEXT (GENERIC, WITH MEDIA)
+// ---------------------------------------------
+function getReadableContext(el) {
+    const parts = [];
+
+    // 1. Include the selected element
+    parts.push(convertNodeToReadableText(el.cloneNode(true)));
+
+    // 2. Look for outer container used by Facebook
+    const fbContainer = el.closest('[data-ad-preview="message"]');
+    if (fbContainer && fbContainer.parentElement) {
+        const siblings = Array.from(fbContainer.parentElement.children);
+        let found = false;
+        for (const sib of siblings) {
+            if (sib === fbContainer) {
+                found = true;
+                continue;
+            }
+            if (!found) continue;
+            if (containsMedia(sib)) {
+                parts.push('[Attached media]');
+                parts.push(convertNodeToReadableText(sib.cloneNode(true)));
+            }
+        }
+    }
+
+    // 3. Background-image elements
+    const bgImages = extractBackgroundImagesAround(el);
+    if (bgImages.length > 0) {
+        parts.push('[Background images]');
+        parts.push(...bgImages);
+    }
+
+    return parts.join('\n\n');
+}
+
+function containsMedia(node) {
+    return node.querySelector('img, video, iframe, picture, svg, audio, embed, object, a[href]') !== null;
+}
+
+function convertNodeToReadableText(node) {
+    // Handle images
+    const imgs = node.querySelectorAll('img');
+    for (const img of imgs) {
+        const isEmoji = img.src.includes('emoji.php');
+        const label = isEmoji
+            ? img.alt || '🖼️'
+            : `[IMG: ${img.alt?.trim() || img.src || 'image'}]`;
+        const span = document.createElement('span');
+        span.textContent = label;
+        img.replaceWith(span);
+    }
+
+    // Handle videos/embeds
+    const videos = node.querySelectorAll('video, iframe, embed, object');
+    for (const vid of videos) {
+        const label = `[VIDEO: ${vid.src || 'embedded video'}]`;
+        const span = document.createElement('span');
+        span.textContent = label;
+        vid.replaceWith(span);
+    }
+
+    // Handle links
+    const links = node.querySelectorAll('a[href]');
+    for (const a of links) {
+        const text = a.textContent?.trim().replace(/\s+/g, ' ') || 'link';
+        const url = a.href;
+        const label = `[LINK: ${text} (${url})]`;
+        const span = document.createElement('span');
+        span.textContent = label;
+        a.replaceWith(span);
+    }
+
+    return node.innerText.trim();
+}
+
+function extractBackgroundImagesAround(el) {
+    const found = [];
+    const scope = el.closest('[data-ad-preview="message"]')?.parentElement || el.parentElement;
+    if (!scope) return found;
+
+    const nodes = scope.querySelectorAll('*');
+    for (const node of nodes) {
+        const bg = window.getComputedStyle(node).getPropertyValue('background-image');
+        const match = bg?.match(/url\(["']?(.*?)["']?\)/);
+        if (match && match[1] && !match[1].includes('emoji.php')) {
+            found.push(`[IMG: ${match[1]}]`);
+        }
+    }
+
+    return found;
 }
 
 // ---------------------------------------------
@@ -363,7 +459,8 @@ chrome.runtime.onMessage.addListener(req => {
         const p = createPanel();
 
         p.dataset.collapsed = 'false';
-        p.querySelector('#sgpt-context').value = markedElements.map((el, i) => `[${i + 1}]\n${el.innerText.trim()}`).join('\n\n---\n\n') || '(No elements marked)';
+        //p.querySelector('#sgpt-context').value = markedElements.map((el, i) => `[${i + 1}]\n${el.innerText.trim()}`).join('\n\n---\n\n') || '(No elements marked)';
+        p.querySelector('#sgpt-context').value = markedElements.map((el, i) => `[${i + 1}]\n${getReadableContext(el)}`).join('\n\n---\n\n') || '(No elements marked)';
         p.querySelector('#sgpt-prompt').focus();
 
         isClickMarkingActive = false;
@@ -401,13 +498,13 @@ chrome.runtime.onMessage.addListener(req => {
     } else if (req.type === 'START_FACT_VERIFICATION') {
         if (!markedElements.length) return alert('No elements marked for verification.');
 
-        const context = markedElements.map((el, i) => `[${i + 1}]\n${el.innerText.trim()}`).join('\n\n---\n\n');
+        const context = markedElements.map((el, i) => `[${i + 1}]\n${el.innerHTML.trim()}`).join('\n\n---\n\n');
         showLoader();
 
         chrome.runtime.sendMessage({
             type: 'GPT_REQUEST',
             context,
-            userPrompt: 'Search facts and verify the following statements. If you find any false or misleading information, provide a detailed explanation of why it is incorrect.',
+            userPrompt: 'Search facts and verify the following statements. If you find any false or misleading information, provide a detailed explanation of why it is incorrect. Use plain text, no format and no markdown.',
             requestMode: 'verify',
             responderName: frontResponserName || 'VerifierBot'
         });
