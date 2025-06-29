@@ -128,7 +128,7 @@ function panelHTML() {
     </style>
     <div id="sgpt-head">SocialGPT ↔ <button id="sgpt-close">×</button></div>
     <div id="sgpt-body">
-      <div id="sgpt-responder-label">Responder: <span id="sgpt-responder-name" data-name="${frontResponserName || ''}">${frontResponserName || '(loading...)'}</span></div>
+      <div id="sgpt-responder-label">Responder: <span id="sgpt-responder-name">(loading...)</span></div>
       <label>Prompt<input type="text" id="sgpt-prompt"></label>
       <label>Context<textarea id="sgpt-context" readonly></textarea></label>
       <label>Output<textarea id="sgpt-out"></textarea></label>
@@ -215,7 +215,7 @@ function sendGPT(mod) {
         customMood: panel.querySelector('#sgpt-custom').value.trim(),
         previousReply: panel.querySelector('#sgpt-out').value,
         model,
-        responderName: panel.querySelector('#sgpt-responder-name')?.dataset.name?.trim() || frontResponserName || 'Anonymous'
+        responderName: frontResponserName || 'Anonymous'
     });
 }
 
@@ -287,10 +287,7 @@ chrome.runtime.onMessage.addListener(req => {
             if (data.autoDetectResponder) {
                 detectFacebookUserNameViaObserver((name) => {
                     frontResponserName = name;
-                    if (label) {
-                        label.textContent = name;
-                        label.dataset.name = name;
-                    }
+                    if (label) label.textContent = name;
                 });
             } else {
                 frontResponserName = data.responderName || 'Anonymous';
