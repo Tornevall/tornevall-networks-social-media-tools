@@ -134,11 +134,21 @@ function panelHTML() {
       <label>Output<textarea id="sgpt-out"></textarea></label>
       <label>Modifier<input type="text" id="sgpt-modifier"></label>
       <label>Mood<select id="sgpt-mood">
-        <option value="Friendly">Friendly</option>
-        <option value="Sarcastic">Sarcastic</option>
-        <option value="Formal">Formal</option>
-        <option value="Aggressive">Aggressive</option>
-      </select></label>
+          <option value="Neutral and formal">Neutral and formal</option>
+          <option value="Professional">Professional</option>
+          <option value="Friendly">Friendly</option>
+          <option value="Conversational">Conversational</option>
+          <option value="Academic">Academic</option>
+          <option value="Analytical">Analytical</option>
+          <option value="Critical">Critical</option>
+          <option value="Cynical">Cynical</option>
+          <option value="Sarcastic">Sarcastic</option>
+          <option value="Satirical">Satirical</option>
+          <option value="Snarky">Snarky</option>
+          <option value="Aggressive">Aggressive</option>
+          <option value="Unapologetic">Unapologetic</option>
+          <option value="Brutally honest">Brutally honest</option>
+        </select></label>
       <label>Custom mood<input type="text" id="sgpt-custom"></label>
       <label>Model<select id="sgpt-model">
         <option value="gpt-4o">gpt-4o</option>
