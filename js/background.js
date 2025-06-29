@@ -10,6 +10,12 @@ function getTabMarking(tabId) {
 chrome.runtime.onInstalled.addListener(() => {
     chrome.contextMenus.create({id: 'socialGptRoot', title: 'SocialGPT Tools', contexts: ['all']});
     chrome.contextMenus.create({
+        id: 'verifyFact',
+        parentId: 'socialGptRoot',
+        title: 'Verify fact',
+        contexts: ['all']
+    });
+    chrome.contextMenus.create({
         id: 'replyToThis', parentId: 'socialGptRoot', title: 'Reply/Add text', contexts: ['all']
     });
     chrome.contextMenus.create({
@@ -26,6 +32,8 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         setTabMarking(tab.id, next);
         chrome.contextMenus.update('markWithGPT', {title: next ? 'Stop marking for GPT' : 'Mark element for GPT reading'});
         chrome.tabs.sendMessage(tab.id, {type: 'TOGGLE_MARK_MODE', enabled: next});
+    } else if (info.menuItemId === 'verifyFact') {
+        chrome.tabs.sendMessage(tab.id, { type: 'START_FACT_VERIFICATION' });
     }
 });
 
