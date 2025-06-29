@@ -133,22 +133,32 @@ function panelHTML() {
       <label>Context<textarea id="sgpt-context" readonly></textarea></label>
       <label>Output<textarea id="sgpt-out"></textarea></label>
       <label>Modifier<input type="text" id="sgpt-modifier"></label>
-      <label>Mood<select id="sgpt-mood">
-          <option value="Neutral and formal">Neutral and formal</option>
-          <option value="Professional">Professional</option>
-          <option value="Friendly">Friendly</option>
-          <option value="Conversational">Conversational</option>
-          <option value="Academic">Academic</option>
-          <option value="Analytical">Analytical</option>
-          <option value="Critical">Critical</option>
-          <option value="Cynical">Cynical</option>
-          <option value="Sarcastic">Sarcastic</option>
-          <option value="Satirical">Satirical</option>
-          <option value="Snarky">Snarky</option>
-          <option value="Aggressive">Aggressive</option>
-          <option value="Unapologetic">Unapologetic</option>
-          <option value="Brutally honest">Brutally honest</option>
-        </select></label>
+      <label>Mood
+          <select id="sgpt-mood">
+            <optgroup label="Objective & Informative">
+              <option value="Neutral and formal">Neutral and formal</option>
+              <option value="Fact-based and concise">Fact-based and concise</option>
+              <option value="Academic and precise">Academic and precise</option>
+              <option value="Analytical and critical">Analytical and critical</option>
+            </optgroup>
+            <optgroup label="Confrontational & Direct">
+              <option value="Critical and direct">Critical and direct</option>
+              <option value="Cynical and sharp">Cynical and sharp</option>
+              <option value="Aggressive and unapologetic">Aggressive and unapologetic</option>
+              <option value="Brutally honest">Brutally honest</option>
+            </optgroup>
+            <optgroup label="Satirical & Sarcastic">
+              <option value="Sarcastic and dry">Sarcastic and dry</option>
+              <option value="Snarky and dismissive">Snarky and dismissive</option>
+              <option value="Satirical and ironic">Satirical and ironic</option>
+              <option value="Witty and clever">Witty and clever</option>
+            </optgroup>
+            <optgroup label="Approachable & Light">
+              <option value="Friendly and casual">Friendly and casual</option>
+              <option value="Conversational and soft">Conversational and soft</option>
+            </optgroup>
+          </select>
+        </label>
       <label>Custom mood<input type="text" id="sgpt-custom"></label>
       <label>Model<select id="sgpt-model">
         <option value="gpt-4o">gpt-4o</option>
