@@ -1,5 +1,7 @@
-let markedElements = [], isClickMarkingActive = false, panel;
+let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null;
 let frontResponserName = '';
+
+const EDITABLE_SELECTOR = 'textarea,input[type="text"],input:not([type]),[contenteditable=""],[contenteditable="true"],[role="textbox"]';
 
 // ---------------------------------------------
 // LOADER HANDLING
@@ -169,6 +171,84 @@ function findFullContextNode(n) {
     return (n.closest('[data-ad-preview="message"],[data-ad-comet-preview="message"],[role="article"],article,[data-pagelet],.userContentWrapper') || n.closest('form,div') || n.parentElement);
 }
 
+function isEditableTarget(node) {
+    return !!(node && typeof node.matches === 'function' && node.matches(EDITABLE_SELECTOR) && !node.closest('#sgpt-panel'));
+}
+
+function findEditableTarget(node) {
+    if (!node || node.closest && node.closest('#sgpt-panel')) {
+        return null;
+    }
+
+    if (isEditableTarget(node)) {
+        return node;
+    }
+
+    return node.closest ? node.closest(EDITABLE_SELECTOR) : null;
+}
+
+function setActiveComposer(node) {
+    activeComposer = node && document.contains(node) ? node : null;
+    if (panel) {
+        positionPanelNearComposer();
+    }
+}
+
+function getActiveComposerContext() {
+    if (!activeComposer || !document.contains(activeComposer)) {
+        return '(Focus a text field or mark elements to build context)';
+    }
+
+    const contextNode = findFullContextNode(activeComposer);
+    return contextNode ? getReadableContext(contextNode) : '(Focus a text field or mark elements to build context)';
+}
+
+function positionPanelNearComposer() {
+    if (!panel) return;
+
+    if (!activeComposer || !document.contains(activeComposer)) {
+        activeComposer = findEditableTarget(document.activeElement);
+    }
+
+    if (!activeComposer) {
+        panel.style.width = '360px';
+        panel.style.left = 'auto';
+        panel.style.top = 'auto';
+        panel.style.right = '16px';
+        panel.style.bottom = '16px';
+        return;
+    }
+
+    const rect = activeComposer.getBoundingClientRect();
+    const spacing = 12;
+    const minMargin = 12;
+    const panelWidth = Math.min(380, Math.max(300, window.innerWidth - (minMargin * 2)));
+    panel.style.width = panelWidth + 'px';
+
+    const measuredHeight = Math.min(panel.offsetHeight || 420, Math.max(220, window.innerHeight - (minMargin * 2)));
+    let left = rect.right + spacing;
+    if (left + panelWidth > window.innerWidth - minMargin) {
+        left = rect.left - panelWidth - spacing;
+    }
+    if (left < minMargin) {
+        left = Math.max(minMargin, Math.min(rect.left, window.innerWidth - panelWidth - minMargin));
+    }
+
+    let top = rect.top;
+    const maxTop = Math.max(minMargin, window.innerHeight - measuredHeight - minMargin);
+    if (top > maxTop) {
+        top = maxTop;
+    }
+    if (top < minMargin) {
+        top = minMargin;
+    }
+
+    panel.style.left = Math.round(left) + 'px';
+    panel.style.top = Math.round(top) + 'px';
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+}
+
 
 // ---------------------------------------------
 // EXTRACT READABLE CONTEXT (GENERIC, WITH MEDIA)
@@ -275,7 +355,7 @@ function panelHTML() {
     <style id="sgpt-style">
       #sgpt-panel{position:fixed;bottom:16px;right:16px;width:360px;max-height:70vh;background:#fff;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,0.15);z-index:2147483647;display:flex;flex-direction:column;font-family:system-ui,sans-serif;font-size:14px}
       #sgpt-panel[data-collapsed="true"]{transform:translateX(calc(100% - 42px));transition:transform .3s}
-      #sgpt-head{display:flex;align-items:center;background:#008CBA;color:#fff;padding:4px 8px;cursor:move;border-top-left-radius:6px;border-top-right-radius:6px}
+      #sgpt-head{display:flex;align-items:center;background:#008CBA;color:#fff;padding:4px 8px;border-top-left-radius:6px;border-top-right-radius:6px}
       #sgpt-close{margin-left:auto;background:transparent;border:none;color:#fff;font-size:18px;cursor:pointer}
       #sgpt-body{flex:1;display:flex;flex-direction:column;padding:8px;overflow:hidden}
       #sgpt-body input[type=text],#sgpt-body textarea,#sgpt-body select{width:100%;margin-bottom:6px;border:1px solid #aaa;border-radius:4px;padding:4px;font-family:monospace}
@@ -283,10 +363,12 @@ function panelHTML() {
       #sgpt-send,#sgpt-mod{margin-right:4px;padding:4px 10px;border:none;border-radius:4px;background:#008CBA;color:#fff;cursor:pointer}
       #sgpt-foot{display:flex;justify-content:flex-end}
       #sgpt-responder-label{font-size:12px;color:#666;margin-bottom:6px;text-align:right}
+      #sgpt-anchor-note{font-size:11px;color:#666;margin-bottom:8px}
     </style>
     <div id="sgpt-head">Tornevall Networks Social Media Tools ↔ <button id="sgpt-close">×</button></div>
     <div id="sgpt-body">
       <div id="sgpt-responder-label">Responder: <span id="sgpt-responder-name" data-name="${frontResponserName || ''}">${frontResponserName || '(loading...)'}</span></div>
+      <div id="sgpt-anchor-note">Anchored to the currently focused text field.</div>
       <label>Prompt<input type="text" id="sgpt-prompt"></label>
       <label>Context<textarea id="sgpt-context" readonly></textarea></label>
       <label>Output<textarea id="sgpt-out"></textarea></label>
@@ -350,28 +432,7 @@ function createPanel() {
     panel.innerHTML = panelHTML();
     document.body.appendChild(panel);
 
-    const head = panel.querySelector('#sgpt-head');
-    let drag = false, sx, sy;
-
-    head.addEventListener('mousedown', e => {
-        drag = true;
-        sx = e.clientX;
-        sy = e.clientY;
-    });
-
-    document.addEventListener('mousemove', e => {
-        if (!drag) return;
-        const dx = e.clientX - sx;
-        const dy = e.clientY - sy;
-        panel.style.right = Math.max(parseFloat(panel.style.right || '16') - dx, 0) + 'px';
-        panel.style.bottom = Math.max(parseFloat(panel.style.bottom || '16') - dy, 0) + 'px';
-        sx = e.clientX;
-        sy = e.clientY;
-    });
-
-    document.addEventListener('mouseup', () => drag = false);
-
-    head.addEventListener('dblclick', () => {
+    panel.querySelector('#sgpt-head').addEventListener('dblclick', () => {
         panel.dataset.collapsed = panel.dataset.collapsed === 'true' ? 'false' : 'true';
     });
 
@@ -382,6 +443,8 @@ function createPanel() {
 
     panel.querySelector('#sgpt-send').addEventListener('click', () => sendGPT(false));
     panel.querySelector('#sgpt-mod').addEventListener('click', () => sendGPT(true));
+
+    positionPanelNearComposer();
 
     return panel;
 }
@@ -444,6 +507,21 @@ document.addEventListener('click', e => {
     e.preventDefault();
 }, true);
 
+document.addEventListener('focusin', e => {
+    const editable = findEditableTarget(e.target);
+    if (editable) {
+        setActiveComposer(editable);
+    }
+}, true);
+
+window.addEventListener('resize', () => {
+    positionPanelNearComposer();
+}, true);
+
+window.addEventListener('scroll', () => {
+    positionPanelNearComposer();
+}, true);
+
 function resetMarksAndContext() {
     markedElements.forEach(el => el.classList.remove('socialgpt-marked'));
     markedElements = [];
@@ -481,8 +559,10 @@ chrome.runtime.onMessage.addListener(req => {
         const p = createPanel();
 
         p.dataset.collapsed = 'false';
-        //p.querySelector('#sgpt-context').value = markedElements.map((el, i) => `[${i + 1}]\n${el.innerText.trim()}`).join('\n\n---\n\n') || '(No elements marked)';
-        p.querySelector('#sgpt-context').value = markedElements.map((el, i) => `[${i + 1}]\n${getReadableContext(el)}`).join('\n\n---\n\n') || '(No elements marked)';
+        p.querySelector('#sgpt-context').value = markedElements.length
+            ? markedElements.map((el, i) => `[${i + 1}]\n${getReadableContext(el)}`).join('\n\n---\n\n')
+            : getActiveComposerContext();
+        positionPanelNearComposer();
         p.querySelector('#sgpt-prompt').focus();
 
         isClickMarkingActive = false;
