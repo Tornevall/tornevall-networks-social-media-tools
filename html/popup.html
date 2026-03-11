@@ -87,15 +87,46 @@
         .button-row button {
             margin-right: 0;
         }
+
+        .debug-console {
+            margin-top: 12px;
+            border: 1px solid #ddd;
+            background: #fafafa;
+            padding: 8px;
+        }
+
+        .debug-console summary {
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .debug-console pre {
+            font-size: 11px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            max-height: 220px;
+            overflow: auto;
+            background: #fff;
+            border: 1px solid #ddd;
+            padding: 8px;
+            margin-top: 8px;
+        }
     </style>
 </head>
 <body>
 <h1>Tornevall Networks Social Media Tools</h1>
+<p class="endpoint-note">
+    Browser companion for Tornevall Networks social media workflows, server-side AI assistance, and future admin/statistics tooling.
+</p>
 <p class="endpoint-note" id="endpointNote">
     Requests are sent through <code>https://tools.tornevall.net/api/ai/socialgpt/respond</code> using your Tools bearer token.
 </p>
 <p class="helper-note">
     Register at <strong>tools.tornevall.net</strong> and generate a <strong>personal bearer token</strong> there to use this extension.
+</p>
+<p class="helper-note">
+    Advanced personalization, custom instructions, Facebook admin-log sources, and stored activity data live in Tools.
+    <a id="openToolsDashboardLink" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">Open Tools dashboard</a>.
 </p>
 
 <div class="checkbox-inline">
@@ -114,16 +145,33 @@
     <label for="autoDetectName">Auto detect Facebook name</label>
 </div>
 
-<label for="systemPrompt">Behavior and personality (stored in Tools):</label>
+<label for="systemPrompt">Responder profile / about the person (stored in Tools):</label>
 <textarea id="systemPrompt" rows="5">You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.</textarea>
+<p class="helper-note" style="margin-top: -6px;">
+    For <strong>custom instructions</strong>, use
+    <a id="openToolsDashboardLinkInline" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">Tools → Social Media Tools → Facebook</a>.
+</p>
+
+<label for="testQuestion">Test question (Tools → OpenAI):</label>
+<textarea id="testQuestion" rows="3" placeholder="Ask something that should reflect your Tools personalization.">Reply in one short sentence that shows which responder name, profile, and custom instructions you received from Tools.</textarea>
 
 <div class="button-row">
     <button id="saveKeyBtn">Save Settings</button>
-    <button id="testConnectionBtn" type="button">Test</button>
+    <button id="testConnectionBtn" type="button">Test Tools → OpenAI</button>
     <button id="resetPromptBtn" type="button">Reset Prompt</button>
 </div>
 
 <p id="status"></p>
+
+<details class="debug-console" id="debugConsoleWrap" hidden>
+    <summary>Dev debug console</summary>
+    <div class="button-row" style="margin-top: 8px;">
+        <button id="refreshDebugBtn" type="button">Refresh</button>
+        <button id="copyDebugBtn" type="button">Copy</button>
+        <button id="clearDebugBtn" type="button">Clear</button>
+    </div>
+    <pre id="debugConsole">No logs yet.</pre>
+</details>
 <script src="../js/popup.js"></script>
 </body>
 </html>
