@@ -488,8 +488,18 @@ chrome.runtime.onMessage.addListener(req => {
         isClickMarkingActive = false;
         chrome.runtime.sendMessage({type: 'TOGGLE_MARK_MODE', enabled: false});
 
-        chrome.storage.sync.get(['responderName', 'autoDetectResponder'], (data) => {
+        chrome.storage.sync.get(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood'], (data) => {
             const label = p.querySelector('#sgpt-responder-name');
+            const moodField = p.querySelector('#sgpt-mood');
+            const customMoodField = p.querySelector('#sgpt-custom');
+
+            if (moodField && data.defaultMood) {
+                moodField.value = data.defaultMood;
+            }
+
+            if (customMoodField) {
+                customMoodField.value = data.defaultCustomMood || '';
+            }
 
             if (data.autoDetectResponder) {
                 detectFacebookUserNameViaObserver((name) => {
