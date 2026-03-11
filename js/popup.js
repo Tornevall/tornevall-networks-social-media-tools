@@ -215,6 +215,42 @@ document.addEventListener('DOMContentLoaded', function () {
         debugConsoleWrap.hidden = !devModeCheckbox.checked;
     }
 
+    function formatFacebookNetworkMeta(meta) {
+        if (!meta || typeof meta !== 'object') {
+            return '';
+        }
+
+        const lines = [];
+        if (meta.transport || meta.method || typeof meta.status !== 'undefined') {
+            lines.push([
+                meta.transport ? String(meta.transport).toUpperCase() : '',
+                meta.method || '',
+                typeof meta.status !== 'undefined' ? 'status=' + meta.status : '',
+                meta.duration_ms ? meta.duration_ms + ' ms' : ''
+            ].filter(Boolean).join(' · '));
+        }
+        if (meta.pathname || meta.url) {
+            lines.push(meta.pathname || meta.url);
+        }
+        if (meta.friendly_name) {
+            lines.push('friendly=' + meta.friendly_name);
+        }
+        if (meta.doc_id) {
+            lines.push('doc_id=' + meta.doc_id);
+        }
+        if (meta.first_event) {
+            lines.push('first_event=' + meta.first_event);
+        }
+        if (meta.request_preview) {
+            lines.push('request: ' + meta.request_preview);
+        }
+        if (meta.response_preview) {
+            lines.push('response: ' + meta.response_preview);
+        }
+
+        return lines.join('\n');
+    }
+
     function formatDebugLogs(logs) {
         if (!Array.isArray(logs) || !logs.length) {
             return 'No logs yet.';
@@ -223,7 +259,10 @@ document.addEventListener('DOMContentLoaded', function () {
         return logs.map(function (entry) {
             var prefix = [entry.ts || '-', (entry.level || 'info').toUpperCase(), entry.category || 'general']
                 .join(' | ');
-            var meta = entry.meta ? '\n' + JSON.stringify(entry.meta, null, 2) : '';
+            var prettyMeta = (entry.category === 'facebook-network' || entry.category === 'facebook-network-status')
+                ? formatFacebookNetworkMeta(entry.meta)
+                : (entry.meta ? JSON.stringify(entry.meta, null, 2) : '');
+            var meta = prettyMeta ? '\n' + prettyMeta : '';
             return prefix + '\n' + (entry.message || '') + meta;
         }).join('\n\n----------------\n\n');
     }

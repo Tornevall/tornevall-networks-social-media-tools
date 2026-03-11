@@ -1,7 +1,180 @@
-let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null;
+let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null, composerActionButton = null, adminActivitiesControl = null;
 let frontResponserName = '';
 
 const EDITABLE_SELECTOR = 'textarea,input[type="text"],input:not([type]),[contenteditable=""],[contenteditable="true"],[role="textbox"]';
+const TOOLS_PROD_BASE_URL = 'https://tools.tornevall.net';
+const TOOLS_DEV_BASE_URL = 'https://tools.tornevall.com';
+const FACEBOOK_INGEST_PATH = '/api/social-media-tools/facebook/ingest';
+const ADMIN_ACTIVITY_KEYWORDS = ['admin', 'godk', 'approved', 'avvis', 'rejected', 'request', 'förfrågan', 'removed', 'tagit bort', 'blocked', 'block', 'mute', 'banned', 'spam', 'member'];
+const IGNORED_LINK_TEXTS = ['gilla', 'svara', 'svara som', 'kommentera', 'dela', 'visa alla', 'visa fler svar', 'like', 'reply', 'share', 'comment', 'send', 'gif'];
+const MAX_RECENT_NETWORK_EVENTS = 8;
+const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+
+let adminIngestEnabled = false;
+let adminActivitiesScanScheduled = false;
+let networkMonitorInjected = false;
+let adminLastStatusText = 'Passive capture ready. Submission is off.';
+let adminSubmittedCount = 0;
+let adminNetworkEventsSeen = 0;
+let adminInterestingNetworkEventsSeen = 0;
+let adminLastNetworkEventAt = 0;
+let adminNetworkDebugAnnounced = false;
+let lastObservedLocationHref = location.href;
+const discoveredAdminEntries = new Map();
+const submittedAdminEntryKeys = new Set();
+const recentAdminNetworkEvents = [];
+
+function debugLog(entry) {
+    chrome.runtime.sendMessage({
+        type: 'DEBUG_LOG',
+        entry: Object.assign({
+            source: 'content-script',
+        }, entry || {}),
+    });
+}
+
+function normalizeWhitespace(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function clipText(value, limit) {
+    const text = String(value || '');
+    if (text.length <= limit) {
+        return text;
+    }
+
+    return text.slice(0, Math.max(0, limit - 1)) + '…';
+}
+
+function escapeHtml(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function isInterestingAdminNetworkEvent(payload) {
+    if (!payload) {
+        return false;
+    }
+
+    const haystack = [
+        payload.url,
+        payload.pathname,
+        payload.friendly_name,
+        payload.operation_name,
+        payload.doc_id,
+        payload.request_preview,
+        payload.response_preview,
+        payload.variables_preview,
+        payload.content_type,
+    ].join(' ').toLowerCase();
+
+    return !!payload.is_graphql
+        || !!payload.mentions_activity_log
+        || haystack.indexOf('admin_activities') !== -1
+        || haystack.indexOf('management_activities') !== -1
+        || haystack.indexOf('management_activity_log_target') !== -1
+        || haystack.indexOf('groupadminactivity') !== -1
+        || haystack.indexOf('activity log') !== -1
+        || haystack.indexOf('moderation') !== -1;
+}
+
+function summarizeAdminNetworkEvent(entry) {
+    const parts = [String((entry.transport || '?')).toUpperCase()];
+    if (typeof entry.status !== 'undefined' && entry.status !== null) {
+        parts.push(String(entry.status));
+    }
+    if (entry.is_graphql) {
+        parts.push('GraphQL');
+    }
+    if (entry.friendly_name) {
+        parts.push(entry.friendly_name);
+    } else if (entry.doc_id) {
+        parts.push('doc_id=' + entry.doc_id);
+    } else if (entry.pathname) {
+        parts.push(entry.pathname);
+    }
+    if (entry.duration_ms) {
+        parts.push(entry.duration_ms + ' ms');
+    }
+
+    return parts.join(' · ');
+}
+
+function mirrorAdminNetworkEventToConsole(entry) {
+    if (!entry || typeof console === 'undefined' || !console.info) {
+        return;
+    }
+
+    console.info('[TN Social Tools][admin-activities]', {
+        summary: entry.summary,
+        interesting: entry.interesting,
+        transport: entry.transport,
+        method: entry.method,
+        status: entry.status,
+        duration_ms: entry.duration_ms,
+        pathname: entry.pathname,
+        url: entry.url,
+        doc_id: entry.doc_id,
+        friendly_name: entry.friendly_name,
+        request_preview: entry.request_preview,
+        response_preview: entry.response_preview,
+    });
+}
+
+function rememberAdminNetworkEvent(payload) {
+    const entry = {
+        ts: new Date().toISOString(),
+        transport: payload && payload.transport ? payload.transport : 'unknown',
+        method: payload && payload.method ? String(payload.method).toUpperCase() : 'GET',
+        status: payload && typeof payload.status !== 'undefined' ? payload.status : 0,
+        duration_ms: payload && payload.duration_ms ? payload.duration_ms : null,
+        pathname: payload && payload.pathname ? payload.pathname : '',
+        url: payload && payload.url ? payload.url : '',
+        doc_id: payload && payload.doc_id ? payload.doc_id : '',
+        friendly_name: payload && (payload.friendly_name || payload.operation_name) ? (payload.friendly_name || payload.operation_name) : '',
+        is_graphql: !!(payload && payload.is_graphql),
+        mentions_activity_log: !!(payload && payload.mentions_activity_log),
+        request_preview: clipText(payload && payload.request_preview ? payload.request_preview : '', 240),
+        response_preview: clipText(payload && payload.response_preview ? payload.response_preview : '', 240),
+    };
+
+    entry.interesting = isInterestingAdminNetworkEvent(payload);
+    entry.summary = summarizeAdminNetworkEvent(entry);
+
+    adminNetworkEventsSeen += 1;
+    adminLastNetworkEventAt = Date.now();
+    if (entry.interesting) {
+        adminInterestingNetworkEventsSeen += 1;
+    }
+
+    recentAdminNetworkEvents.unshift(entry);
+    if (recentAdminNetworkEvents.length > MAX_RECENT_NETWORK_EVENTS) {
+        recentAdminNetworkEvents.length = MAX_RECENT_NETWORK_EVENTS;
+    }
+
+    return entry;
+}
+
+function getToolsBaseUrl(devMode) {
+    return devMode ? TOOLS_DEV_BASE_URL : TOOLS_PROD_BASE_URL;
+}
+
+function getToolsRuntimeSettings() {
+    return new Promise(function (resolve) {
+        chrome.storage.sync.get(['toolsApiToken', 'devMode'], function (data) {
+            resolve(data || {});
+        });
+    });
+}
+
+function isFacebookAdminActivitiesPage() {
+    return location.hostname.indexOf('facebook.com') !== -1
+        && /\/groups\/[^/]+\/admin_activities/.test(location.pathname || '');
+}
 
 // ---------------------------------------------
 // LOADER HANDLING
@@ -191,7 +364,37 @@ function setActiveComposer(node) {
     activeComposer = node && document.contains(node) ? node : null;
     if (panel) {
         positionPanelNearComposer();
+        updatePanelAnchorNote();
     }
+    positionComposerActionButton();
+}
+
+function findContextNodeForComposer(node) {
+    if (!node) {
+        return null;
+    }
+
+    const direct = node.closest('[data-ad-preview="message"],[data-ad-comet-preview="message"],[role="article"],article,[role="listitem"]');
+    if (direct) {
+        return direct;
+    }
+
+    let current = node.parentElement;
+    while (current) {
+        let sibling = current.previousElementSibling;
+        while (sibling) {
+            const article = sibling.matches && sibling.matches('[role="article"],article,[role="listitem"]')
+                ? sibling
+                : (sibling.querySelector ? sibling.querySelector('[role="article"],article,[role="listitem"]') : null);
+            if (article) {
+                return article;
+            }
+            sibling = sibling.previousElementSibling;
+        }
+        current = current.parentElement;
+    }
+
+    return findFullContextNode(node);
 }
 
 function getActiveComposerContext() {
@@ -199,8 +402,76 @@ function getActiveComposerContext() {
         return '(Focus a text field or mark elements to build context)';
     }
 
-    const contextNode = findFullContextNode(activeComposer);
+    const contextNode = findContextNodeForComposer(activeComposer);
     return contextNode ? getReadableContext(contextNode) : '(Focus a text field or mark elements to build context)';
+}
+
+function updatePanelAnchorNote() {
+    if (!panel) {
+        return;
+    }
+
+    const note = panel.querySelector('#sgpt-anchor-note');
+    if (!note) {
+        return;
+    }
+
+    if (markedElements.length) {
+        note.textContent = 'Using ' + markedElements.length + ' marked block' + (markedElements.length === 1 ? '' : 's') + ' as context.';
+        return;
+    }
+
+    note.textContent = activeComposer && document.contains(activeComposer)
+        ? 'Anchored to the currently focused text field.'
+        : 'Focus a text field or mark elements to build context.';
+}
+
+function ensureComposerActionButton() {
+    if (composerActionButton) {
+        return composerActionButton;
+    }
+
+    composerActionButton = document.createElement('button');
+    composerActionButton.id = 'sgpt-composer-action';
+    composerActionButton.type = 'button';
+    composerActionButton.textContent = 'Reply with Tools';
+    composerActionButton.style.position = 'fixed';
+    composerActionButton.style.zIndex = '2147483646';
+    composerActionButton.style.padding = '6px 10px';
+    composerActionButton.style.border = 'none';
+    composerActionButton.style.borderRadius = '999px';
+    composerActionButton.style.background = '#008CBA';
+    composerActionButton.style.color = '#fff';
+    composerActionButton.style.fontSize = '12px';
+    composerActionButton.style.cursor = 'pointer';
+    composerActionButton.style.boxShadow = '0 2px 10px rgba(0,0,0,0.18)';
+    composerActionButton.style.display = 'none';
+    composerActionButton.addEventListener('click', function () {
+        openReplyPanel();
+    });
+    document.body.appendChild(composerActionButton);
+
+    return composerActionButton;
+}
+
+function positionComposerActionButton() {
+    const button = ensureComposerActionButton();
+    if (!activeComposer || !document.contains(activeComposer)) {
+        button.style.display = 'none';
+        return;
+    }
+
+    const rect = activeComposer.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+        button.style.display = 'none';
+        return;
+    }
+
+    button.style.display = 'block';
+    const left = Math.max(12, Math.min(rect.right - 140, window.innerWidth - 160));
+    const top = Math.max(12, rect.top - 34);
+    button.style.left = Math.round(left) + 'px';
+    button.style.top = Math.round(top) + 'px';
 }
 
 function positionPanelNearComposer() {
@@ -247,6 +518,7 @@ function positionPanelNearComposer() {
     panel.style.top = Math.round(top) + 'px';
     panel.style.right = 'auto';
     panel.style.bottom = 'auto';
+    positionComposerActionButton();
 }
 
 
@@ -347,6 +619,398 @@ function extractBackgroundImagesAround(el) {
     return found;
 }
 
+function updateAdminActivitiesControl() {
+    if (!adminActivitiesControl) {
+        return;
+    }
+
+    const toggle = adminActivitiesControl.querySelector('[data-role="toggle"]');
+    const scrapeNow = adminActivitiesControl.querySelector('[data-role="scrape-now"]');
+    const state = adminActivitiesControl.querySelector('[data-role="state"]');
+    const counters = adminActivitiesControl.querySelector('[data-role="counters"]');
+    const monitor = adminActivitiesControl.querySelector('[data-role="monitor"]');
+    const recent = adminActivitiesControl.querySelector('[data-role="recent"]');
+
+    if (toggle) {
+        toggle.textContent = adminIngestEnabled ? 'Stop submit' : 'Enable scrape → submit';
+        toggle.style.background = adminIngestEnabled ? '#dc2626' : '#059669';
+    }
+
+    if (scrapeNow) {
+        scrapeNow.disabled = !adminIngestEnabled;
+        scrapeNow.style.opacity = adminIngestEnabled ? '1' : '0.65';
+        scrapeNow.style.cursor = adminIngestEnabled ? 'pointer' : 'not-allowed';
+    }
+
+    if (state) {
+        state.textContent = adminLastStatusText;
+    }
+
+    if (counters) {
+        counters.textContent = 'Visible discovered: ' + discoveredAdminEntries.size + ' · Submitted: ' + adminSubmittedCount;
+    }
+
+    if (monitor) {
+        if (!adminLastNetworkEventAt) {
+            monitor.textContent = networkMonitorInjected
+                ? 'Monitor injected. Waiting for Facebook XHR/fetch activity...'
+                : 'Monitor not injected yet.';
+            monitor.style.color = '#92400e';
+        } else {
+            const ageSeconds = Math.max(0, Math.round((Date.now() - adminLastNetworkEventAt) / 1000));
+            monitor.textContent = 'Monitor active · ' + adminNetworkEventsSeen + ' events seen · ' + adminInterestingNetworkEventsSeen + ' interesting · last seen ' + (ageSeconds <= 1 ? 'just now' : (ageSeconds + 's ago'));
+            monitor.style.color = '#065f46';
+        }
+    }
+
+    if (recent) {
+        if (!recentAdminNetworkEvents.length) {
+            recent.innerHTML = '<div style="color:#64748b;">No captured XHR/fetch events yet.</div>';
+        } else {
+            recent.innerHTML = recentAdminNetworkEvents.map(function (entry) {
+                const preview = entry.response_preview || entry.request_preview;
+                return '<div style="padding:6px 0; border-top:1px solid rgba(148,163,184,0.25);">'
+                    + '<div style="font-weight:600; color:' + (entry.interesting ? '#0f766e' : '#334155') + ';">' + escapeHtml(entry.summary) + '</div>'
+                    + '<div style="color:#64748b; margin-top:2px;">' + escapeHtml(entry.pathname || entry.url || '(unknown url)') + '</div>'
+                    + (preview ? '<div style="margin-top:3px; color:#475569;">' + escapeHtml(preview) + '</div>' : '')
+                    + '</div>';
+            }).join('');
+        }
+    }
+}
+
+function ensureAdminActivitiesControl() {
+    if (!isFacebookAdminActivitiesPage()) {
+        if (adminActivitiesControl) {
+            console.info('[TN Social Tools] Removing admin_activities overlay because the current route no longer matches.', {
+                version: EXTENSION_VERSION,
+                url: location.href,
+            });
+            adminActivitiesControl.remove();
+            adminActivitiesControl = null;
+        }
+        return null;
+    }
+
+    if (adminActivitiesControl) {
+        return adminActivitiesControl;
+    }
+
+    const control = document.createElement('div');
+    control.id = 'sgpt-admin-activities-control';
+    control.style.position = 'fixed';
+    control.style.top = '16px';
+    control.style.right = '16px';
+    control.style.zIndex = '2147483645';
+    control.style.width = '340px';
+    control.style.maxHeight = '70vh';
+    control.style.overflow = 'auto';
+    control.style.padding = '10px';
+    control.style.borderRadius = '10px';
+    control.style.border = '1px solid rgba(0,0,0,0.12)';
+    control.style.background = 'rgba(255,255,255,0.96)';
+    control.style.boxShadow = '0 6px 18px rgba(0,0,0,0.15)';
+    control.style.fontFamily = 'system-ui,sans-serif';
+    control.style.fontSize = '12px';
+    control.innerHTML = [
+        '<div style="font-weight:700; margin-bottom:6px;">Facebook admin activities</div>',
+        '<div data-role="state" style="margin-bottom:6px; color:#334155; font-weight:600;">Passive capture ready. Submission is off.</div>',
+        '<div data-role="counters" style="margin-bottom:8px; color:#64748b;">Visible discovered: 0 · Submitted: 0</div>',
+        '<div data-role="monitor" style="margin-bottom:8px; padding:8px; border-radius:8px; border:1px solid rgba(59,130,246,0.25); background:#eff6ff; color:#1d4ed8; font-weight:600;">Monitor injected. Waiting for Facebook XHR/fetch activity...</div>',
+        '<div style="display:flex; gap:8px; flex-wrap:wrap;">',
+        '<button type="button" data-role="toggle" style="border:none; border-radius:999px; padding:6px 10px; color:#fff; cursor:pointer;">Enable scrape → submit</button>',
+        '<button type="button" data-role="scrape-now" style="border:none; border-radius:999px; padding:6px 10px; background:#0f172a; color:#fff; cursor:pointer;">Submit visible now</button>',
+        '</div>',
+        '<div style="margin-top:10px; font-weight:600; color:#334155;">Recent XHR/fetch (also mirrored to DevTools console)</div>',
+        '<div data-role="recent" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569;">No captured XHR/fetch events yet.</div>'
+    ].join('');
+
+    control.querySelector('[data-role="toggle"]').addEventListener('click', async function () {
+        const settings = await getToolsRuntimeSettings();
+        if (!settings.toolsApiToken) {
+            adminLastStatusText = 'Missing Tools bearer token. Save it in the popup first.';
+            updateAdminActivitiesControl();
+            return;
+        }
+
+        adminIngestEnabled = !adminIngestEnabled;
+        adminLastStatusText = adminIngestEnabled
+            ? 'Submission is enabled. New admin-log entries will be submitted to Tools.'
+            : 'Submission stopped. Passive capture is still running.';
+        updateAdminActivitiesControl();
+        debugLog({level: 'info', category: 'facebook-admin-ingest', message: 'Facebook admin ingest toggled.', meta: {enabled: adminIngestEnabled, url: location.href}});
+        if (adminIngestEnabled) {
+            scheduleAdminActivitiesScan('manual-enable');
+        }
+    });
+
+    control.querySelector('[data-role="scrape-now"]').addEventListener('click', function () {
+        if (adminIngestEnabled) {
+            scheduleAdminActivitiesScan('manual-scrape');
+        }
+    });
+
+    document.body.appendChild(control);
+    adminActivitiesControl = control;
+    updateAdminActivitiesControl();
+
+    console.info('[TN Social Tools] admin_activities overlay mounted.', {
+        version: EXTENSION_VERSION,
+        url: location.href,
+    });
+
+    return control;
+}
+
+function injectNetworkMonitor() {
+    if (networkMonitorInjected || !window.TNNetworksPlatformRegistry) {
+        return;
+    }
+
+    const platform = window.TNNetworksPlatformRegistry.getActive(location.hostname);
+    if (!platform || !platform.enableNetworkCapture) {
+        return;
+    }
+
+    const script = document.createElement('script');
+    script.src = chrome.runtime.getURL('js/injected/networkMonitor.js');
+    script.onload = function () { this.remove(); };
+    (document.head || document.documentElement).appendChild(script);
+    networkMonitorInjected = true;
+
+    console.info('[TN Social Tools] In-page fetch/XHR monitor injected.', {
+        version: EXTENSION_VERSION,
+        url: location.href,
+    });
+
+    if (isFacebookAdminActivitiesPage()) {
+        adminLastStatusText = adminIngestEnabled
+            ? 'Network monitor injected. Waiting for admin-log traffic...'
+            : 'Passive capture ready. Network monitor injected; submission is off.';
+        updateAdminActivitiesControl();
+    }
+
+    debugLog({
+        level: 'info',
+        category: 'facebook-network-status',
+        message: 'Injected in-page fetch/XHR monitor.',
+        meta: {
+            url: location.href,
+            hostname: location.hostname,
+        }
+    });
+}
+
+function handleLocationChange(reason) {
+    const changed = lastObservedLocationHref !== location.href;
+    if (!changed && reason !== 'init') {
+        return;
+    }
+
+    lastObservedLocationHref = location.href;
+    ensureAdminActivitiesControl();
+
+    if (!isFacebookAdminActivitiesPage()) {
+        console.info('[TN Social Tools] Route changed, but this is not a Facebook admin_activities page.', {
+            version: EXTENSION_VERSION,
+            reason: reason,
+            url: location.href,
+        });
+        return;
+    }
+
+    injectNetworkMonitor();
+    adminLastStatusText = networkMonitorInjected
+        ? 'Admin activities page detected. Waiting for Facebook XHR/fetch activity...'
+        : 'Admin activities page detected, but monitor injection has not completed yet.';
+    updateAdminActivitiesControl();
+    scheduleAdminActivitiesScan('location-change');
+    console.info('[TN Social Tools] Facebook admin_activities route detected.', {
+        version: EXTENSION_VERSION,
+        reason: reason,
+        url: location.href,
+    });
+    debugLog({
+        level: 'info',
+        category: 'facebook-network-status',
+        message: 'Facebook admin_activities route detected.',
+        meta: {
+            reason: reason,
+            url: location.href,
+        }
+    });
+}
+
+function shouldConsiderAdminActivityText(text) {
+    const lowered = String(text || '').toLowerCase();
+    if (lowered.length < 20) {
+        return false;
+    }
+
+    return ADMIN_ACTIVITY_KEYWORDS.some(function (keyword) {
+        return lowered.indexOf(keyword) !== -1;
+    });
+}
+
+function extractMeaningfulLinkTexts(container) {
+    const found = [];
+    const anchors = container.querySelectorAll('a, strong');
+
+    for (let i = 0; i < anchors.length; i += 1) {
+        const text = normalizeWhitespace(anchors[i].textContent || '');
+        if (!text || text.length < 2 || text.length > 80) {
+            continue;
+        }
+
+        if (IGNORED_LINK_TEXTS.indexOf(text.toLowerCase()) !== -1) {
+            continue;
+        }
+
+        if (found.indexOf(text) === -1) {
+            found.push(text);
+        }
+    }
+
+    return found;
+}
+
+function detectHandledOutcomeFromText(text) {
+    const lowered = String(text || '').toLowerCase();
+    if (lowered.indexOf('godk') !== -1 || lowered.indexOf('approved') !== -1) return 'approved';
+    if (lowered.indexOf('avvis') !== -1 || lowered.indexOf('rejected') !== -1 || lowered.indexOf('declined') !== -1) return 'rejected';
+    if (lowered.indexOf('tagit bort') !== -1 || lowered.indexOf('removed') !== -1) return 'removed';
+    if (lowered.indexOf('block') !== -1 || lowered.indexOf('banned') !== -1) return 'blocked';
+    return null;
+}
+
+function parseAdminActivityEntry(container) {
+    const actionText = normalizeWhitespace(container.innerText || '');
+    if (!shouldConsiderAdminActivityText(actionText)) {
+        return null;
+    }
+
+    const names = extractMeaningfulLinkTexts(container);
+    const actorName = names[0] || null;
+    if (!actorName) {
+        return null;
+    }
+
+    const targetName = names.length > 1 ? names[1] : null;
+    const key = [location.href, actorName, targetName || '', actionText].join('|');
+
+    return {
+        key: key,
+        source_url: location.href,
+        activity_url: location.href,
+        actor_name: actorName,
+        action_text: actionText,
+        target_name: targetName,
+        handled_outcome: detectHandledOutcomeFromText(actionText),
+        raw_blue_segment: actionText,
+        plugin_version: 'tornevall-networks-social-media-tools/' + chrome.runtime.getManifest().version,
+    };
+}
+
+function collectVisibleAdminActivityEntries() {
+    const selectors = ['[role="article"]', '[role="listitem"]', 'div[data-pagelet]', 'li'];
+    const results = [];
+    const seenKeys = new Set();
+
+    selectors.forEach(function (selector) {
+        const nodes = document.querySelectorAll(selector);
+        for (let i = 0; i < nodes.length; i += 1) {
+            const node = nodes[i];
+            if (!node || !node.offsetParent) {
+                continue;
+            }
+
+            const parsed = parseAdminActivityEntry(node);
+            if (parsed && !seenKeys.has(parsed.key)) {
+                seenKeys.add(parsed.key);
+                results.push(parsed);
+            }
+        }
+    });
+
+    return results;
+}
+
+async function submitAdminActivityEntry(entry) {
+    const settings = await getToolsRuntimeSettings();
+    if (!settings.toolsApiToken) {
+        adminLastStatusText = 'Missing Tools bearer token. Save it in the popup first.';
+        updateAdminActivitiesControl();
+        return false;
+    }
+
+    const response = await fetch(getToolsBaseUrl(!!settings.devMode) + FACEBOOK_INGEST_PATH, {
+        method: 'POST',
+        headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + settings.toolsApiToken,
+        },
+        body: JSON.stringify(entry),
+    });
+
+    const data = await response.json().catch(function () { return {}; });
+    if (!response.ok || !data.ok) {
+        throw new Error((data && (data.message || data.error)) || ('Ingest failed (' + response.status + ')'));
+    }
+
+    return true;
+}
+
+async function flushAdminActivitiesToTools(reason) {
+    const entries = collectVisibleAdminActivityEntries();
+    entries.forEach(function (entry) {
+        if (!discoveredAdminEntries.has(entry.key)) {
+            discoveredAdminEntries.set(entry.key, entry);
+        }
+    });
+
+    updateAdminActivitiesControl();
+    if (!adminIngestEnabled) {
+        return;
+    }
+
+    let submittedThisRun = 0;
+    for (const entry of discoveredAdminEntries.values()) {
+        if (submittedAdminEntryKeys.has(entry.key)) {
+            continue;
+        }
+
+        try {
+            await submitAdminActivityEntry(entry);
+            submittedAdminEntryKeys.add(entry.key);
+            adminSubmittedCount += 1;
+            submittedThisRun += 1;
+        } catch (error) {
+            adminLastStatusText = error && error.message ? error.message : 'Could not submit admin-log entry.';
+            updateAdminActivitiesControl();
+            debugLog({level: 'error', category: 'facebook-admin-ingest', message: adminLastStatusText, meta: {reason: reason, entry: entry}});
+            return;
+        }
+    }
+
+    adminLastStatusText = submittedThisRun > 0
+        ? 'Submitted ' + submittedThisRun + ' admin-log entr' + (submittedThisRun === 1 ? 'y' : 'ies') + ' to Tools.'
+        : 'Listening for admin-log changes. No new visible entries to submit right now.';
+    updateAdminActivitiesControl();
+}
+
+function scheduleAdminActivitiesScan(reason) {
+    if (adminActivitiesScanScheduled || !isFacebookAdminActivitiesPage()) {
+        return;
+    }
+
+    adminActivitiesScanScheduled = true;
+    setTimeout(function () {
+        adminActivitiesScanScheduled = false;
+        flushAdminActivitiesToTools(reason);
+    }, 450);
+}
+
 // ---------------------------------------------
 // PANEL HTML
 // ---------------------------------------------
@@ -364,17 +1028,17 @@ function panelHTML() {
       #sgpt-foot{display:flex;justify-content:flex-end}
       #sgpt-responder-label{font-size:12px;color:#666;margin-bottom:6px;text-align:right}
       #sgpt-anchor-note{font-size:11px;color:#666;margin-bottom:8px}
+      .sgpt-quick-settings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:8px}
+      .sgpt-quick-settings label{display:flex;flex-direction:column;font-size:12px;font-weight:600;color:#334155}
+      .sgpt-quick-settings select,.sgpt-quick-settings input{margin-bottom:0}
     </style>
     <div id="sgpt-head">Tornevall Networks Social Media Tools ↔ <button id="sgpt-close">×</button></div>
     <div id="sgpt-body">
       <div id="sgpt-responder-label">Responder: <span id="sgpt-responder-name" data-name="${frontResponserName || ''}">${frontResponserName || '(loading...)'}</span></div>
       <div id="sgpt-anchor-note">Anchored to the currently focused text field.</div>
       <label>Prompt<input type="text" id="sgpt-prompt"></label>
-      <label>Context<textarea id="sgpt-context" readonly></textarea></label>
-      <label>Output<textarea id="sgpt-out"></textarea></label>
-      <label>Modifier<input type="text" id="sgpt-modifier"></label>
-      <label>Mood
-          <select id="sgpt-mood">
+      <div class="sgpt-quick-settings">
+        <label>Mood<select id="sgpt-mood">
             <optgroup label="Objective & Informative">
               <option value="Neutral and formal">Neutral and formal</option>
               <option value="Fact-based and concise">Fact-based and concise</option>
@@ -397,11 +1061,13 @@ function panelHTML() {
               <option value="Friendly and casual">Friendly and casual</option>
               <option value="Conversational and soft">Conversational and soft</option>
             </optgroup>
-          </select>
-        </label>
-      <label>Custom mood<input type="text" id="sgpt-custom"></label>
-      <label>Response length
-          <select id="sgpt-length">
+          </select></label>
+        <label>Model<select id="sgpt-model">
+          <option value="gpt-4o">gpt-4o</option>
+          <option value="gpt-4">gpt-4</option>
+          <option value="o3-mini">o3-mini</option>
+        </select></label>
+        <label>Length<select id="sgpt-length">
             <option value="auto">Let GPT decide</option>
             <option value="as-short-as-possible">As short as possible</option>
             <option value="shortest-possible">At maxmium one sentence. Possibly a oneliner.</option>
@@ -410,13 +1076,14 @@ function panelHTML() {
             <option value="medium">6–10 sentences (medium)</option>
             <option value="extreme">Extreme. You want your own book.</option>
             <option value="long">Extended (whatever is needed)</option>
-          </select>
-      </label>
-      <label>Model<select id="sgpt-model">
-        <option value="gpt-4o">gpt-4o</option>
-        <option value="gpt-4">gpt-4</option>
-        <option value="o3-mini">o3-mini</option>
-      </select></label>
+          </select></label>
+      </div>
+      <div class="sgpt-quick-settings" style="grid-template-columns:repeat(2,minmax(0,1fr));">
+        <label>Custom mood<input type="text" id="sgpt-custom"></label>
+        <label>Modifier<input type="text" id="sgpt-modifier"></label>
+      </div>
+      <label>Context<textarea id="sgpt-context" readonly></textarea></label>
+      <label>Output<textarea id="sgpt-out"></textarea></label>
       <div id="sgpt-foot"><button id="sgpt-send">Send</button><button id="sgpt-mod">Modify</button></div>
     </div>`;
 }
@@ -447,6 +1114,51 @@ function createPanel() {
     positionPanelNearComposer();
 
     return panel;
+}
+
+function openReplyPanel() {
+    const p = createPanel();
+
+    p.dataset.collapsed = 'false';
+    p.querySelector('#sgpt-context').value = markedElements.length
+        ? markedElements.map((el, i) => `[${i + 1}]\n${getReadableContext(el)}`).join('\n\n---\n\n')
+        : getActiveComposerContext();
+    positionPanelNearComposer();
+    updatePanelAnchorNote();
+    p.querySelector('#sgpt-prompt').focus();
+
+    isClickMarkingActive = false;
+    chrome.runtime.sendMessage({type: 'TOGGLE_MARK_MODE', enabled: false});
+
+    chrome.storage.sync.get(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood'], (data) => {
+        const label = p.querySelector('#sgpt-responder-name');
+        const moodField = p.querySelector('#sgpt-mood');
+        const customMoodField = p.querySelector('#sgpt-custom');
+
+        if (moodField && data.defaultMood) {
+            moodField.value = data.defaultMood;
+        }
+
+        if (customMoodField) {
+            customMoodField.value = data.defaultCustomMood || '';
+        }
+
+        if (data.autoDetectResponder) {
+            detectFacebookUserNameViaObserver((name) => {
+                frontResponserName = name;
+                if (label) {
+                    label.textContent = name;
+                    label.dataset.name = name;
+                }
+            });
+        } else {
+            frontResponserName = data.responderName || 'Anonymous';
+            if (label) {
+                label.textContent = frontResponserName;
+                label.dataset.name = frontResponserName;
+            }
+        }
+    });
 }
 
 // ---------------------------------------------
@@ -504,6 +1216,12 @@ document.addEventListener('click', e => {
         t.classList.add('socialgpt-marked');
         markedElements.push(t);
     }
+    if (panel) {
+        panel.querySelector('#sgpt-context').value = markedElements.length
+            ? markedElements.map((el, i) => `[${i + 1}]\n${getReadableContext(el)}`).join('\n\n---\n\n')
+            : getActiveComposerContext();
+        updatePanelAnchorNote();
+    }
     e.preventDefault();
 }, true);
 
@@ -516,10 +1234,12 @@ document.addEventListener('focusin', e => {
 
 window.addEventListener('resize', () => {
     positionPanelNearComposer();
+    positionComposerActionButton();
 }, true);
 
 window.addEventListener('scroll', () => {
     positionPanelNearComposer();
+    positionComposerActionButton();
 }, true);
 
 function resetMarksAndContext() {
@@ -543,6 +1263,8 @@ function resetMarksAndContext() {
             const el = panel.querySelector(selector);
             if (el) el.value = value;
         }
+
+        updatePanelAnchorNote();
     }
 }
 
@@ -556,44 +1278,7 @@ chrome.runtime.onMessage.addListener(req => {
     if (req.type === 'TOGGLE_MARK_MODE') {
         isClickMarkingActive = req.enabled;
     } else if (req.type === 'OPEN_REPLY_PANEL') {
-        const p = createPanel();
-
-        p.dataset.collapsed = 'false';
-        p.querySelector('#sgpt-context').value = markedElements.length
-            ? markedElements.map((el, i) => `[${i + 1}]\n${getReadableContext(el)}`).join('\n\n---\n\n')
-            : getActiveComposerContext();
-        positionPanelNearComposer();
-        p.querySelector('#sgpt-prompt').focus();
-
-        isClickMarkingActive = false;
-        chrome.runtime.sendMessage({type: 'TOGGLE_MARK_MODE', enabled: false});
-
-        chrome.storage.sync.get(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood'], (data) => {
-            const label = p.querySelector('#sgpt-responder-name');
-            const moodField = p.querySelector('#sgpt-mood');
-            const customMoodField = p.querySelector('#sgpt-custom');
-
-            if (moodField && data.defaultMood) {
-                moodField.value = data.defaultMood;
-            }
-
-            if (customMoodField) {
-                customMoodField.value = data.defaultCustomMood || '';
-            }
-
-            if (data.autoDetectResponder) {
-                detectFacebookUserNameViaObserver((name) => {
-                    frontResponserName = name;
-                    if (label) {
-                        label.textContent = name;
-                        label.dataset.name = name;
-                    }
-                });
-            } else {
-                frontResponserName = data.responderName || 'Anonymous';
-                if (label) label.textContent = frontResponserName;
-            }
-        });
+        openReplyPanel();
     } else if (req.type === 'GPT_RESPONSE') {
         hideLoader();
         if (panel) {
@@ -625,4 +1310,75 @@ chrome.runtime.onMessage.addListener(req => {
     }
 });
 
-console.log('[Tornevall Networks Social Media Tools] content script ready');
+window.addEventListener('message', function (event) {
+    if (event.source !== window || !event.data || event.data.source !== 'tn-networks-social-media-tools' || event.data.type !== 'NETWORK_EVENT') {
+        return;
+    }
+
+    if (!isFacebookAdminActivitiesPage()) {
+        return;
+    }
+
+    ensureAdminActivitiesControl();
+    const networkEntry = rememberAdminNetworkEvent(event.data.payload || {});
+    mirrorAdminNetworkEventToConsole(networkEntry);
+
+    if (!adminNetworkDebugAnnounced) {
+        adminNetworkDebugAnnounced = true;
+        debugLog({
+            level: 'info',
+            category: 'facebook-network-status',
+            message: 'Facebook in-page monitor is receiving network events.',
+            meta: {
+                url: location.href,
+                first_event: networkEntry.summary,
+            }
+        });
+    }
+
+    if (networkEntry.interesting) {
+        debugLog({
+            level: 'info',
+            category: 'facebook-network',
+            message: 'Interesting Facebook XHR/fetch event captured.',
+            meta: {
+                url: location.href,
+                transport: networkEntry.transport,
+                method: networkEntry.method,
+                status: networkEntry.status,
+                duration_ms: networkEntry.duration_ms,
+                pathname: networkEntry.pathname,
+                doc_id: networkEntry.doc_id,
+                friendly_name: networkEntry.friendly_name,
+                request_preview: networkEntry.request_preview,
+                response_preview: networkEntry.response_preview,
+            }
+        });
+    }
+
+    adminLastStatusText = adminIngestEnabled
+        ? (networkEntry.interesting
+            ? 'Interesting network activity detected. Checking visible admin-log entries...'
+            : 'Monitor active. Non-matching page activity seen; waiting for admin-log calls.')
+        : (networkEntry.interesting
+            ? 'Passive capture saw interesting page activity. Submission is still off until you enable it.'
+            : 'Passive capture is active. Waiting for interesting admin-log traffic.');
+    updateAdminActivitiesControl();
+    if (networkEntry.interesting) {
+        scheduleAdminActivitiesScan('network-event');
+    }
+}, true);
+
+injectNetworkMonitor();
+ensureComposerActionButton();
+ensureAdminActivitiesControl();
+handleLocationChange('init');
+window.setInterval(function () {
+    handleLocationChange('interval');
+}, 1000);
+
+console.info('[TN Social Tools] content script ready.', {
+    version: EXTENSION_VERSION,
+    url: location.href,
+    admin_activities_match: isFacebookAdminActivitiesPage(),
+});

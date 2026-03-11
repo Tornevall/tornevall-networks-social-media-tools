@@ -2,6 +2,11 @@
 
 ## 1.2.1 - 2026-03-11
 
+### Added
+- Inline diagnostics on Facebook `admin_activities` pages showing monitor state plus recent XHR/fetch summaries for admin-log capture
+- Interesting Facebook admin-log network events are now mirrored into Chrome DevTools console with a clear `TN Social Tools` prefix
+- Startup diagnostics now log the loaded extension version and whether the current Facebook route matched `admin_activities`
+
 ### Fixed
 - Popup settings/test errors are now rendered as real validation or API messages instead of `[object Object]`
 - Empty Tools-backed behavior/system-prompt values no longer wipe the extension prompt field
@@ -14,6 +19,8 @@
 - The popup Test button is now a real end-to-end Tools → OpenAI smoke test instead of a token-only readiness check
 - Tools personalization now supports a responder profile plus a larger custom-instruction block, and the interactive test uses a user-entered question
 - Facebook ingest can now use the personal `tools_ai_bearer` token, making the dedicated ingest token optional
+- Facebook admin dashboard defaults are easier to spot, and the popup dashboard reference is now shorter and less repetitive
+- Facebook `admin_activities` detection is now rechecked during SPA-style URL changes so the page overlay appears more reliably
 
 ## 1.2.0 - 2026-03-11
 
