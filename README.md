@@ -1,58 +1,24 @@
-# SocialGPT – Chrome Extension for Context-Aware ChatGPT Replies
+# Tornevall Networks Social Media Tools
 
-SocialGPT is a powerful Chrome extension for injecting ChatGPT into your social media workflows. It lets you mark
-elements on a page (comments, posts, threads), define tone and style, and generate responses directly with context –
-perfect for crafting quick replies, sarcastic roasts, or fact-based rebuttals.
+Tornevall Networks Social Media Tools is a Chrome extension for social-media response workflows.
+It uses a personal bearer token from Tools and sends requests through either:
+- `https://tools.tornevall.net` (production)
+- `https://tools.tornevall.com` (dev / beta)
 
-## June 2025 Update Highlights
+Responder name and behavior/personality are now stored server-side in Tools and synced from the extension popup.
 
-- Floating panel UI with live prompt, context viewer, and output field
-- Tone selector with presets like "Brutally honest", "Academic and precise", "Snarky", or custom
-- Response length control: from "as short as possible" to extended replies
-- Panel is draggable, dockable and collapsible on double-click
-- Multi-element context marking for full thread responses
-- Automatic Facebook profile name detection as responder alias
-- Modify previous replies in-place
-- Supports multiple models: gpt-4o, gpt-4, and o3-mini
+## Current workflow
 
-### 🚧 Known Limitations (Work in Progress)
+1. Register at `tools.tornevall.net`
+2. Generate a personal bearer token there
+3. Paste that token into the extension popup
+4. Optionally enable dev mode to target `tools.tornevall.com`
+5. Use the **Test** button to verify your token and the global `provider_openai` configuration
+6. Save responder name and behavior so they are stored in Tools for your user account
+7. Generate replies through the Tools AI gateway
 
-While SocialGPT aims to extract relevant context including media and link previews, it’s not perfect yet.
-Certain visual elements like shared article blocks, background images, or embedded videos may not always be picked up.
-We're working on improving detection for:
+## Notes
 
-- Background images styled via CSS (common in Facebook photo/video posts)
-- Link preview containers with metadata (e.g. news articles or Instagram embeds)
-- Image-only posts with no accompanying `<img>` tag (rendered via inline styles)
-
-If something seems missing in the prompt – it probably is. :)
-
-## How it is written
-
-Yeah, I am not a front end developer so I asked my way through this one.
-Built with help from OpenAI, model o3 and 4o.
-
-## How it works
-
-1. Right-click any comment, post, or thread block
-2. Select "Mark element for GPT reading" to store it as context
-3. Open the reply panel via "Reply/Add text" in the context menu
-4. Enter your prompt, choose tone, length and model
-5. Press Send to generate a reply with context-aware precision
-
-## Features for Power Users
-
-- Designed for rapid response workflows in public social media threads
-- Ideal for rebuttals, satire, activism, moderation, or education
-- Maintains full control over length, tone and structure
-- Can be used to refine, translate or rewrite replies live
-
-## Requirements
-
-- OpenAI API key (required for ChatGPT access)
-- Chrome or any Chromium-compatible browser
-
-## Privacy
-
-No data is currently sent to third-party servers. All processing is local except the direct call to OpenAI’s API
-endpoint. Your API key is stored locally using chrome.storage.sync and never shared.
+- The bearer token is personal and tied to your user account
+- OpenAI execution happens from Tools, not directly from the browser
+- The active OpenAI key is resolved from Tools using `provider_openai` with `global=true`

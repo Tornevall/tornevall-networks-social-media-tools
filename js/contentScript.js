@@ -128,12 +128,22 @@ function detectFacebookUserNameViaObserver(callback) {
     }
 }
 
+function getNestedValue(root, path) {
+    return path.reduce((acc, key) => {
+        if (acc === null || typeof acc === 'undefined') {
+            return undefined;
+        }
+
+        return typeof acc[key] === 'undefined' ? undefined : acc[key];
+    }, root);
+}
+
 function extractFacebookUserName() {
     const scripts = document.querySelectorAll('script[type="application/json"]');
     for (const script of scripts) {
         try {
             const json = JSON.parse(script.textContent);
-            const name = json?.require?.[0]?.[3]?.[0]?.__bbox?.require?.[0]?.[3]?.[1]?.__bbox?.result?.data?.viewer?.actor?.name;
+            const name = getNestedValue(json, ['require', 0, 3, 0, '__bbox', 'require', 0, 3, 1, '__bbox', 'result', 'data', 'viewer', 'actor', 'name']);
             if (name) return name;
         } catch (e) {
         }
@@ -142,9 +152,9 @@ function extractFacebookUserName() {
     const img = document.querySelector('img[alt][src*="scontent"]');
     if (img && img.alt && img.alt.length > 1) return img.alt.trim();
 
-    const spans = [...document.querySelectorAll('span')];
+    const spans = [].slice.call(document.querySelectorAll('span'));
     for (const span of spans) {
-        const txt = span.textContent?.trim();
+        const txt = span.textContent && typeof span.textContent.trim === 'function' ? span.textContent.trim() : '';
         if (txt && txt.length >= 4 && /^[A-ZÅÄÖ][a-zåäö]+(?: [A-ZÅÄÖ][a-zåäö]+)?$/.test(txt)) return txt;
     }
 
@@ -206,9 +216,10 @@ function convertNodeToReadableText(node) {
     const imgs = node.querySelectorAll('img');
     for (const img of imgs) {
         const isEmoji = img.src.includes('emoji.php');
+        const altText = img.alt && typeof img.alt.trim === 'function' ? img.alt.trim() : '';
         const label = isEmoji
             ? img.alt || '🖼️'
-            : `[IMG: ${img.alt?.trim() || img.src || 'image'}]`;
+            : `[IMG: ${altText || img.src || 'image'}]`;
         const span = document.createElement('span');
         span.textContent = label;
         img.replaceWith(span);
@@ -226,7 +237,8 @@ function convertNodeToReadableText(node) {
     // Handle links
     const links = node.querySelectorAll('a[href]');
     for (const a of links) {
-        const text = a.textContent?.trim().replace(/\s+/g, ' ') || 'link';
+        const rawText = a.textContent && typeof a.textContent.trim === 'function' ? a.textContent.trim() : '';
+        const text = rawText ? rawText.replace(/\s+/g, ' ') : 'link';
         const url = a.href;
         const label = `[LINK: ${text} (${url})]`;
         const span = document.createElement('span');
@@ -239,13 +251,14 @@ function convertNodeToReadableText(node) {
 
 function extractBackgroundImagesAround(el) {
     const found = [];
-    const scope = el.closest('[data-ad-preview="message"]')?.parentElement || el.parentElement;
+    const closestMessage = el.closest('[data-ad-preview="message"]');
+    const scope = (closestMessage ? closestMessage.parentElement : null) || el.parentElement;
     if (!scope) return found;
 
     const nodes = scope.querySelectorAll('*');
     for (const node of nodes) {
         const bg = window.getComputedStyle(node).getPropertyValue('background-image');
-        const match = bg?.match(/url\(["']?(.*?)["']?\)/);
+        const match = bg ? bg.match(/url\(["']?(.*?)["']?\)/) : null;
         if (match && match[1] && !match[1].includes('emoji.php')) {
             found.push(`[IMG: ${match[1]}]`);
         }
@@ -271,7 +284,7 @@ function panelHTML() {
       #sgpt-foot{display:flex;justify-content:flex-end}
       #sgpt-responder-label{font-size:12px;color:#666;margin-bottom:6px;text-align:right}
     </style>
-    <div id="sgpt-head">SocialGPT ↔ <button id="sgpt-close">×</button></div>
+    <div id="sgpt-head">Tornevall Networks Social Media Tools ↔ <button id="sgpt-close">×</button></div>
     <div id="sgpt-body">
       <div id="sgpt-responder-label">Responder: <span id="sgpt-responder-name" data-name="${frontResponserName || ''}">${frontResponserName || '(loading...)'}</span></div>
       <label>Prompt<input type="text" id="sgpt-prompt"></label>
@@ -350,7 +363,6 @@ function createPanel() {
         if (!drag) return;
         const dx = e.clientX - sx;
         const dy = e.clientY - sy;
-        const r = panel.getBoundingClientRect();
         panel.style.right = Math.max(parseFloat(panel.style.right || '16') - dx, 0) + 'px';
         panel.style.bottom = Math.max(parseFloat(panel.style.bottom || '16') - dy, 0) + 'px';
         sx = e.clientX;
@@ -380,25 +392,35 @@ function createPanel() {
 function sendGPT(mod, mode) {
     const ctx = panel.querySelector('#sgpt-context').value;
     const prompt = panel.querySelector('#sgpt-prompt').value.trim();
-    const modifier = mod ? panel.querySelector('#sgpt-modifier')?.value.trim() : '';
-    const model = panel.querySelector('#sgpt-model')?.value;
+    const modifierField = panel.querySelector('#sgpt-modifier');
+    const modifier = mod && modifierField ? modifierField.value.trim() : '';
+    const modelField = panel.querySelector('#sgpt-model');
+    const model = modelField ? modelField.value : '';
     if (!prompt && !mod) return alert('Enter prompt');
     showLoader();
 
     const selectedLength = panel.querySelector('#sgpt-length').value;
     chrome.storage.sync.set({ lastResponseLength: selectedLength });
 
+    const moodField = panel.querySelector('#sgpt-mood');
+    const customMoodField = panel.querySelector('#sgpt-custom');
+    const outputField = panel.querySelector('#sgpt-out');
+    const responderField = panel.querySelector('#sgpt-responder-name');
+    const responderName = responderField && responderField.dataset
+        ? ((responderField.dataset.name || '').trim() || frontResponserName || 'Anonymous')
+        : (frontResponserName || 'Anonymous');
+
     chrome.runtime.sendMessage({
         type: 'GPT_REQUEST',
         context: ctx,
         userPrompt: prompt,
         modifier,
-        mood: panel.querySelector('#sgpt-mood')?.value,
+        mood: moodField ? moodField.value : '',
         responseLength: selectedLength,
-        customMood: panel.querySelector('#sgpt-custom')?.value.trim(),
-        previousReply: panel.querySelector('#sgpt-out')?.value,
+        customMood: customMoodField ? customMoodField.value.trim() : '',
+        previousReply: outputField ? outputField.value : '',
         model,
-        responderName: panel.querySelector('#sgpt-responder-name')?.dataset.name?.trim() || frontResponserName || 'Anonymous',
+        responderName,
         requestMode: mode || 'reply'
     });
 }
@@ -513,4 +535,4 @@ chrome.runtime.onMessage.addListener(req => {
     }
 });
 
-console.log('[SocialGPT] content script ready');
+console.log('[Tornevall Networks Social Media Tools] content script ready');
