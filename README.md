@@ -45,6 +45,16 @@ The same personal Tools AI bearer token is also surfaced from the Social Media T
 The Tools dashboard also exposes the full extension personalization model: responder name, responder profile, custom instructions, and default mood/custom mood used to prefill the reply panel.
 The same personal Tools bearer token can also be used for Facebook admin-log ingest; the dedicated Facebook ingest token is optional.
 
+## Facebook admin activities
+
+On Facebook group `admin_activities` pages, the extension can:
+
+- passively watch page/network activity
+- show an inline control for `scrape → submit`
+- submit currently visible entries to Tools when explicitly enabled
+
+This keeps the page-side ingest workflow visible without requiring the popup for every action.
+
 ## Storage model
 
 The extension keeps a lightweight local cache for convenience, but Tools is the primary source of truth.
@@ -74,6 +84,8 @@ This is useful for checking:
 - Tools API failures
 - AI request/response lifecycle
 - which environment the extension is currently using
+
+On Facebook `admin_activities` pages, the extension also shows a small inline monitor status with recent XHR/fetch summaries and mirrors interesting events into Chrome DevTools console so it is easier to confirm that page-side capture is alive before enabling submit. Startup diagnostics use the `TN Social Tools` console prefix and include the loaded extension version plus whether the current route matched `admin_activities`.
 
 ## Backend expectations
 
