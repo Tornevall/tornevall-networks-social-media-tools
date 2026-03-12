@@ -186,6 +186,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const autoDetectCheckbox = document.getElementById('autoDetectName');
     const systemPromptInput = document.getElementById('systemPrompt');
     const devModeCheckbox = document.getElementById('devMode');
+    const facebookAdminDebugCheckbox = document.getElementById('facebookAdminDebugEnabled');
     const endpointNote = document.getElementById('endpointNote');
     const openToolsDashboardLink = document.getElementById('openToolsDashboardLink');
     const openToolsDashboardLinkInline = document.getElementById('openToolsDashboardLinkInline');
@@ -326,6 +327,7 @@ document.addEventListener('DOMContentLoaded', function () {
     chrome.storage.sync.get([
         'toolsApiToken',
         'devMode',
+        'facebookAdminDebugEnabled',
         'responderName',
         'chatGptSystemPrompt',
         'autoDetectResponder',
@@ -338,6 +340,7 @@ document.addEventListener('DOMContentLoaded', function () {
         testQuestionInput.value = DEFAULT_TEST_QUESTION;
         autoDetectCheckbox.checked = data.autoDetectResponder !== false;
         devModeCheckbox.checked = !!data.devMode;
+        facebookAdminDebugCheckbox.checked = !!data.facebookAdminDebugEnabled;
         renderEndpointNote();
         renderDebugConsoleVisibility();
 
@@ -361,6 +364,14 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
+    facebookAdminDebugCheckbox.addEventListener('change', function () {
+        chrome.storage.sync.set({facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked}, function () {
+            setStatus(status, facebookAdminDebugCheckbox.checked
+                ? 'Facebook admin debug diagnostics enabled.'
+                : 'Facebook admin debug diagnostics disabled.', false);
+        });
+    });
+
     saveBtn.addEventListener('click', async function () {
         const token = apiKeyInput.value.trim();
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
@@ -368,6 +379,7 @@ document.addEventListener('DOMContentLoaded', function () {
         chrome.storage.sync.set({
             toolsApiToken: token,
             devMode: devModeCheckbox.checked,
+            facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
         });
 
         if (!token) {
@@ -408,7 +420,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const token = apiKeyInput.value.trim();
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
         const question = testQuestionInput.value.trim() || DEFAULT_TEST_QUESTION;
-        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, systemPromptInput, testQuestionInput, devModeCheckbox, autoDetectCheckbox];
+        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, autoDetectCheckbox];
 
         if (!token) {
             setStatus(status, 'Paste a personal bearer token first, then test the connection.', true);
@@ -421,6 +433,7 @@ document.addEventListener('DOMContentLoaded', function () {
         chrome.storage.sync.set({
             toolsApiToken: token,
             devMode: devModeCheckbox.checked,
+            facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
         });
 
         const saveResult = await apiRequest(baseUrl, token, SETTINGS_PATH, {

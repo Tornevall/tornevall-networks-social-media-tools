@@ -10,6 +10,9 @@
 ### Fixed
 - Popup settings/test errors are now rendered as real validation or API messages instead of `[object Object]`
 - Empty Tools-backed behavior/system-prompt values no longer wipe the extension prompt field
+- Content script now fails quietly when an old page instance survives an extension reload and hits `Extension context invalidated`
+- Facebook activity submission no longer crashes the Tools backend on missing `Illuminate\Support\Str` import during outcome normalization
+- Facebook activity submission now runs through the extension service worker instead of direct page fetch, avoiding Facebook-origin CORS failures
 
 ### Changed
 - Social Media Tools now opens directly into the Facebook dashboard while Facebook is the only active module
@@ -21,6 +24,9 @@
 - Facebook ingest can now use the personal `tools_ai_bearer` token, making the dedicated ingest token optional
 - Facebook admin dashboard defaults are easier to spot, and the popup dashboard reference is now shorter and less repetitive
 - Facebook `admin_activities` detection is now rechecked during SPA-style URL changes so the page overlay appears more reliably
+- Facebook `admin_activities` overlay now uses one `Enable activity statistics` control, and the noisy fetch/XHR diagnostics are hidden unless dev / beta mode is enabled
+- README was rewritten as a standalone Chrome extension guide and no longer mixes in Laravel/backend repo instructions
+- Facebook admin debug diagnostics now use a separate explicit popup opt-in instead of piggybacking on dev / beta server mode
 
 ## 1.2.0 - 2026-03-11
 

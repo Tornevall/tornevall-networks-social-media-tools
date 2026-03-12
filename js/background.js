@@ -1,6 +1,7 @@
 const PROD_BASE_URL = 'https://tools.tornevall.net';
 const DEV_BASE_URL = 'https://tools.tornevall.com';
 const SOCIALGPT_PATH = '/api/ai/socialgpt/respond';
+const FACEBOOK_INGEST_PATH = '/api/social-media-tools/facebook/ingest';
 const DEBUG_LOG_KEY = 'tn_networks_debug_logs';
 const MAX_DEBUG_LOGS = 200;
 
@@ -195,6 +196,81 @@ async function callToolsSocialGpt(apiToken, baseUrl, payload) {
     }
 }
 
+async function callFacebookAdminIngest(apiToken, baseUrl, entry) {
+    await appendDebugLog({
+        level: 'info',
+        category: 'facebook-admin-ingest',
+        message: 'Sending Facebook admin activity ingest request.',
+        meta: {
+            baseUrl: baseUrl,
+            source_url: entry && entry.source_url ? entry.source_url : '',
+            actor_name: entry && entry.actor_name ? entry.actor_name : '',
+        }
+    });
+
+    try {
+        var res = await fetch(baseUrl + FACEBOOK_INGEST_PATH, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + apiToken,
+            },
+            body: JSON.stringify(entry || {}),
+        });
+
+        var data = await res.json().catch(function () {
+            return {};
+        });
+
+        if (!res.ok || !data.ok) {
+            var errorMessage = normalizeToolsApiError(res.status, data);
+            await appendDebugLog({
+                level: 'error',
+                category: 'facebook-admin-ingest',
+                message: errorMessage,
+                meta: {
+                    baseUrl: baseUrl,
+                    status: res.status,
+                    data: data,
+                }
+            });
+
+            if (res.status === 401 || res.status === 403) {
+                setAuthFailureIndicator(errorMessage);
+            }
+
+            return {ok: false, error: errorMessage, status: res.status};
+        }
+
+        clearAuthFailureIndicator();
+        await appendDebugLog({
+            level: 'info',
+            category: 'facebook-admin-ingest',
+            message: 'Facebook admin activity ingest succeeded.',
+            meta: {
+                baseUrl: baseUrl,
+                created: !!data.created,
+                event_id: data.event && data.event.id ? data.event.id : null,
+                source_id: data.source && data.source.id ? data.source.id : null,
+            }
+        });
+
+        return {ok: true, data: data};
+    } catch (e) {
+        await appendDebugLog({
+            level: 'error',
+            category: 'facebook-admin-ingest',
+            message: 'Network or runtime failure while sending Facebook admin activity ingest.',
+            meta: {
+                baseUrl: baseUrl,
+                error: e && e.message ? e.message : String(e),
+            }
+        });
+        return {ok: false, error: 'Error calling Tools API.'};
+    }
+}
+
 chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
     if (req.type === 'RESET_MARK_MODE') {
         var tabId = sender.tab.id;
@@ -259,6 +335,22 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
 
             chrome.tabs.sendMessage(requestTabId, {type: 'GPT_RESPONSE', payload: output});
             sendResponse({ok: toolsResponse.ok, error: toolsResponse.error || null});
+        });
+        return true;
+    }
+
+    if (req.type === 'FACEBOOK_ADMIN_INGEST') {
+        chrome.storage.sync.get(['toolsApiToken', 'devMode'], async function (data) {
+            if (!data.toolsApiToken) {
+                var missingTokenMessage = 'Missing Tools API token. Save it in the extension popup first.';
+                await appendDebugLog({level: 'error', category: 'facebook-admin-ingest', message: missingTokenMessage});
+                sendResponse({ok: false, error: missingTokenMessage});
+                return;
+            }
+
+            var baseUrl = getToolsBaseUrl(!!data.devMode);
+            var ingestResponse = await callFacebookAdminIngest(data.toolsApiToken, baseUrl, req.entry || {});
+            sendResponse(ingestResponse);
         });
         return true;
     }

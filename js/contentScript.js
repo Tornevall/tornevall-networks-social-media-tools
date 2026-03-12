@@ -8,12 +8,149 @@ const FACEBOOK_INGEST_PATH = '/api/social-media-tools/facebook/ingest';
 const ADMIN_ACTIVITY_KEYWORDS = ['admin', 'godk', 'approved', 'avvis', 'rejected', 'request', 'förfrågan', 'removed', 'tagit bort', 'blocked', 'block', 'mute', 'banned', 'spam', 'member'];
 const IGNORED_LINK_TEXTS = ['gilla', 'svara', 'svara som', 'kommentera', 'dela', 'visa alla', 'visa fler svar', 'like', 'reply', 'share', 'comment', 'send', 'gif'];
 const MAX_RECENT_NETWORK_EVENTS = 8;
-const EXTENSION_VERSION = chrome.runtime.getManifest().version;
+
+let extensionContextAvailable = true;
+let locationWatchIntervalId = null;
+
+function isContextInvalidatedError(error) {
+    const message = error && error.message ? String(error.message) : String(error || '');
+    return message.toLowerCase().indexOf('extension context invalidated') !== -1;
+}
+
+function handleExtensionContextInvalidated(error) {
+    if (!extensionContextAvailable) {
+        return;
+    }
+
+    extensionContextAvailable = false;
+    adminDebugEnabled = false;
+
+    if (locationWatchIntervalId) {
+        window.clearInterval(locationWatchIntervalId);
+        locationWatchIntervalId = null;
+    }
+
+    if (typeof console !== 'undefined' && console.warn) {
+        console.warn('[TN Social Tools] Extension context invalidated. Reload the page after reloading the extension.', {
+            error: error && error.message ? error.message : String(error || 'Unknown error'),
+            url: location.href,
+        });
+    }
+}
+
+function safeChromeCall(action, fallback) {
+    if (!extensionContextAvailable) {
+        return fallback;
+    }
+
+    try {
+        return action();
+    } catch (error) {
+        if (isContextInvalidatedError(error)) {
+            handleExtensionContextInvalidated(error);
+            return fallback;
+        }
+
+        throw error;
+    }
+}
+
+function getExtensionVersion() {
+    return safeChromeCall(function () {
+        return chrome.runtime.getManifest().version;
+    }, 'unknown');
+}
+
+function safeRuntimeGetURL(path) {
+    return safeChromeCall(function () {
+        return chrome.runtime.getURL(path);
+    }, '');
+}
+
+function safeSendRuntimeMessage(message) {
+    return safeChromeCall(function () {
+        chrome.runtime.sendMessage(message);
+        return true;
+    }, false);
+}
+
+function safeSendRuntimeMessageWithResponse(message) {
+    return new Promise(function (resolve) {
+        const sent = safeChromeCall(function () {
+            chrome.runtime.sendMessage(message, function (response) {
+                if (chrome.runtime && chrome.runtime.lastError) {
+                    if (isContextInvalidatedError(chrome.runtime.lastError)) {
+                        handleExtensionContextInvalidated(chrome.runtime.lastError);
+                    }
+                    resolve({ok: false, error: chrome.runtime.lastError.message});
+                    return;
+                }
+
+                resolve(response || {ok: false, error: 'No response from extension runtime.'});
+            });
+            return true;
+        }, false);
+
+        if (!sent) {
+            resolve({ok: false, error: 'Extension runtime unavailable.'});
+        }
+    });
+}
+
+function safeStorageSyncGet(keys, callback) {
+    const result = safeChromeCall(function () {
+        chrome.storage.sync.get(keys, function (data) {
+            if (chrome.runtime && chrome.runtime.lastError && isContextInvalidatedError(chrome.runtime.lastError)) {
+                handleExtensionContextInvalidated(chrome.runtime.lastError);
+                callback({});
+                return;
+            }
+
+            callback(data || {});
+        });
+        return true;
+    }, false);
+
+    if (!result) {
+        callback({});
+    }
+}
+
+function safeStorageSyncSet(values, callback) {
+    return safeChromeCall(function () {
+        chrome.storage.sync.set(values, function () {
+            if (chrome.runtime && chrome.runtime.lastError && isContextInvalidatedError(chrome.runtime.lastError)) {
+                handleExtensionContextInvalidated(chrome.runtime.lastError);
+            }
+            if (typeof callback === 'function') {
+                callback();
+            }
+        });
+        return true;
+    }, false);
+}
+
+function safeAddRuntimeMessageListener(handler) {
+    return safeChromeCall(function () {
+        chrome.runtime.onMessage.addListener(handler);
+        return true;
+    }, false);
+}
+
+function safeAddStorageChangeListener(handler) {
+    return safeChromeCall(function () {
+        chrome.storage.onChanged.addListener(handler);
+        return true;
+    }, false);
+}
+
+const EXTENSION_VERSION = getExtensionVersion();
 
 let adminIngestEnabled = false;
+let adminDebugEnabled = false;
 let adminActivitiesScanScheduled = false;
 let networkMonitorInjected = false;
-let adminLastStatusText = 'Passive capture ready. Submission is off.';
+let adminLastStatusText = 'Passive activity detection is ready. Statistics are off.';
 let adminSubmittedCount = 0;
 let adminNetworkEventsSeen = 0;
 let adminInterestingNetworkEventsSeen = 0;
@@ -25,11 +162,26 @@ const submittedAdminEntryKeys = new Set();
 const recentAdminNetworkEvents = [];
 
 function debugLog(entry) {
-    chrome.runtime.sendMessage({
+    safeSendRuntimeMessage({
         type: 'DEBUG_LOG',
         entry: Object.assign({
             source: 'content-script',
         }, entry || {}),
+    });
+}
+
+function adminDebugConsoleInfo(message, meta) {
+    if (!adminDebugEnabled || typeof console === 'undefined' || !console.info) {
+        return;
+    }
+
+    console.info(message, meta || {});
+}
+
+function syncAdminDebugPreference() {
+    safeStorageSyncGet(['facebookAdminDebugEnabled'], function (data) {
+        adminDebugEnabled = !!(data && data.facebookAdminDebugEnabled);
+        updateAdminActivitiesControl();
     });
 }
 
@@ -105,7 +257,7 @@ function summarizeAdminNetworkEvent(entry) {
 }
 
 function mirrorAdminNetworkEventToConsole(entry) {
-    if (!entry || typeof console === 'undefined' || !console.info) {
+    if (!entry || !adminDebugEnabled || typeof console === 'undefined' || !console.info) {
         return;
     }
 
@@ -165,7 +317,7 @@ function getToolsBaseUrl(devMode) {
 
 function getToolsRuntimeSettings() {
     return new Promise(function (resolve) {
-        chrome.storage.sync.get(['toolsApiToken', 'devMode'], function (data) {
+        safeStorageSyncGet(['toolsApiToken', 'devMode'], function (data) {
             resolve(data || {});
         });
     });
@@ -625,21 +777,15 @@ function updateAdminActivitiesControl() {
     }
 
     const toggle = adminActivitiesControl.querySelector('[data-role="toggle"]');
-    const scrapeNow = adminActivitiesControl.querySelector('[data-role="scrape-now"]');
     const state = adminActivitiesControl.querySelector('[data-role="state"]');
     const counters = adminActivitiesControl.querySelector('[data-role="counters"]');
     const monitor = adminActivitiesControl.querySelector('[data-role="monitor"]');
     const recent = adminActivitiesControl.querySelector('[data-role="recent"]');
+    const debugWrap = adminActivitiesControl.querySelector('[data-role="debug-wrap"]');
 
     if (toggle) {
-        toggle.textContent = adminIngestEnabled ? 'Stop submit' : 'Enable scrape → submit';
+        toggle.textContent = adminIngestEnabled ? 'Disable activity statistics' : 'Enable activity statistics';
         toggle.style.background = adminIngestEnabled ? '#dc2626' : '#059669';
-    }
-
-    if (scrapeNow) {
-        scrapeNow.disabled = !adminIngestEnabled;
-        scrapeNow.style.opacity = adminIngestEnabled ? '1' : '0.65';
-        scrapeNow.style.cursor = adminIngestEnabled ? 'pointer' : 'not-allowed';
     }
 
     if (state) {
@@ -648,6 +794,11 @@ function updateAdminActivitiesControl() {
 
     if (counters) {
         counters.textContent = 'Visible discovered: ' + discoveredAdminEntries.size + ' · Submitted: ' + adminSubmittedCount;
+        counters.style.display = adminDebugEnabled ? 'block' : 'none';
+    }
+
+    if (debugWrap) {
+        debugWrap.style.display = adminDebugEnabled ? 'block' : 'none';
     }
 
     if (monitor) {
@@ -682,7 +833,7 @@ function updateAdminActivitiesControl() {
 function ensureAdminActivitiesControl() {
     if (!isFacebookAdminActivitiesPage()) {
         if (adminActivitiesControl) {
-            console.info('[TN Social Tools] Removing admin_activities overlay because the current route no longer matches.', {
+            adminDebugConsoleInfo('[TN Social Tools] Removing admin_activities overlay because the current route no longer matches.', {
                 version: EXTENSION_VERSION,
                 url: location.href,
             });
@@ -702,9 +853,7 @@ function ensureAdminActivitiesControl() {
     control.style.top = '16px';
     control.style.right = '16px';
     control.style.zIndex = '2147483645';
-    control.style.width = '340px';
-    control.style.maxHeight = '70vh';
-    control.style.overflow = 'auto';
+    control.style.width = '320px';
     control.style.padding = '10px';
     control.style.borderRadius = '10px';
     control.style.border = '1px solid rgba(0,0,0,0.12)';
@@ -713,16 +862,17 @@ function ensureAdminActivitiesControl() {
     control.style.fontFamily = 'system-ui,sans-serif';
     control.style.fontSize = '12px';
     control.innerHTML = [
-        '<div style="font-weight:700; margin-bottom:6px;">Facebook admin activities</div>',
-        '<div data-role="state" style="margin-bottom:6px; color:#334155; font-weight:600;">Passive capture ready. Submission is off.</div>',
+        '<div style="font-weight:700; margin-bottom:6px;">Facebook admin activity statistics</div>',
+        '<div data-role="state" style="margin-bottom:8px; color:#334155; font-weight:600;">Passive activity detection is ready. Statistics are off.</div>',
+        '<div style="display:flex; gap:8px; flex-wrap:wrap;">',
+        '<button type="button" data-role="toggle" style="border:none; border-radius:999px; padding:6px 10px; color:#fff; cursor:pointer;">Enable activity statistics</button>',
+        '</div>',
+        '<div data-role="debug-wrap" style="display:none; margin-top:10px;">',
         '<div data-role="counters" style="margin-bottom:8px; color:#64748b;">Visible discovered: 0 · Submitted: 0</div>',
         '<div data-role="monitor" style="margin-bottom:8px; padding:8px; border-radius:8px; border:1px solid rgba(59,130,246,0.25); background:#eff6ff; color:#1d4ed8; font-weight:600;">Monitor injected. Waiting for Facebook XHR/fetch activity...</div>',
-        '<div style="display:flex; gap:8px; flex-wrap:wrap;">',
-        '<button type="button" data-role="toggle" style="border:none; border-radius:999px; padding:6px 10px; color:#fff; cursor:pointer;">Enable scrape → submit</button>',
-        '<button type="button" data-role="scrape-now" style="border:none; border-radius:999px; padding:6px 10px; background:#0f172a; color:#fff; cursor:pointer;">Submit visible now</button>',
-        '</div>',
-        '<div style="margin-top:10px; font-weight:600; color:#334155;">Recent XHR/fetch (also mirrored to DevTools console)</div>',
-        '<div data-role="recent" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569;">No captured XHR/fetch events yet.</div>'
+        '<div style="margin-top:10px; font-weight:600; color:#334155;">Recent XHR/fetch (dev mode only)</div>',
+        '<div data-role="recent" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569; max-height:180px; overflow:auto;">No captured XHR/fetch events yet.</div>',
+        '</div>'
     ].join('');
 
     control.querySelector('[data-role="toggle"]').addEventListener('click', async function () {
@@ -735,8 +885,8 @@ function ensureAdminActivitiesControl() {
 
         adminIngestEnabled = !adminIngestEnabled;
         adminLastStatusText = adminIngestEnabled
-            ? 'Submission is enabled. New admin-log entries will be submitted to Tools.'
-            : 'Submission stopped. Passive capture is still running.';
+            ? 'Activity statistics enabled. Visible admin activities will now be fetched and sent to Tools.'
+            : 'Activity statistics disabled. Passive detection is still running.';
         updateAdminActivitiesControl();
         debugLog({level: 'info', category: 'facebook-admin-ingest', message: 'Facebook admin ingest toggled.', meta: {enabled: adminIngestEnabled, url: location.href}});
         if (adminIngestEnabled) {
@@ -744,17 +894,11 @@ function ensureAdminActivitiesControl() {
         }
     });
 
-    control.querySelector('[data-role="scrape-now"]').addEventListener('click', function () {
-        if (adminIngestEnabled) {
-            scheduleAdminActivitiesScan('manual-scrape');
-        }
-    });
-
     document.body.appendChild(control);
     adminActivitiesControl = control;
     updateAdminActivitiesControl();
 
-    console.info('[TN Social Tools] admin_activities overlay mounted.', {
+    adminDebugConsoleInfo('[TN Social Tools] admin_activities overlay mounted.', {
         version: EXTENSION_VERSION,
         url: location.href,
     });
@@ -773,12 +917,15 @@ function injectNetworkMonitor() {
     }
 
     const script = document.createElement('script');
-    script.src = chrome.runtime.getURL('js/injected/networkMonitor.js');
+    script.src = safeRuntimeGetURL('js/injected/networkMonitor.js');
+    if (!script.src) {
+        return;
+    }
     script.onload = function () { this.remove(); };
     (document.head || document.documentElement).appendChild(script);
     networkMonitorInjected = true;
 
-    console.info('[TN Social Tools] In-page fetch/XHR monitor injected.', {
+    adminDebugConsoleInfo('[TN Social Tools] In-page fetch/XHR monitor injected.', {
         version: EXTENSION_VERSION,
         url: location.href,
     });
@@ -786,19 +933,21 @@ function injectNetworkMonitor() {
     if (isFacebookAdminActivitiesPage()) {
         adminLastStatusText = adminIngestEnabled
             ? 'Network monitor injected. Waiting for admin-log traffic...'
-            : 'Passive capture ready. Network monitor injected; submission is off.';
+            : 'Passive activity detection is ready. Statistics are off.';
         updateAdminActivitiesControl();
     }
 
-    debugLog({
-        level: 'info',
-        category: 'facebook-network-status',
-        message: 'Injected in-page fetch/XHR monitor.',
-        meta: {
-            url: location.href,
-            hostname: location.hostname,
-        }
-    });
+    if (adminDebugEnabled) {
+        debugLog({
+            level: 'info',
+            category: 'facebook-network-status',
+            message: 'Injected in-page fetch/XHR monitor.',
+            meta: {
+                url: location.href,
+                hostname: location.hostname,
+            }
+        });
+    }
 }
 
 function handleLocationChange(reason) {
@@ -811,7 +960,7 @@ function handleLocationChange(reason) {
     ensureAdminActivitiesControl();
 
     if (!isFacebookAdminActivitiesPage()) {
-        console.info('[TN Social Tools] Route changed, but this is not a Facebook admin_activities page.', {
+        adminDebugConsoleInfo('[TN Social Tools] Route changed, but this is not a Facebook admin_activities page.', {
             version: EXTENSION_VERSION,
             reason: reason,
             url: location.href,
@@ -825,20 +974,22 @@ function handleLocationChange(reason) {
         : 'Admin activities page detected, but monitor injection has not completed yet.';
     updateAdminActivitiesControl();
     scheduleAdminActivitiesScan('location-change');
-    console.info('[TN Social Tools] Facebook admin_activities route detected.', {
+    adminDebugConsoleInfo('[TN Social Tools] Facebook admin_activities route detected.', {
         version: EXTENSION_VERSION,
         reason: reason,
         url: location.href,
     });
-    debugLog({
-        level: 'info',
-        category: 'facebook-network-status',
-        message: 'Facebook admin_activities route detected.',
-        meta: {
-            reason: reason,
-            url: location.href,
-        }
-    });
+    if (adminDebugEnabled) {
+        debugLog({
+            level: 'info',
+            category: 'facebook-network-status',
+            message: 'Facebook admin_activities route detected.',
+            meta: {
+                reason: reason,
+                url: location.href,
+            }
+        });
+    }
 }
 
 function shouldConsiderAdminActivityText(text) {
@@ -907,7 +1058,7 @@ function parseAdminActivityEntry(container) {
         target_name: targetName,
         handled_outcome: detectHandledOutcomeFromText(actionText),
         raw_blue_segment: actionText,
-        plugin_version: 'tornevall-networks-social-media-tools/' + chrome.runtime.getManifest().version,
+        plugin_version: 'tornevall-networks-social-media-tools/' + EXTENSION_VERSION,
     };
 }
 
@@ -936,26 +1087,13 @@ function collectVisibleAdminActivityEntries() {
 }
 
 async function submitAdminActivityEntry(entry) {
-    const settings = await getToolsRuntimeSettings();
-    if (!settings.toolsApiToken) {
-        adminLastStatusText = 'Missing Tools bearer token. Save it in the popup first.';
-        updateAdminActivitiesControl();
-        return false;
-    }
-
-    const response = await fetch(getToolsBaseUrl(!!settings.devMode) + FACEBOOK_INGEST_PATH, {
-        method: 'POST',
-        headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + settings.toolsApiToken,
-        },
-        body: JSON.stringify(entry),
+    const response = await safeSendRuntimeMessageWithResponse({
+        type: 'FACEBOOK_ADMIN_INGEST',
+        entry: entry,
     });
 
-    const data = await response.json().catch(function () { return {}; });
-    if (!response.ok || !data.ok) {
-        throw new Error((data && (data.message || data.error)) || ('Ingest failed (' + response.status + ')'));
+    if (!response.ok) {
+        throw new Error(response.error || response.message || 'Could not submit admin activity entry.');
     }
 
     return true;
@@ -1128,9 +1266,9 @@ function openReplyPanel() {
     p.querySelector('#sgpt-prompt').focus();
 
     isClickMarkingActive = false;
-    chrome.runtime.sendMessage({type: 'TOGGLE_MARK_MODE', enabled: false});
+    safeSendRuntimeMessage({type: 'TOGGLE_MARK_MODE', enabled: false});
 
-    chrome.storage.sync.get(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood'], (data) => {
+    safeStorageSyncGet(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood'], (data) => {
         const label = p.querySelector('#sgpt-responder-name');
         const moodField = p.querySelector('#sgpt-mood');
         const customMoodField = p.querySelector('#sgpt-custom');
@@ -1175,7 +1313,7 @@ function sendGPT(mod, mode) {
     showLoader();
 
     const selectedLength = panel.querySelector('#sgpt-length').value;
-    chrome.storage.sync.set({ lastResponseLength: selectedLength });
+    safeStorageSyncSet({ lastResponseLength: selectedLength });
 
     const moodField = panel.querySelector('#sgpt-mood');
     const customMoodField = panel.querySelector('#sgpt-custom');
@@ -1185,7 +1323,7 @@ function sendGPT(mod, mode) {
         ? ((responderField.dataset.name || '').trim() || frontResponserName || 'Anonymous')
         : (frontResponserName || 'Anonymous');
 
-    chrome.runtime.sendMessage({
+    safeSendRuntimeMessage({
         type: 'GPT_REQUEST',
         context: ctx,
         userPrompt: prompt,
@@ -1247,7 +1385,7 @@ function resetMarksAndContext() {
     markedElements = [];
 
     if (panel) {
-        chrome.runtime.sendMessage({type: 'RESET_MARK_MODE'});
+        safeSendRuntimeMessage({type: 'RESET_MARK_MODE'});
 
         const fields = [['#sgpt-modifier', '']
             /*
@@ -1271,7 +1409,7 @@ function resetMarksAndContext() {
 // ---------------------------------------------
 // MAIN LISTENER
 // ---------------------------------------------
-chrome.runtime.onMessage.addListener(req => {
+safeAddRuntimeMessageListener(req => {
     if (req.type === 'SHOW_LOADER') return showLoader();
     if (req.type === 'HIDE_LOADER') return hideLoader();
 
@@ -1298,7 +1436,7 @@ chrome.runtime.onMessage.addListener(req => {
         const context = markedElements.map((el, i) => `[${i + 1}]\n${el.innerHTML.trim()}`).join('\n\n---\n\n');
         showLoader();
 
-        chrome.runtime.sendMessage({
+        safeSendRuntimeMessage({
             type: 'GPT_REQUEST',
             context,
             userPrompt: 'Search facts and verify the following statements. If you find any false or misleading information, provide a detailed explanation of why it is incorrect. Use plain text, no format and no markdown.',
@@ -1325,18 +1463,20 @@ window.addEventListener('message', function (event) {
 
     if (!adminNetworkDebugAnnounced) {
         adminNetworkDebugAnnounced = true;
-        debugLog({
-            level: 'info',
-            category: 'facebook-network-status',
-            message: 'Facebook in-page monitor is receiving network events.',
-            meta: {
-                url: location.href,
-                first_event: networkEntry.summary,
-            }
-        });
+        if (adminDebugEnabled) {
+            debugLog({
+                level: 'info',
+                category: 'facebook-network-status',
+                message: 'Facebook in-page monitor is receiving network events.',
+                meta: {
+                    url: location.href,
+                    first_event: networkEntry.summary,
+                }
+            });
+        }
     }
 
-    if (networkEntry.interesting) {
+    if (networkEntry.interesting && adminDebugEnabled) {
         debugLog({
             level: 'info',
             category: 'facebook-network',
@@ -1358,11 +1498,11 @@ window.addEventListener('message', function (event) {
 
     adminLastStatusText = adminIngestEnabled
         ? (networkEntry.interesting
-            ? 'Interesting network activity detected. Checking visible admin-log entries...'
-            : 'Monitor active. Non-matching page activity seen; waiting for admin-log calls.')
+            ? 'Interesting activity detected. Visible admin activities are being sent to Tools.'
+            : 'Activity statistics are enabled. Waiting for matching admin-log traffic.')
         : (networkEntry.interesting
-            ? 'Passive capture saw interesting page activity. Submission is still off until you enable it.'
-            : 'Passive capture is active. Waiting for interesting admin-log traffic.');
+            ? 'Interesting activity detected. Enable activity statistics to send visible entries to Tools.'
+            : 'Passive activity detection is active. Enable activity statistics when you want to start sending entries.');
     updateAdminActivitiesControl();
     if (networkEntry.interesting) {
         scheduleAdminActivitiesScan('network-event');
@@ -1372,12 +1512,18 @@ window.addEventListener('message', function (event) {
 injectNetworkMonitor();
 ensureComposerActionButton();
 ensureAdminActivitiesControl();
+syncAdminDebugPreference();
+safeAddStorageChangeListener(function (changes, areaName) {
+    if (areaName === 'sync' && changes.facebookAdminDebugEnabled) {
+        syncAdminDebugPreference();
+    }
+});
 handleLocationChange('init');
-window.setInterval(function () {
+locationWatchIntervalId = window.setInterval(function () {
     handleLocationChange('interval');
 }, 1000);
 
-console.info('[TN Social Tools] content script ready.', {
+adminDebugConsoleInfo('[TN Social Tools] content script ready.', {
     version: EXTENSION_VERSION,
     url: location.href,
     admin_activities_match: isFacebookAdminActivitiesPage(),
