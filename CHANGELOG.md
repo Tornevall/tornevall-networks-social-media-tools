@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.2 - 2026-03-12
+
+### Added
+- Facebook admin-activity network capture now extracts detected activity rows from the GraphQL/XHR payload and can mirror those detections to DevTools when debug diagnostics are enabled
+- Facebook admin-activity pages now show passive reportable-entry previews even before statistics submission is enabled
+- Facebook reply fields now get a cleaner thread-aware context, with cached XHR/GraphQL comment hints used when available
+
+### Changed
+- Facebook admin-activity submission now queues entries locally and uploads them to Tools in bulk instead of one HTTP request per detected row
+- The inline Facebook statistics overlay is now draggable so it can be moved away from Facebook controls on the right side of the page
+- Facebook activity interpretation now has clearer Swedish + English fallback matching for approval, rejection, removal, blocking, revocation, edit, and publish-style actions
+- The reply panel now remembers the latest reply prompt and uses a better default prompt for repeated reply workflows
+
+### Fixed
+- Re-enabled practical Facebook admin-activity submission by basing the upload flow on detected XHR/GraphQL batches instead of relying only on visible DOM rows
+- Automatic moderation entries without a human actor name can now still be stored safely in Tools using an automatic-moderation fallback actor
+- The injected XHR monitor no longer throws `InvalidStateError` when Facebook uses binary `XMLHttpRequest.responseType` values such as `arraybuffer`
+
 ## 1.2.1 - 2026-03-11
 
 ### Added

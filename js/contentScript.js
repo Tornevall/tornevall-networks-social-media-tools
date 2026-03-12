@@ -5,9 +5,14 @@ const EDITABLE_SELECTOR = 'textarea,input[type="text"],input:not([type]),[conten
 const TOOLS_PROD_BASE_URL = 'https://tools.tornevall.net';
 const TOOLS_DEV_BASE_URL = 'https://tools.tornevall.com';
 const FACEBOOK_INGEST_PATH = '/api/social-media-tools/facebook/ingest';
-const ADMIN_ACTIVITY_KEYWORDS = ['admin', 'godk', 'approved', 'avvis', 'rejected', 'request', 'förfrågan', 'removed', 'tagit bort', 'blocked', 'block', 'mute', 'banned', 'spam', 'member'];
+const ADMIN_ACTIVITY_KEYWORDS = ['admin', 'activity', 'log', 'godk', 'approved', 'approve', 'avvis', 'rejected', 'reject', 'declined', 'request', 'participate', 'förfrågan', 'removed', 'tagit bort', 'deleted', 'delete', 'revoked', 'återkall', 'blocked', 'block', 'banned', 'ban', 'spam', 'member', 'pending post', 'comment', 'automatiskt', 'automatically', 'published', 'group'];
 const IGNORED_LINK_TEXTS = ['gilla', 'svara', 'svara som', 'kommentera', 'dela', 'visa alla', 'visa fler svar', 'like', 'reply', 'share', 'comment', 'send', 'gif'];
 const MAX_RECENT_NETWORK_EVENTS = 8;
+const MAX_ADMIN_BATCH_SIZE = 50;
+const ADMIN_PANEL_POSITION_STORAGE_KEY = 'tn_social_tools_admin_panel_position';
+const MAX_RECENT_FACEBOOK_COMMENT_ENTRIES = 200;
+const DEFAULT_REPLY_PROMPT = 'Write a concise reply that fits the thread and handles the recipient appropriately.';
+const FACEBOOK_REPLY_NOISE_LINES = ['most relevant', 'mest relevant', 'like', 'reply', 'share', 'comment', 'send', 'gif', 'gilla', 'svara', 'dela', 'kommentera', 'skicka'];
 
 let extensionContextAvailable = true;
 let locationWatchIntervalId = null;
@@ -154,12 +159,19 @@ let adminLastStatusText = 'Passive activity detection is ready. Statistics are o
 let adminSubmittedCount = 0;
 let adminNetworkEventsSeen = 0;
 let adminInterestingNetworkEventsSeen = 0;
+let adminDetectedEntryCount = 0;
 let adminLastNetworkEventAt = 0;
 let adminNetworkDebugAnnounced = false;
 let lastObservedLocationHref = location.href;
-const discoveredAdminEntries = new Map();
+let adminActivitiesControlDragState = null;
+let adminActivitiesDragListenersBound = false;
+let activeReplyContextMeta = null;
+const discoveredAdminEntryKeys = new Set();
+const pendingAdminEntries = new Map();
 const submittedAdminEntryKeys = new Set();
 const recentAdminNetworkEvents = [];
+const facebookCommentEntryKeys = new Set();
+const recentFacebookCommentEntries = [];
 
 function debugLog(entry) {
     safeSendRuntimeMessage({
@@ -189,6 +201,10 @@ function normalizeWhitespace(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+function isFacebookPage() {
+    return location.hostname.indexOf('facebook.com') !== -1;
+}
+
 function clipText(value, limit) {
     const text = String(value || '');
     if (text.length <= limit) {
@@ -205,6 +221,60 @@ function escapeHtml(value) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
+}
+
+function buildFacebookCommentSignature(authorName, bodyText) {
+    return [normalizeWhitespace(authorName).toLowerCase(), normalizeWhitespace(bodyText).toLowerCase()].join('|');
+}
+
+function normalizeDetectedFacebookCommentEntry(entry) {
+    if (!entry) {
+        return null;
+    }
+
+    const authorName = normalizeWhitespace(entry.author_name || '');
+    const bodyText = normalizeWhitespace(entry.body_text || '');
+    if (!authorName || !bodyText) {
+        return null;
+    }
+
+    return {
+        key: entry.key || [entry.batch_id || '', entry.comment_id || '', authorName, bodyText].join('|'),
+        batch_id: entry.batch_id || '',
+        comment_id: entry.comment_id || null,
+        parent_comment_id: entry.parent_comment_id || null,
+        author_name: authorName,
+        body_text: bodyText,
+        signature: buildFacebookCommentSignature(authorName, bodyText),
+        source_url: entry.source_url || location.href,
+    };
+}
+
+function rememberFacebookCommentEntries(entries) {
+    if (!Array.isArray(entries) || !entries.length) {
+        return 0;
+    }
+
+    let added = 0;
+    entries.forEach(function (entry) {
+        const normalized = normalizeDetectedFacebookCommentEntry(entry);
+        if (!normalized || facebookCommentEntryKeys.has(normalized.key)) {
+            return;
+        }
+
+        facebookCommentEntryKeys.add(normalized.key);
+        recentFacebookCommentEntries.unshift(normalized);
+        added += 1;
+    });
+
+    if (recentFacebookCommentEntries.length > MAX_RECENT_FACEBOOK_COMMENT_ENTRIES) {
+        const removed = recentFacebookCommentEntries.splice(MAX_RECENT_FACEBOOK_COMMENT_ENTRIES);
+        removed.forEach(function (entry) {
+            facebookCommentEntryKeys.delete(entry.key);
+        });
+    }
+
+    return added;
 }
 
 function isInterestingAdminNetworkEvent(payload) {
@@ -278,6 +348,7 @@ function mirrorAdminNetworkEventToConsole(entry) {
 }
 
 function rememberAdminNetworkEvent(payload) {
+    const detectedEntries = payload && Array.isArray(payload.detected_entries) ? payload.detected_entries : [];
     const entry = {
         ts: new Date().toISOString(),
         transport: payload && payload.transport ? payload.transport : 'unknown',
@@ -292,6 +363,11 @@ function rememberAdminNetworkEvent(payload) {
         mentions_activity_log: !!(payload && payload.mentions_activity_log),
         request_preview: clipText(payload && payload.request_preview ? payload.request_preview : '', 240),
         response_preview: clipText(payload && payload.response_preview ? payload.response_preview : '', 240),
+        detected_count: payload && typeof payload.detected_count === 'number' ? payload.detected_count : detectedEntries.length,
+        detected_entries: detectedEntries,
+        detected_preview: detectedEntries.slice(0, 3).map(function (detectedEntry) {
+            return clipText(detectedEntry && detectedEntry.action_text ? detectedEntry.action_text : '', 120);
+        }),
     };
 
     entry.interesting = isInterestingAdminNetworkEvent(payload);
@@ -313,6 +389,143 @@ function rememberAdminNetworkEvent(payload) {
 
 function getToolsBaseUrl(devMode) {
     return devMode ? TOOLS_DEV_BASE_URL : TOOLS_PROD_BASE_URL;
+}
+
+function loadAdminPanelPosition(control) {
+    if (!control || typeof window.localStorage === 'undefined') {
+        return;
+    }
+
+    try {
+        const raw = window.localStorage.getItem(ADMIN_PANEL_POSITION_STORAGE_KEY);
+        if (!raw) {
+            return;
+        }
+
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.top === 'number' && typeof parsed.left === 'number') {
+            control.style.top = parsed.top + 'px';
+            control.style.left = parsed.left + 'px';
+            control.style.right = 'auto';
+        }
+    } catch (error) {
+    }
+}
+
+function saveAdminPanelPosition(control) {
+    if (!control || typeof window.localStorage === 'undefined') {
+        return;
+    }
+
+    try {
+        const rect = control.getBoundingClientRect();
+        window.localStorage.setItem(ADMIN_PANEL_POSITION_STORAGE_KEY, JSON.stringify({
+            top: Math.max(8, Math.round(rect.top)),
+            left: Math.max(8, Math.round(rect.left)),
+        }));
+    } catch (error) {
+    }
+}
+
+function clampAdminPanelPosition(control) {
+    if (!control) {
+        return;
+    }
+
+    const rect = control.getBoundingClientRect();
+    const maxLeft = Math.max(8, window.innerWidth - rect.width - 8);
+    const maxTop = Math.max(8, window.innerHeight - rect.height - 8);
+    const nextLeft = Math.min(Math.max(8, rect.left), maxLeft);
+    const nextTop = Math.min(Math.max(8, rect.top), maxTop);
+
+    control.style.left = nextLeft + 'px';
+    control.style.top = nextTop + 'px';
+    control.style.right = 'auto';
+}
+
+function enableAdminActivitiesControlDragging(control) {
+    if (!control || control.dataset.dragReady === 'true') {
+        return;
+    }
+
+    const handle = control.querySelector('[data-role="drag-handle"]');
+    if (!handle) {
+        return;
+    }
+
+    control.dataset.dragReady = 'true';
+    loadAdminPanelPosition(control);
+    clampAdminPanelPosition(control);
+
+    handle.addEventListener('mousedown', function (event) {
+        if (event.button !== 0 || event.target.closest('button')) {
+            return;
+        }
+
+        const rect = control.getBoundingClientRect();
+        adminActivitiesControlDragState = {
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+        };
+
+        event.preventDefault();
+    });
+
+    if (adminActivitiesDragListenersBound) {
+        return;
+    }
+
+    adminActivitiesDragListenersBound = true;
+
+    window.addEventListener('mousemove', function (event) {
+        if (!adminActivitiesControlDragState || !adminActivitiesControl) {
+            return;
+        }
+
+        adminActivitiesControl.style.left = Math.max(8, event.clientX - adminActivitiesControlDragState.offsetX) + 'px';
+        adminActivitiesControl.style.top = Math.max(8, event.clientY - adminActivitiesControlDragState.offsetY) + 'px';
+        adminActivitiesControl.style.right = 'auto';
+        clampAdminPanelPosition(adminActivitiesControl);
+    });
+
+    window.addEventListener('mouseup', function () {
+        if (!adminActivitiesControlDragState || !adminActivitiesControl) {
+            adminActivitiesControlDragState = null;
+            return;
+        }
+
+        clampAdminPanelPosition(adminActivitiesControl);
+        saveAdminPanelPosition(adminActivitiesControl);
+        adminActivitiesControlDragState = null;
+    });
+
+    window.addEventListener('resize', function () {
+        if (!adminActivitiesControl) {
+            return;
+        }
+
+        clampAdminPanelPosition(adminActivitiesControl);
+        saveAdminPanelPosition(adminActivitiesControl);
+    });
+}
+
+function mirrorAdminDetectionsToConsole(entries, networkEntry) {
+    if (!adminDebugEnabled || typeof console === 'undefined' || !console.info || !entries || !entries.length) {
+        return;
+    }
+
+    console.info('[TN Social Tools][admin-activities][detections]', {
+        count: entries.length,
+        summary: networkEntry && networkEntry.summary ? networkEntry.summary : '',
+        entries: entries.slice(0, 10).map(function (entry) {
+            return {
+                actor_name: entry.actor_name,
+                target_name: entry.target_name,
+                handled_outcome: entry.handled_outcome,
+                action_text: entry.action_text,
+            };
+        }),
+    });
 }
 
 function getToolsRuntimeSettings() {
@@ -515,6 +728,12 @@ function findEditableTarget(node) {
 function setActiveComposer(node) {
     activeComposer = node && document.contains(node) ? node : null;
     if (panel) {
+        if (!markedElements.length) {
+            const contextField = panel.querySelector('#sgpt-context');
+            if (contextField) {
+                contextField.value = getCurrentPanelContextValue();
+            }
+        }
         positionPanelNearComposer();
         updatePanelAnchorNote();
     }
@@ -551,10 +770,12 @@ function findContextNodeForComposer(node) {
 
 function getActiveComposerContext() {
     if (!activeComposer || !document.contains(activeComposer)) {
+        activeReplyContextMeta = null;
         return '(Focus a text field or mark elements to build context)';
     }
 
     const contextNode = findContextNodeForComposer(activeComposer);
+    activeReplyContextMeta = {source: 'composer'};
     return contextNode ? getReadableContext(contextNode) : '(Focus a text field or mark elements to build context)';
 }
 
@@ -570,6 +791,11 @@ function updatePanelAnchorNote() {
 
     if (markedElements.length) {
         note.textContent = 'Using ' + markedElements.length + ' marked block' + (markedElements.length === 1 ? '' : 's') + ' as context.';
+        return;
+    }
+
+    if (activeReplyContextMeta && activeReplyContextMeta.replyTarget) {
+        note.textContent = 'Anchored to the current reply field. Reply target detected: ' + activeReplyContextMeta.replyTarget + '.';
         return;
     }
 
@@ -673,6 +899,256 @@ function positionPanelNearComposer() {
     positionComposerActionButton();
 }
 
+function isFacebookUiNoiseLine(line) {
+    const lowered = normalizeWhitespace(line).toLowerCase();
+    if (!lowered) {
+        return true;
+    }
+
+    if (FACEBOOK_REPLY_NOISE_LINES.indexOf(lowered) !== -1) {
+        return true;
+    }
+
+    if (lowered.indexOf('reply as ') === 0 || lowered.indexOf('svara som ') === 0 || lowered.indexOf('answer as ') === 0) {
+        return true;
+    }
+
+    if (lowered.indexOf('facebook.com') !== -1 || lowered.indexOf('_cft_') !== -1 || lowered.indexOf('/?') !== -1) {
+        return true;
+    }
+
+    if (/^\d+\s*(s|min|m|h|d|w|v)$/.test(lowered) || /^\d+\s*(likes?|replies?)$/.test(lowered)) {
+        return true;
+    }
+
+    return false;
+}
+
+function extractFacebookMeaningfulLines(node) {
+    if (!node) {
+        return [];
+    }
+
+    const clone = node.cloneNode(true);
+    Array.from(clone.querySelectorAll('script,style,form,input,textarea,button,svg,img,video,iframe,[aria-hidden="true"]')).forEach(function (el) {
+        el.remove();
+    });
+
+    Array.from(clone.querySelectorAll('a')).forEach(function (anchor) {
+        anchor.textContent = normalizeWhitespace(anchor.textContent || '');
+        anchor.removeAttribute('href');
+    });
+
+    return String(clone.innerText || '')
+        .split(/\n+/)
+        .map(function (line) {
+            return normalizeWhitespace(line);
+        })
+        .filter(function (line) {
+            return !!line && !isFacebookUiNoiseLine(line);
+        });
+}
+
+function extractFacebookAuthorFromNode(node) {
+    if (!node || !node.querySelectorAll) {
+        return '';
+    }
+
+    const candidates = node.querySelectorAll('h2, h3, strong, a[role="link"], span[dir="auto"]');
+    for (let i = 0; i < candidates.length; i += 1) {
+        const text = normalizeWhitespace(candidates[i].textContent || '');
+        if (!text || text.length < 2 || text.length > 80 || isFacebookUiNoiseLine(text)) {
+            continue;
+        }
+
+        return text;
+    }
+
+    return '';
+}
+
+function extractFacebookCommentRecordFromNode(node) {
+    if (!node) {
+        return null;
+    }
+
+    const lines = extractFacebookMeaningfulLines(node);
+    if (!lines.length) {
+        return null;
+    }
+
+    const authorName = extractFacebookAuthorFromNode(node) || lines[0] || '';
+    const bodyLines = lines.filter(function (line, index) {
+        return !(index === 0 && line === authorName);
+    });
+    const bodyText = normalizeWhitespace(bodyLines.join('\n'));
+
+    if (!authorName || !bodyText) {
+        return null;
+    }
+
+    return {
+        author_name: authorName,
+        body_text: bodyText,
+        signature: buildFacebookCommentSignature(authorName, bodyText),
+    };
+}
+
+function findFacebookCommentNodeForComposer(node) {
+    if (!node) {
+        return null;
+    }
+
+    const direct = findContextNodeForComposer(node);
+    if (direct && extractFacebookCommentRecordFromNode(direct)) {
+        return direct;
+    }
+
+    let current = node.parentElement;
+    while (current) {
+        let sibling = current.previousElementSibling;
+        while (sibling) {
+            const article = sibling.matches && sibling.matches('[role="article"],article,[role="listitem"]')
+                ? sibling
+                : (sibling.querySelector ? sibling.querySelector('[role="article"],article,[role="listitem"]') : null);
+            if (article && extractFacebookCommentRecordFromNode(article)) {
+                return article;
+            }
+            sibling = sibling.previousElementSibling;
+        }
+        current = current.parentElement;
+    }
+
+    return direct;
+}
+
+function collectFacebookVisibleThreadRecords(targetNode) {
+    if (!targetNode || !targetNode.parentElement) {
+        return [];
+    }
+
+    const records = [];
+    const seen = new Set();
+    const children = Array.from(targetNode.parentElement.children);
+
+    for (let i = 0; i < children.length; i += 1) {
+        const child = children[i];
+        const article = child === targetNode
+            ? child
+            : (child.matches && child.matches('[role="article"],article,[role="listitem"]') ? child : (child.querySelector ? child.querySelector('[role="article"],article,[role="listitem"]') : null));
+
+        if (!article) {
+            continue;
+        }
+
+        const record = extractFacebookCommentRecordFromNode(article);
+        if (!record || seen.has(record.signature)) {
+            continue;
+        }
+
+        seen.add(record.signature);
+        records.push(record);
+
+        if (article === targetNode) {
+            break;
+        }
+    }
+
+    return records.slice(-6);
+}
+
+function findCachedFacebookThreadRecords(targetRecord) {
+    if (!targetRecord) {
+        return [];
+    }
+
+    const matched = recentFacebookCommentEntries.find(function (entry) {
+        return entry.signature === targetRecord.signature;
+    });
+
+    if (!matched || !matched.batch_id) {
+        return [];
+    }
+
+    const seen = new Set();
+    return recentFacebookCommentEntries
+        .filter(function (entry) {
+            return entry.batch_id === matched.batch_id;
+        })
+        .reverse()
+        .filter(function (entry) {
+            if (seen.has(entry.signature)) {
+                return false;
+            }
+            seen.add(entry.signature);
+            return true;
+        })
+        .slice(0, 8)
+        .map(function (entry) {
+            return {
+                author_name: entry.author_name,
+                body_text: entry.body_text,
+                signature: entry.signature,
+            };
+        });
+}
+
+function buildFacebookReplyContextFromComposer(node) {
+    const targetNode = findFacebookCommentNodeForComposer(node);
+    const targetRecord = extractFacebookCommentRecordFromNode(targetNode);
+    if (!targetRecord) {
+        return null;
+    }
+
+    const visibleRecords = collectFacebookVisibleThreadRecords(targetNode);
+    const cachedRecords = findCachedFacebookThreadRecords(targetRecord);
+    const merged = [];
+    const seen = new Set();
+
+    visibleRecords.concat(cachedRecords).forEach(function (record) {
+        if (!record || seen.has(record.signature)) {
+            return;
+        }
+
+        seen.add(record.signature);
+        merged.push(record);
+    });
+
+    const lines = [];
+    lines.push('Reply target: ' + targetRecord.author_name);
+    lines.push('Target comment: ' + targetRecord.author_name + ': ' + targetRecord.body_text);
+    if (merged.length) {
+        lines.push('Thread context:');
+        merged.forEach(function (record) {
+            lines.push('- ' + record.author_name + ': ' + record.body_text);
+        });
+    }
+
+    return {
+        source: 'facebook-thread',
+        replyTarget: targetRecord.author_name,
+        threadSize: merged.length,
+        text: lines.join('\n'),
+    };
+}
+
+function getCurrentPanelContextValue() {
+    if (markedElements.length) {
+        activeReplyContextMeta = {source: 'marked', markedCount: markedElements.length};
+        return markedElements.map((el, i) => `[${i + 1}]\n${getReadableContext(el)}`).join('\n\n---\n\n');
+    }
+
+    if (isFacebookPage() && activeComposer && document.contains(activeComposer)) {
+        const facebookReplyContext = buildFacebookReplyContextFromComposer(activeComposer);
+        if (facebookReplyContext && facebookReplyContext.text) {
+            activeReplyContextMeta = facebookReplyContext;
+            return facebookReplyContext.text;
+        }
+    }
+
+    return getActiveComposerContext();
+}
+
 
 // ---------------------------------------------
 // EXTRACT READABLE CONTEXT (GENERIC, WITH MEDIA)
@@ -744,7 +1220,9 @@ function convertNodeToReadableText(node) {
         const rawText = a.textContent && typeof a.textContent.trim === 'function' ? a.textContent.trim() : '';
         const text = rawText ? rawText.replace(/\s+/g, ' ') : 'link';
         const url = a.href;
-        const label = `[LINK: ${text} (${url})]`;
+        const label = /facebook\.com/i.test(url || '') && text && text !== 'link'
+            ? text
+            : `[LINK: ${text} (${url})]`;
         const span = document.createElement('span');
         span.textContent = label;
         a.replaceWith(span);
@@ -782,6 +1260,7 @@ function updateAdminActivitiesControl() {
     const monitor = adminActivitiesControl.querySelector('[data-role="monitor"]');
     const recent = adminActivitiesControl.querySelector('[data-role="recent"]');
     const debugWrap = adminActivitiesControl.querySelector('[data-role="debug-wrap"]');
+    const detected = adminActivitiesControl.querySelector('[data-role="detected"]');
 
     if (toggle) {
         toggle.textContent = adminIngestEnabled ? 'Disable activity statistics' : 'Enable activity statistics';
@@ -793,7 +1272,7 @@ function updateAdminActivitiesControl() {
     }
 
     if (counters) {
-        counters.textContent = 'Visible discovered: ' + discoveredAdminEntries.size + ' · Submitted: ' + adminSubmittedCount;
+        counters.textContent = 'Detected: ' + adminDetectedEntryCount + ' · Pending: ' + pendingAdminEntries.size + ' · Submitted: ' + adminSubmittedCount;
         counters.style.display = adminDebugEnabled ? 'block' : 'none';
     }
 
@@ -814,6 +1293,28 @@ function updateAdminActivitiesControl() {
         }
     }
 
+    if (detected) {
+        const latestDetected = Array.from(pendingAdminEntries.values()).slice(-5).reverse();
+        if (!latestDetected.length) {
+            detected.innerHTML = '<div style="color:#64748b;">No reportable admin-log entries detected yet.</div>';
+        } else {
+            detected.innerHTML = latestDetected.map(function (entry) {
+                const labelParts = [entry.actor_name || 'Unknown actor'];
+                if (entry.handled_outcome) {
+                    labelParts.push('→ ' + entry.handled_outcome);
+                }
+                if (entry.target_name) {
+                    labelParts.push('(' + entry.target_name + ')');
+                }
+
+                return '<div style="padding:6px 0; border-top:1px solid rgba(148,163,184,0.2);">'
+                    + '<div style="font-weight:600; color:#0f766e;">' + escapeHtml(labelParts.join(' ')) + '</div>'
+                    + '<div style="margin-top:3px; color:#475569;">' + escapeHtml(clipText(entry.action_text || '', 150)) + '</div>'
+                    + '</div>';
+            }).join('');
+        }
+    }
+
     if (recent) {
         if (!recentAdminNetworkEvents.length) {
             recent.innerHTML = '<div style="color:#64748b;">No captured XHR/fetch events yet.</div>';
@@ -823,6 +1324,8 @@ function updateAdminActivitiesControl() {
                 return '<div style="padding:6px 0; border-top:1px solid rgba(148,163,184,0.25);">'
                     + '<div style="font-weight:600; color:' + (entry.interesting ? '#0f766e' : '#334155') + ';">' + escapeHtml(entry.summary) + '</div>'
                     + '<div style="color:#64748b; margin-top:2px;">' + escapeHtml(entry.pathname || entry.url || '(unknown url)') + '</div>'
+                    + (entry.detected_count ? '<div style="margin-top:3px; color:#0f766e; font-weight:600;">Detections: ' + escapeHtml(String(entry.detected_count)) + '</div>' : '')
+                    + (entry.detected_preview && entry.detected_preview.length ? '<div style="margin-top:3px; color:#475569;">' + escapeHtml(entry.detected_preview.join(' · ')) + '</div>' : '')
                     + (preview ? '<div style="margin-top:3px; color:#475569;">' + escapeHtml(preview) + '</div>' : '')
                     + '</div>';
             }).join('');
@@ -862,13 +1365,18 @@ function ensureAdminActivitiesControl() {
     control.style.fontFamily = 'system-ui,sans-serif';
     control.style.fontSize = '12px';
     control.innerHTML = [
-        '<div style="font-weight:700; margin-bottom:6px;">Facebook admin activity statistics</div>',
+        '<div data-role="drag-handle" style="display:flex; justify-content:space-between; gap:8px; align-items:center; margin-bottom:6px; cursor:move; user-select:none;">',
+        '<div style="font-weight:700;">Facebook admin activity statistics</div>',
+        '<div style="font-size:11px; color:#64748b;">drag</div>',
+        '</div>',
         '<div data-role="state" style="margin-bottom:8px; color:#334155; font-weight:600;">Passive activity detection is ready. Statistics are off.</div>',
         '<div style="display:flex; gap:8px; flex-wrap:wrap;">',
         '<button type="button" data-role="toggle" style="border:none; border-radius:999px; padding:6px 10px; color:#fff; cursor:pointer;">Enable activity statistics</button>',
         '</div>',
+        '<div style="margin-top:10px; font-weight:600; color:#334155;">Reportable if enabled</div>',
+        '<div data-role="detected" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569; max-height:150px; overflow:auto;">No reportable admin-log entries detected yet.</div>',
         '<div data-role="debug-wrap" style="display:none; margin-top:10px;">',
-        '<div data-role="counters" style="margin-bottom:8px; color:#64748b;">Visible discovered: 0 · Submitted: 0</div>',
+        '<div data-role="counters" style="margin-bottom:8px; color:#64748b;">Detected: 0 · Pending: 0 · Submitted: 0</div>',
         '<div data-role="monitor" style="margin-bottom:8px; padding:8px; border-radius:8px; border:1px solid rgba(59,130,246,0.25); background:#eff6ff; color:#1d4ed8; font-weight:600;">Monitor injected. Waiting for Facebook XHR/fetch activity...</div>',
         '<div style="margin-top:10px; font-weight:600; color:#334155;">Recent XHR/fetch (dev mode only)</div>',
         '<div data-role="recent" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569; max-height:180px; overflow:auto;">No captured XHR/fetch events yet.</div>',
@@ -885,7 +1393,7 @@ function ensureAdminActivitiesControl() {
 
         adminIngestEnabled = !adminIngestEnabled;
         adminLastStatusText = adminIngestEnabled
-            ? 'Activity statistics enabled. Visible admin activities will now be fetched and sent to Tools.'
+            ? 'Activity statistics enabled. Detected admin activities will now be batched and sent to Tools.'
             : 'Activity statistics disabled. Passive detection is still running.';
         updateAdminActivitiesControl();
         debugLog({level: 'info', category: 'facebook-admin-ingest', message: 'Facebook admin ingest toggled.', meta: {enabled: adminIngestEnabled, url: location.href}});
@@ -896,6 +1404,7 @@ function ensureAdminActivitiesControl() {
 
     document.body.appendChild(control);
     adminActivitiesControl = control;
+    enableAdminActivitiesControlDragging(control);
     updateAdminActivitiesControl();
 
     adminDebugConsoleInfo('[TN Social Tools] admin_activities overlay mounted.', {
@@ -1027,11 +1536,98 @@ function extractMeaningfulLinkTexts(container) {
 
 function detectHandledOutcomeFromText(text) {
     const lowered = String(text || '').toLowerCase();
-    if (lowered.indexOf('godk') !== -1 || lowered.indexOf('approved') !== -1) return 'approved';
+    if (lowered.indexOf('godk') !== -1 || lowered.indexOf('approved') !== -1 || lowered.indexOf('approve') !== -1 || lowered.indexOf('published') !== -1 || lowered.indexOf('allowed') !== -1) return 'approved';
     if (lowered.indexOf('avvis') !== -1 || lowered.indexOf('rejected') !== -1 || lowered.indexOf('declined') !== -1) return 'rejected';
-    if (lowered.indexOf('tagit bort') !== -1 || lowered.indexOf('removed') !== -1) return 'removed';
+    if (lowered.indexOf('tagit bort') !== -1 || lowered.indexOf('removed') !== -1 || lowered.indexOf('delete') !== -1) return 'removed';
+    if (lowered.indexOf('rediger') !== -1 || lowered.indexOf('edit') !== -1 || lowered.indexOf('changed') !== -1) return 'edited';
+    if (lowered.indexOf('lagt till') !== -1 || lowered.indexOf('added') !== -1) return 'added';
+    if (lowered.indexOf('återkall') !== -1 || lowered.indexOf('revoked') !== -1) return 'revoked';
     if (lowered.indexOf('block') !== -1 || lowered.indexOf('banned') !== -1) return 'blocked';
     return null;
+}
+
+function detectHandledStatusFromText(text) {
+    const lowered = String(text || '').toLowerCase();
+    const outcome = detectHandledOutcomeFromText(text);
+    if (lowered.indexOf('automatiskt') !== -1 || lowered.indexOf('automatically') !== -1) {
+        return outcome ? outcome + '_automatically' : 'automatic';
+    }
+
+    return outcome;
+}
+
+function normalizeAdminActivityEntry(entry) {
+    if (!entry) {
+        return null;
+    }
+
+    const actionText = normalizeWhitespace(entry.action_text || entry.raw_blue_segment || '');
+    if (!shouldConsiderAdminActivityText(actionText)) {
+        return null;
+    }
+
+    const actorName = normalizeWhitespace(entry.actor_name || '');
+    const handledOutcome = entry.handled_outcome || detectHandledOutcomeFromText(actionText);
+    const handledStatusText = entry.handled_status_text || detectHandledStatusFromText(actionText);
+    const targetName = normalizeWhitespace(entry.target_name || '');
+    const sourceUrl = normalizeWhitespace(entry.source_url || location.origin + location.pathname);
+    const activityUrl = normalizeWhitespace(entry.activity_url || location.href);
+    const occurredAt = entry.occurred_at || null;
+    const fallbackActorName = (handledStatusText && handledStatusText.indexOf('automatic') !== -1) ? 'Automatic moderation' : actorName;
+    const finalActorName = actorName || fallbackActorName;
+
+    if (!finalActorName || !actionText) {
+        return null;
+    }
+
+    return {
+        key: entry.key || [sourceUrl, occurredAt || '', finalActorName, targetName || '', actionText].join('|'),
+        source_url: sourceUrl,
+        activity_url: activityUrl,
+        occurred_at: occurredAt,
+        actor_name: finalActorName,
+        action_text: actionText,
+        target_name: targetName || null,
+        handled_outcome: handledOutcome,
+        handled_status_text: handledStatusText,
+        raw_blue_segment: entry.raw_blue_segment || actionText,
+        plugin_version: 'tornevall-networks-social-media-tools/' + EXTENSION_VERSION,
+    };
+}
+
+function rememberDetectedAdminEntries(entries, reason) {
+    if (!entries || !entries.length) {
+        return 0;
+    }
+
+    let added = 0;
+    entries.forEach(function (entry) {
+        const normalized = normalizeAdminActivityEntry(entry);
+        if (!normalized || discoveredAdminEntryKeys.has(normalized.key)) {
+            return;
+        }
+
+        discoveredAdminEntryKeys.add(normalized.key);
+        pendingAdminEntries.set(normalized.key, normalized);
+        adminDetectedEntryCount += 1;
+        added += 1;
+    });
+
+    if (added && adminDebugEnabled) {
+        debugLog({
+            level: 'info',
+            category: 'facebook-admin-detection',
+            message: 'Detected Facebook admin activity entries.',
+            meta: {
+                reason: reason,
+                added: added,
+                detected_total: adminDetectedEntryCount,
+                pending_total: pendingAdminEntries.size,
+            }
+        });
+    }
+
+    return added;
 }
 
 function parseAdminActivityEntry(container) {
@@ -1049,7 +1645,7 @@ function parseAdminActivityEntry(container) {
     const targetName = names.length > 1 ? names[1] : null;
     const key = [location.href, actorName, targetName || '', actionText].join('|');
 
-    return {
+    return normalizeAdminActivityEntry({
         key: key,
         source_url: location.href,
         activity_url: location.href,
@@ -1057,9 +1653,9 @@ function parseAdminActivityEntry(container) {
         action_text: actionText,
         target_name: targetName,
         handled_outcome: detectHandledOutcomeFromText(actionText),
+        handled_status_text: detectHandledStatusFromText(actionText),
         raw_blue_segment: actionText,
-        plugin_version: 'tornevall-networks-social-media-tools/' + EXTENSION_VERSION,
-    };
+    });
 }
 
 function collectVisibleAdminActivityEntries() {
@@ -1086,54 +1682,77 @@ function collectVisibleAdminActivityEntries() {
     return results;
 }
 
-async function submitAdminActivityEntry(entry) {
+function chunkAdminEntries(entries, size) {
+    const chunks = [];
+    for (let index = 0; index < entries.length; index += size) {
+        chunks.push(entries.slice(index, index + size));
+    }
+    return chunks;
+}
+
+async function submitAdminActivityEntriesBatch(entries) {
     const response = await safeSendRuntimeMessageWithResponse({
         type: 'FACEBOOK_ADMIN_INGEST',
-        entry: entry,
+        entries: entries,
     });
 
     if (!response.ok) {
-        throw new Error(response.error || response.message || 'Could not submit admin activity entry.');
+        throw new Error(response.error || response.message || 'Could not submit admin activity batch.');
     }
 
-    return true;
+    return response;
 }
 
 async function flushAdminActivitiesToTools(reason) {
-    const entries = collectVisibleAdminActivityEntries();
-    entries.forEach(function (entry) {
-        if (!discoveredAdminEntries.has(entry.key)) {
-            discoveredAdminEntries.set(entry.key, entry);
-        }
-    });
+    if (!pendingAdminEntries.size) {
+        rememberDetectedAdminEntries(collectVisibleAdminActivityEntries(), reason || 'visible-scan');
+    }
 
     updateAdminActivitiesControl();
     if (!adminIngestEnabled) {
         return;
     }
 
+    const unsentEntries = Array.from(pendingAdminEntries.values()).filter(function (entry) {
+        return !submittedAdminEntryKeys.has(entry.key);
+    });
+
+    if (!unsentEntries.length) {
+        adminLastStatusText = 'Listening for admin-log changes. No new detected entries are waiting.';
+        updateAdminActivitiesControl();
+        return;
+    }
+
     let submittedThisRun = 0;
-    for (const entry of discoveredAdminEntries.values()) {
-        if (submittedAdminEntryKeys.has(entry.key)) {
-            continue;
-        }
+    let createdThisRun = 0;
+    let updatedThisRun = 0;
+    const chunks = chunkAdminEntries(unsentEntries, MAX_ADMIN_BATCH_SIZE);
+
+    for (let index = 0; index < chunks.length; index += 1) {
+        const batch = chunks[index];
 
         try {
-            await submitAdminActivityEntry(entry);
-            submittedAdminEntryKeys.add(entry.key);
-            adminSubmittedCount += 1;
-            submittedThisRun += 1;
+            const response = await submitAdminActivityEntriesBatch(batch);
+            const data = response.data || {};
+            submittedThisRun += batch.length;
+            createdThisRun += typeof data.created === 'number' ? data.created : 0;
+            updatedThisRun += typeof data.updated === 'number' ? data.updated : 0;
+            batch.forEach(function (entry) {
+                submittedAdminEntryKeys.add(entry.key);
+                pendingAdminEntries.delete(entry.key);
+            });
         } catch (error) {
-            adminLastStatusText = error && error.message ? error.message : 'Could not submit admin-log entry.';
+            adminLastStatusText = error && error.message ? error.message : 'Could not submit admin-log batch.';
             updateAdminActivitiesControl();
-            debugLog({level: 'error', category: 'facebook-admin-ingest', message: adminLastStatusText, meta: {reason: reason, entry: entry}});
+            debugLog({level: 'error', category: 'facebook-admin-ingest', message: adminLastStatusText, meta: {reason: reason, batch_size: batch.length}});
             return;
         }
     }
 
+    adminSubmittedCount += submittedThisRun;
     adminLastStatusText = submittedThisRun > 0
-        ? 'Submitted ' + submittedThisRun + ' admin-log entr' + (submittedThisRun === 1 ? 'y' : 'ies') + ' to Tools.'
-        : 'Listening for admin-log changes. No new visible entries to submit right now.';
+        ? 'Submitted ' + submittedThisRun + ' detected entr' + (submittedThisRun === 1 ? 'y' : 'ies') + ' to Tools in bulk.' + (createdThisRun || updatedThisRun ? ' Created: ' + createdThisRun + ' · Updated/duplicate-safe: ' + updatedThisRun : '')
+        : 'Listening for admin-log changes. No new detected entries to submit right now.';
     updateAdminActivitiesControl();
 }
 
@@ -1174,7 +1793,7 @@ function panelHTML() {
     <div id="sgpt-body">
       <div id="sgpt-responder-label">Responder: <span id="sgpt-responder-name" data-name="${frontResponserName || ''}">${frontResponserName || '(loading...)'}</span></div>
       <div id="sgpt-anchor-note">Anchored to the currently focused text field.</div>
-      <label>Prompt<input type="text" id="sgpt-prompt"></label>
+      <label>Prompt<input type="text" id="sgpt-prompt" placeholder="How should the recipient be handled?"></label>
       <div class="sgpt-quick-settings">
         <label>Mood<select id="sgpt-mood">
             <optgroup label="Objective & Informative">
@@ -1258,9 +1877,7 @@ function openReplyPanel() {
     const p = createPanel();
 
     p.dataset.collapsed = 'false';
-    p.querySelector('#sgpt-context').value = markedElements.length
-        ? markedElements.map((el, i) => `[${i + 1}]\n${getReadableContext(el)}`).join('\n\n---\n\n')
-        : getActiveComposerContext();
+    p.querySelector('#sgpt-context').value = getCurrentPanelContextValue();
     positionPanelNearComposer();
     updatePanelAnchorNote();
     p.querySelector('#sgpt-prompt').focus();
@@ -1268,17 +1885,27 @@ function openReplyPanel() {
     isClickMarkingActive = false;
     safeSendRuntimeMessage({type: 'TOGGLE_MARK_MODE', enabled: false});
 
-    safeStorageSyncGet(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood'], (data) => {
+    safeStorageSyncGet(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood', 'lastReplyPrompt', 'lastResponseLength'], (data) => {
         const label = p.querySelector('#sgpt-responder-name');
         const moodField = p.querySelector('#sgpt-mood');
         const customMoodField = p.querySelector('#sgpt-custom');
+        const promptField = p.querySelector('#sgpt-prompt');
+        const lengthField = p.querySelector('#sgpt-length');
 
         if (moodField && data.defaultMood) {
             moodField.value = data.defaultMood;
         }
 
+        if (lengthField && data.lastResponseLength) {
+            lengthField.value = data.lastResponseLength;
+        }
+
         if (customMoodField) {
             customMoodField.value = data.defaultCustomMood || '';
+        }
+
+        if (promptField) {
+            promptField.value = data.lastReplyPrompt || DEFAULT_REPLY_PROMPT;
         }
 
         if (data.autoDetectResponder) {
@@ -1313,7 +1940,7 @@ function sendGPT(mod, mode) {
     showLoader();
 
     const selectedLength = panel.querySelector('#sgpt-length').value;
-    safeStorageSyncSet({ lastResponseLength: selectedLength });
+    safeStorageSyncSet({ lastResponseLength: selectedLength, lastReplyPrompt: prompt || DEFAULT_REPLY_PROMPT });
 
     const moodField = panel.querySelector('#sgpt-mood');
     const customMoodField = panel.querySelector('#sgpt-custom');
@@ -1355,9 +1982,7 @@ document.addEventListener('click', e => {
         markedElements.push(t);
     }
     if (panel) {
-        panel.querySelector('#sgpt-context').value = markedElements.length
-            ? markedElements.map((el, i) => `[${i + 1}]\n${getReadableContext(el)}`).join('\n\n---\n\n')
-            : getActiveComposerContext();
+        panel.querySelector('#sgpt-context').value = getCurrentPanelContextValue();
         updatePanelAnchorNote();
     }
     e.preventDefault();
@@ -1453,13 +2078,30 @@ window.addEventListener('message', function (event) {
         return;
     }
 
+    const payload = event.data.payload || {};
+
+    if (isFacebookPage() && Array.isArray(payload.detected_comment_entries) && payload.detected_comment_entries.length) {
+        rememberFacebookCommentEntries(payload.detected_comment_entries);
+        if (panel && activeComposer && document.contains(activeComposer) && !markedElements.length) {
+            const contextField = panel.querySelector('#sgpt-context');
+            if (contextField) {
+                contextField.value = getCurrentPanelContextValue();
+            }
+            updatePanelAnchorNote();
+        }
+    }
+
     if (!isFacebookAdminActivitiesPage()) {
         return;
     }
 
     ensureAdminActivitiesControl();
-    const networkEntry = rememberAdminNetworkEvent(event.data.payload || {});
+    const networkEntry = rememberAdminNetworkEvent(payload);
     mirrorAdminNetworkEventToConsole(networkEntry);
+    if (networkEntry.detected_entries && networkEntry.detected_entries.length) {
+        rememberDetectedAdminEntries(networkEntry.detected_entries, 'network-event');
+        mirrorAdminDetectionsToConsole(networkEntry.detected_entries, networkEntry);
+    }
 
     if (!adminNetworkDebugAnnounced) {
         adminNetworkDebugAnnounced = true;
@@ -1497,12 +2139,16 @@ window.addEventListener('message', function (event) {
     }
 
     adminLastStatusText = adminIngestEnabled
-        ? (networkEntry.interesting
-            ? 'Interesting activity detected. Visible admin activities are being sent to Tools.'
-            : 'Activity statistics are enabled. Waiting for matching admin-log traffic.')
-        : (networkEntry.interesting
-            ? 'Interesting activity detected. Enable activity statistics to send visible entries to Tools.'
-            : 'Passive activity detection is active. Enable activity statistics when you want to start sending entries.');
+        ? (networkEntry.detected_count
+            ? 'Detected ' + networkEntry.detected_count + ' admin activity entr' + (networkEntry.detected_count === 1 ? 'y' : 'ies') + '. Bulk upload to Tools is queued.'
+            : (networkEntry.interesting
+                ? 'Activity statistics are enabled. Waiting for matching admin-log traffic.'
+                : 'Activity statistics are enabled. Waiting for matching admin-log traffic.'))
+        : (networkEntry.detected_count
+            ? 'Detected ' + networkEntry.detected_count + ' admin activity entr' + (networkEntry.detected_count === 1 ? 'y' : 'ies') + '. Enable activity statistics to send batches to Tools.'
+            : (networkEntry.interesting
+                ? 'Interesting activity detected. Enable activity statistics to send batches to Tools.'
+                : 'Passive activity detection is active. Enable activity statistics when you want to start sending entries.'));
     updateAdminActivitiesControl();
     if (networkEntry.interesting) {
         scheduleAdminActivitiesScan('network-event');
