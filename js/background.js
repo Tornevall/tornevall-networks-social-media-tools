@@ -196,15 +196,17 @@ async function callToolsSocialGpt(apiToken, baseUrl, payload) {
     }
 }
 
-async function callFacebookAdminIngest(apiToken, baseUrl, entry) {
+async function callFacebookAdminIngest(apiToken, baseUrl, payload) {
+    var entries = payload && Array.isArray(payload.entries) ? payload.entries : [];
     await appendDebugLog({
         level: 'info',
         category: 'facebook-admin-ingest',
         message: 'Sending Facebook admin activity ingest request.',
         meta: {
             baseUrl: baseUrl,
-            source_url: entry && entry.source_url ? entry.source_url : '',
-            actor_name: entry && entry.actor_name ? entry.actor_name : '',
+            entry_count: entries.length || 1,
+            source_url: entries.length ? (entries[0] && entries[0].source_url ? entries[0].source_url : '') : (payload && payload.source_url ? payload.source_url : ''),
+            actor_name: entries.length ? (entries[0] && entries[0].actor_name ? entries[0].actor_name : '') : (payload && payload.actor_name ? payload.actor_name : ''),
         }
     });
 
@@ -216,7 +218,7 @@ async function callFacebookAdminIngest(apiToken, baseUrl, entry) {
                 'Content-Type': 'application/json',
                 'Authorization': 'Bearer ' + apiToken,
             },
-            body: JSON.stringify(entry || {}),
+            body: JSON.stringify(payload || {}),
         });
 
         var data = await res.json().catch(function () {
@@ -250,7 +252,9 @@ async function callFacebookAdminIngest(apiToken, baseUrl, entry) {
             message: 'Facebook admin activity ingest succeeded.',
             meta: {
                 baseUrl: baseUrl,
-                created: !!data.created,
+                received: typeof data.received === 'number' ? data.received : (entries.length || 1),
+                created: typeof data.created === 'number' ? data.created : (!!data.created ? 1 : 0),
+                updated: typeof data.updated === 'number' ? data.updated : 0,
                 event_id: data.event && data.event.id ? data.event.id : null,
                 source_id: data.source && data.source.id ? data.source.id : null,
             }
@@ -349,7 +353,10 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
             }
 
             var baseUrl = getToolsBaseUrl(!!data.devMode);
-            var ingestResponse = await callFacebookAdminIngest(data.toolsApiToken, baseUrl, req.entry || {});
+            var ingestPayload = Array.isArray(req.entries) && req.entries.length
+                ? {entries: req.entries}
+                : (req.entry || {});
+            var ingestResponse = await callFacebookAdminIngest(data.toolsApiToken, baseUrl, ingestPayload);
             sendResponse(ingestResponse);
         });
         return true;
