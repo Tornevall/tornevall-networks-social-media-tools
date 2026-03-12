@@ -143,51 +143,8 @@
         };
     }
 
-    function shouldConsoleLog(payload) {
-        if (!payload) {
-            return false;
-        }
-
-        if (payload.mentions_activity_log) {
-            return true;
-        }
-
-        if (payload.is_graphql) {
-            return true;
-        }
-
-        var haystack = [
-            payload.url,
-            payload.pathname,
-            payload.friendly_name,
-            payload.operation_name,
-            payload.doc_id,
-            payload.request_preview,
-            payload.response_preview,
-        ].join(' ').toLowerCase();
-
-        return haystack.indexOf('admin_activities') !== -1
-            || haystack.indexOf('management_activities') !== -1
-            || haystack.indexOf('management_activity_log_target') !== -1
-            || haystack.indexOf('groupadminactivity') !== -1;
-    }
-
     function post(payload) {
         try {
-            if (shouldConsoleLog(payload) && typeof console !== 'undefined' && console.info) {
-                console.info('[TN Social Tools][network]', {
-                    transport: payload.transport,
-                    method: payload.method,
-                    status: payload.status,
-                    duration_ms: payload.duration_ms,
-                    pathname: payload.pathname,
-                    doc_id: payload.doc_id,
-                    friendly_name: payload.friendly_name || payload.operation_name || '',
-                    mentions_activity_log: payload.mentions_activity_log,
-                    request_preview: payload.request_preview,
-                    response_preview: payload.response_preview,
-                });
-            }
 
             window.postMessage({
                 source: 'tn-networks-social-media-tools',
