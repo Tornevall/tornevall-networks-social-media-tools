@@ -13,12 +13,55 @@
         return null;
     }
 
+    function getPath(locationObject) {
+        return String(locationObject && locationObject.pathname ? locationObject.pathname : '').toLowerCase();
+    }
+
+    function isSupportedPage(locationObject) {
+        var path = getPath(locationObject);
+        if (!path || path === '/' || path === '/home') {
+            return true;
+        }
+
+        if (path.indexOf('/messages') === 0) {
+            return false;
+        }
+
+        return /^\/compose(\/|$)/.test(path)
+            || /^\/intent\/tweet/.test(path)
+            || /^\/i\/flow\/compose/.test(path)
+            || /^\/[^/]+\/status\/\d+/.test(path);
+    }
+
+    function supportsComposerTarget(node, locationObject) {
+        if (!node || !isSupportedPage(locationObject)) {
+            return false;
+        }
+
+        var hintText = [
+            node.getAttribute && node.getAttribute('aria-label'),
+            node.getAttribute && node.getAttribute('placeholder'),
+        ].join(' ').toLowerCase();
+
+        if (/search/.test(hintText)) {
+            return false;
+        }
+
+        if (node.closest('[role="search"]')) {
+            return false;
+        }
+
+        return !!node.closest('[data-testid="tweetTextarea_0"], [role="dialog"], form');
+    }
+
     window.TNNetworksPlatformRegistry.register({
         id: 'x',
         label: 'X / Twitter',
         matchesHost: function (hostname) {
             return hostname.indexOf('x.com') !== -1 || hostname.indexOf('twitter.com') !== -1;
         },
+        isSupportedPage: isSupportedPage,
+        supportsComposerTarget: supportsComposerTarget,
         detectResponderName: detectResponderName,
         enableNetworkCapture: true,
     });
