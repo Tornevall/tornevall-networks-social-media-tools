@@ -706,6 +706,267 @@
         };
     }
 
+    function isFacebookAdminActivitiesPage() {
+        return window.location.hostname.indexOf('facebook.com') !== -1
+            && /\/groups\/[^/]+\/admin_activities/.test(window.location.pathname || '');
+    }
+
+    function getBootstrapAdminScriptTextMatcher() {
+        return /GroupAdminActivity|GroupsCometAdminActivity|management_activities|management_activity_log_target|admin_activities|RelayPrefetchedStreamCache|ScheduledServerJS|CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|activity_title/i;
+    }
+
+    function isStrongBootstrapAdminScriptText(raw) {
+        var text = String(raw || '');
+        return /adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader/.test(text)
+            || /"__typename"\s*:\s*"GroupAdminActivity"|"__typename"\s*:\s*"GroupsCometAdminActivity"/.test(text)
+            || (/management_activity_log_target/.test(text) && /management_activities/.test(text) && /activity_title/.test(text));
+    }
+
+    function scoreBootstrapAdminActivityScriptNode(node, raw) {
+        var text = String(raw || '');
+        var type = normalizeWhitespace(node && node.getAttribute ? node.getAttribute('type') : '').toLowerCase();
+        var score = 0;
+
+        if (node && document.body && document.body.contains(node)) score += 20;
+        if (node && node.matches && node.matches('script[type="application/json"][data-sjs]')) {
+            score += 140;
+        } else if (node && node.hasAttribute && node.hasAttribute('data-sjs')) {
+            score += 90;
+        } else if (type === 'application/json') {
+            score += 60;
+        }
+
+        if (/adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader/.test(text)) score += 120;
+        if (/"__typename"\s*:\s*"GroupAdminActivity"|"__typename"\s*:\s*"GroupsCometAdminActivity"/.test(text)) score += 110;
+        if (/RelayPrefetchedStreamCache/.test(text)) score += 60;
+        if (/management_activity_log_target/.test(text)) score += 40;
+        if (/management_activities/.test(text)) score += 35;
+        if (/GroupAdminActivity|GroupsCometAdminActivity/.test(text)) score += 30;
+        if (/activity_title/.test(text)) score += 15;
+
+        return score;
+    }
+
+    function summarizeBootstrapAdminScriptNode(node, raw, score) {
+        var text = String(raw || '');
+        return {
+            type: normalizeWhitespace(node && node.getAttribute ? node.getAttribute('type') : '') || '(none)',
+            has_data_sjs: !!(node && node.hasAttribute && node.hasAttribute('data-sjs')),
+            score: typeof score === 'number' ? score : scoreBootstrapAdminActivityScriptNode(node, text),
+            length: text.length,
+            preview: clip(normalizeWhitespace(text), 220),
+            has_preloader: /adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader/.test(text),
+            has_admin_typename: /"__typename"\s*:\s*"GroupAdminActivity"|"__typename"\s*:\s*"GroupsCometAdminActivity"/.test(text),
+        };
+    }
+
+    function buildBootstrapAdminScanDebug(reason) {
+        return {
+            source: 'injected-monitor',
+            reason: reason || 'bootstrap-scan',
+            started_at: new Date().toISOString(),
+            body_available: !!document.body,
+            body_application_json_count: 0,
+            xpath_hits: {},
+            matched_script_count: 0,
+            fallback_used: false,
+            scripts_considered: 0,
+            scripts_with_entries: 0,
+            entries_detected: 0,
+            pending_added: 0,
+            parse_failures: 0,
+            skipped_short: 0,
+            skipped_matcher: 0,
+            top_scripts: [],
+            parsed_scripts: [],
+            detected_entry_preview: [],
+            outcome: 'pending',
+        };
+    }
+
+    function collectBootstrapAdminActivityScriptNodes(debugState) {
+        var bodyRoot = document.body || null;
+        var root = bodyRoot || document.documentElement;
+        var results = [];
+        var seenNodes = [];
+        var matcher = getBootstrapAdminScriptTextMatcher();
+        var targetedXpathQueries = [
+            ".//script[@type='application/json' and contains(., 'adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader')]",
+            ".//script[@type='application/json' and contains(., 'CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader')]",
+            ".//script[@type='application/json' and contains(., 'GroupAdminActivity')]",
+            ".//script[@type='application/json' and contains(., 'management_activity_log_target')]"
+        ];
+
+        function appendNode(node) {
+            if (!node || seenNodes.indexOf(node) !== -1) {
+                return;
+            }
+            seenNodes.push(node);
+            results.push(node);
+        }
+
+        function appendXPathMatches(scope, xpath) {
+            if (!scope || typeof document.evaluate !== 'function' || typeof XPathResult === 'undefined') {
+                return;
+            }
+
+            try {
+                var snapshot = document.evaluate(xpath, scope, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                if (debugState) {
+                    debugState.xpath_hits[xpath] = snapshot.snapshotLength;
+                }
+                for (var index = 0; index < snapshot.snapshotLength; index += 1) {
+                    appendNode(snapshot.snapshotItem(index));
+                }
+            } catch (error) {
+                if (debugState) {
+                    debugState.xpath_hits[xpath] = 'error';
+                }
+            }
+        }
+
+        if (bodyRoot) {
+            targetedXpathQueries.forEach(function (xpath) {
+                appendXPathMatches(bodyRoot, xpath);
+            });
+        }
+
+        var primaryScripts = bodyRoot ? bodyRoot.querySelectorAll('script[type="application/json"]') : [];
+        if (debugState) {
+            debugState.body_available = !!bodyRoot;
+            debugState.body_application_json_count = primaryScripts.length;
+        }
+        for (var i = 0; i < primaryScripts.length; i += 1) {
+            var node = primaryScripts[i];
+            var raw = node && typeof node.textContent === 'string' ? node.textContent : '';
+            if (raw && raw.length >= 40 && (isStrongBootstrapAdminScriptText(raw) || matcher.test(raw))) {
+                appendNode(node);
+            }
+        }
+
+        if (!results.length && root) {
+            if (debugState) {
+                debugState.fallback_used = true;
+            }
+            var fallbackScripts = root.querySelectorAll('script[type="application/json"], script[data-sjs], script:not([src])');
+            for (var j = 0; j < fallbackScripts.length; j += 1) {
+                var fallbackNode = fallbackScripts[j];
+                var fallbackRaw = fallbackNode && typeof fallbackNode.textContent === 'string' ? fallbackNode.textContent : '';
+                if (fallbackRaw && fallbackRaw.length >= 40 && matcher.test(fallbackRaw)) {
+                    appendNode(fallbackNode);
+                }
+            }
+        }
+
+        results.sort(function (left, right) {
+            return scoreBootstrapAdminActivityScriptNode(right, right && right.textContent) - scoreBootstrapAdminActivityScriptNode(left, left && left.textContent);
+        });
+
+        if (debugState) {
+            debugState.matched_script_count = results.length;
+            debugState.top_scripts = results.slice(0, 5).map(function (node) {
+                return summarizeBootstrapAdminScriptNode(node, node && node.textContent);
+            });
+        }
+
+        return results;
+    }
+
+    function collectBootstrapAdminActivityEntries(reason) {
+        if (!isFacebookAdminActivitiesPage()) {
+            return null;
+        }
+
+        var debugState = buildBootstrapAdminScanDebug(reason);
+        var scripts = collectBootstrapAdminActivityScriptNodes(debugState);
+        var results = [];
+        var seenKeys = {};
+        var matcher = getBootstrapAdminScriptTextMatcher();
+
+        for (var i = 0; i < scripts.length; i += 1) {
+            var raw = scripts[i] && typeof scripts[i].textContent === 'string' ? scripts[i].textContent : '';
+            if (!raw || raw.length < 40) {
+                debugState.skipped_short += 1;
+                continue;
+            }
+            if (!matcher.test(raw)) {
+                debugState.skipped_matcher += 1;
+                continue;
+            }
+
+            debugState.scripts_considered += 1;
+
+            var parsedEntries = parseDetectedEntriesFromResponse(raw, null);
+            if (parsedEntries.length) {
+                debugState.scripts_with_entries += 1;
+            }
+
+            debugState.parsed_scripts.push({
+                preview: clip(normalizeWhitespace(raw), 180),
+                raw_length: raw.length,
+                chunk_count: 0,
+                used_single_parse: false,
+                entry_count: parsedEntries.length,
+                entry_preview: parsedEntries.length ? clip(parsedEntries.slice(0, 2).map(function (entry) {
+                    return entry && entry.action_text ? entry.action_text : '';
+                }).join(' · '), 180) : '',
+            });
+
+            parsedEntries.forEach(function (entry) {
+                if (entry && !seenKeys[entry.key]) {
+                    seenKeys[entry.key] = true;
+                    results.push(entry);
+                }
+            });
+        }
+
+        debugState.entries_detected = results.length;
+        debugState.detected_entry_preview = results.slice(0, 5).map(function (entry) {
+            return clip(entry && entry.action_text ? entry.action_text : '', 180);
+        });
+        debugState.outcome = results.length
+            ? 'entries-detected'
+            : (debugState.matched_script_count
+                ? 'matched-scripts-but-no-entries'
+                : (debugState.body_application_json_count ? 'body-json-found-no-matches' : 'no-body-json-scripts'));
+
+        return {
+            entries: results,
+            debug: debugState,
+        };
+    }
+
+    function runBootstrapAdminActivityScan(reason) {
+        var startedAt = Date.now();
+        var scan = collectBootstrapAdminActivityEntries(reason);
+        if (!scan) {
+            return;
+        }
+
+        post(buildPayload({
+            transport: 'bootstrap',
+            method: 'DOM',
+            url: window.location.href,
+            is_graphql: false,
+            status: 200,
+            duration_ms: Date.now() - startedAt,
+            content_type: 'text/html',
+            response_type: 'document',
+            friendly_name: 'bootstrap-dom-scan',
+            operation_name: reason || 'bootstrap-scan',
+            request_preview: 'bootstrap-scan:' + String(reason || 'bootstrap-scan'),
+            response_preview: scan.debug && scan.debug.detected_entry_preview && scan.debug.detected_entry_preview.length
+                ? scan.debug.detected_entry_preview.join(' · ')
+                : (scan.debug && scan.debug.top_scripts && scan.debug.top_scripts.length && scan.debug.top_scripts[0].preview
+                    ? scan.debug.top_scripts[0].preview
+                    : ''),
+            mentions_activity_log: true,
+            detected_entries_override: scan.entries,
+            detected_comments_override: [],
+            bootstrap_debug: scan.debug,
+        }));
+    }
+
     function safeReadXhrResponseText(xhr) {
         var responseType = '';
         var contentType = '';
@@ -782,9 +1043,13 @@
         var responseMeta = extractResponseHints(base.response_text || '');
         var batchId = [Date.now(), Math.round(Math.random() * 1000000), clip(base.url || '', 120)].join(':');
         var shouldParseDetections = !!(urlMeta.is_graphql || responseMeta.mentions_activity_log || /admin_activities|management_activities|management_activity_log_target|groupadminactivity|groupscometadminactivity|relayprefetchedstreamcache|scheduledserverjs|cometgroupadminactivitiesactivitylogcontentqueryrelaypreloader|adp_cometgroupadminactivitiesactivitylogcontentqueryrelaypreloader|activity_title|"__typename"\s*:\s*"groupadminactivity"|"__typename"\s*:\s*"groupscometadminactivity"/i.test(String(bodyMeta.preview || '')));
-        var detectedEntries = shouldParseDetections ? parseDetectedEntriesFromResponse(base.response_text || '', bodyMeta.source_identity) : [];
+        var detectedEntries = Array.isArray(base.detected_entries_override)
+            ? base.detected_entries_override
+            : (shouldParseDetections ? parseDetectedEntriesFromResponse(base.response_text || '', bodyMeta.source_identity) : []);
         var shouldParseComments = !!(urlMeta.is_graphql && /comment|reply|feedback|ufi/i.test(String(bodyMeta.preview || '') + ' ' + String(responseMeta.response_preview || '')));
-        var detectedComments = shouldParseComments ? parseDetectedCommentsFromResponse(base.response_text || '', batchId) : [];
+        var detectedComments = Array.isArray(base.detected_comments_override)
+            ? base.detected_comments_override
+            : (shouldParseComments ? parseDetectedCommentsFromResponse(base.response_text || '', batchId) : []);
 
         return {
             transport: base.transport,
@@ -798,19 +1063,20 @@
             duration_ms: base.duration_ms,
             content_type: base.content_type || '',
             response_type: base.response_type || '',
-            doc_id: bodyMeta.doc_id,
-            friendly_name: bodyMeta.friendly_name,
-            operation_name: bodyMeta.operation_name,
+            doc_id: base.doc_id || bodyMeta.doc_id,
+            friendly_name: base.friendly_name || bodyMeta.friendly_name,
+            operation_name: base.operation_name || bodyMeta.operation_name,
             request_size: bodyMeta.size,
-            request_preview: bodyMeta.preview,
-            variables_preview: bodyMeta.variables_preview,
-            response_preview: responseMeta.response_preview,
-            mentions_activity_log: responseMeta.mentions_activity_log,
+            request_preview: base.request_preview || bodyMeta.preview,
+            variables_preview: base.variables_preview || bodyMeta.variables_preview,
+            response_preview: base.response_preview || responseMeta.response_preview,
+            mentions_activity_log: !!(base.mentions_activity_log || responseMeta.mentions_activity_log),
             network_batch_id: batchId,
             detected_entries: detectedEntries,
             detected_count: detectedEntries.length,
             detected_comment_entries: detectedComments,
             detected_comment_count: detectedComments.length,
+            bootstrap_debug: base.bootstrap_debug || null,
         };
     }
 
@@ -825,6 +1091,16 @@
         } catch (e) {
         }
     }
+
+    window.addEventListener('message', function (event) {
+        if (event.source !== window || !event.data || event.data.source !== 'tn-networks-social-media-tools-content') {
+            return;
+        }
+
+        if (event.data.type === 'REQUEST_BOOTSTRAP_SCAN') {
+            runBootstrapAdminActivityScan(event.data.reason || 'content-script-request');
+        }
+    });
 
     var originalFetch = window.fetch;
     if (typeof originalFetch === 'function') {
@@ -919,5 +1195,13 @@
 
         return originalSend.apply(this, arguments);
     };
+
+    if (isFacebookAdminActivitiesPage()) {
+        setTimeout(function () {
+            if (isFacebookAdminActivitiesPage()) {
+                runBootstrapAdminActivityScan('injected-startup');
+            }
+        }, 0);
+    }
 }());
 

@@ -7,6 +7,7 @@ const AI_PATH = '/api/ai/socialgpt/respond';
 const DEBUG_LOG_REQUEST = 'GET_DEBUG_LOGS';
 const DEBUG_CLEAR_REQUEST = 'CLEAR_DEBUG_LOGS';
 const DEFAULT_MOOD = 'Neutral and formal';
+const DEFAULT_PERSONA_PROFILE = 'You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.';
 const DEFAULT_TEST_QUESTION = 'A Facebook user writes: "Hi, what does this tool help you with?" Reply in one short sentence in your configured tone and style.';
 
 function getBaseUrl(devMode) {
@@ -328,7 +329,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         const settings = result.data.settings;
         responderNameInput.value = settings.responder_name || '';
-        systemPromptInput.value = settings.persona_profile || '';
+        systemPromptInput.value = settings.persona_profile || systemPromptInput.value.trim() || DEFAULT_PERSONA_PROFILE;
         autoDetectCheckbox.checked = settings.auto_detect_responder !== false;
         if (!testQuestionInput.value.trim()) {
             testQuestionInput.value = DEFAULT_TEST_QUESTION;
@@ -364,7 +365,7 @@ document.addEventListener('DOMContentLoaded', function () {
     ], async function (data) {
         if (data.toolsApiToken) apiKeyInput.value = data.toolsApiToken;
         if (data.responderName) responderNameInput.value = data.responderName;
-        systemPromptInput.value = data.chatGptSystemPrompt || '';
+        systemPromptInput.value = data.chatGptSystemPrompt || DEFAULT_PERSONA_PROFILE;
         testQuestionInput.value = DEFAULT_TEST_QUESTION;
         autoDetectCheckbox.checked = data.autoDetectResponder !== false;
         devModeCheckbox.checked = !!data.devMode;
@@ -554,9 +555,9 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     resetBtn.addEventListener('click', function () {
-        systemPromptInput.value = '';
+        systemPromptInput.value = DEFAULT_PERSONA_PROFILE;
         testQuestionInput.value = DEFAULT_TEST_QUESTION;
-        setStatus(status, 'Responder profile reset locally. Save to push it to Tools.', false);
+        setStatus(status, 'Responder profile reset to the default local fallback. Save to push it to Tools.', false);
     });
 
     refreshDebugBtn.addEventListener('click', async function () {
