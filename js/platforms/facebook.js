@@ -38,12 +38,57 @@
         return null;
     }
 
+    function getPath(locationObject) {
+        return String(locationObject && locationObject.pathname ? locationObject.pathname : '').toLowerCase();
+    }
+
+    function isSupportedPage(locationObject) {
+        var path = getPath(locationObject);
+        if (!path) {
+            return true;
+        }
+
+        if (path.indexOf('/messages') === 0 || path.indexOf('/messenger') === 0) {
+            return false;
+        }
+
+        return path.indexOf('/admin_activities') === -1;
+    }
+
+    function supportsComposerTarget(node, locationObject) {
+        if (!node || !isSupportedPage(locationObject)) {
+            return false;
+        }
+
+        var hintText = [
+            node.getAttribute && node.getAttribute('aria-label'),
+            node.getAttribute && node.getAttribute('placeholder'),
+            node.getAttribute && node.getAttribute('title'),
+        ].join(' ').toLowerCase();
+
+        if (/search|sök/.test(hintText)) {
+            return false;
+        }
+
+        if (node.closest('[role="search"]')) {
+            return false;
+        }
+
+        if (node.closest('[data-pagelet*="Chat"], [data-pagelet*="Messenger"], [aria-label*="Messenger"], [aria-label*="Message thread"], [aria-label*="Konversation"]')) {
+            return false;
+        }
+
+        return !!node.closest('[role="main"], [role="dialog"], [role="article"], [role="listitem"], form, [data-pagelet], [data-ad-preview="message"], [data-ad-comet-preview="message"]');
+    }
+
     window.TNNetworksPlatformRegistry.register({
         id: 'facebook',
         label: 'Facebook',
         matchesHost: function (hostname) {
             return hostname.indexOf('facebook.com') !== -1;
         },
+        isSupportedPage: isSupportedPage,
+        supportsComposerTarget: supportsComposerTarget,
         detectResponderName: detectResponderName,
         enableNetworkCapture: true,
     });

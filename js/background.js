@@ -315,7 +315,8 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
                 sendResponse({ok: false, error: missingTokenMessage});
                 chrome.tabs.sendMessage(requestTabId, {
                     type: 'GPT_RESPONSE',
-                    payload: missingTokenMessage
+                    payload: missingTokenMessage,
+                    ok: false
                 });
                 return;
             }
@@ -337,7 +338,7 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
             var toolsResponse = await callToolsSocialGpt(data.toolsApiToken, baseUrl, payload);
             var output = toolsResponse.ok ? toolsResponse.response : toolsResponse.error;
 
-            chrome.tabs.sendMessage(requestTabId, {type: 'GPT_RESPONSE', payload: output});
+            chrome.tabs.sendMessage(requestTabId, {type: 'GPT_RESPONSE', payload: output, ok: toolsResponse.ok});
             sendResponse({ok: toolsResponse.ok, error: toolsResponse.error || null});
         });
         return true;

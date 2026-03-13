@@ -1,11 +1,11 @@
 const PROD_BASE_URL = 'https://tools.tornevall.net';
 const DEV_BASE_URL = 'https://tools.tornevall.com';
 const SETTINGS_PATH = '/api/social-media-tools/extension/settings';
+const FACEBOOK_OUTCOME_CONFIG_PATH = '/api/social-media-tools/facebook/outcome-config';
 const TEST_PATH = '/api/social-media-tools/extension/test';
 const AI_PATH = '/api/ai/socialgpt/respond';
 const DEBUG_LOG_REQUEST = 'GET_DEBUG_LOGS';
 const DEBUG_CLEAR_REQUEST = 'CLEAR_DEBUG_LOGS';
-const DEFAULT_SYSTEM_PROMPT = 'You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.';
 const DEFAULT_MOOD = 'Neutral and formal';
 const DEFAULT_TEST_QUESTION = 'A Facebook user writes: "Hi, what does this tool help you with?" Reply in one short sentence in your configured tone and style.';
 
@@ -187,6 +187,8 @@ document.addEventListener('DOMContentLoaded', function () {
     const systemPromptInput = document.getElementById('systemPrompt');
     const devModeCheckbox = document.getElementById('devMode');
     const facebookAdminDebugCheckbox = document.getElementById('facebookAdminDebugEnabled');
+    const pageNetworkDebugCheckbox = document.getElementById('pageNetworkDebugEnabled');
+    const enableUnsupportedComposeCheckbox = document.getElementById('enableUnsupportedCompose');
     const endpointNote = document.getElementById('endpointNote');
     const openToolsDashboardLink = document.getElementById('openToolsDashboardLink');
     const openToolsDashboardLinkInline = document.getElementById('openToolsDashboardLinkInline');
@@ -288,6 +290,29 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
+    async function syncRemoteFacebookOutcomeConfig(token, baseUrl) {
+        const result = await apiRequest(baseUrl, token, FACEBOOK_OUTCOME_CONFIG_PATH);
+        if (!result.ok || !result.data || !result.data.outcome_detection) {
+            await appendPopupDebugLog({
+                level: 'warning',
+                category: 'popup-api',
+                message: 'Could not sync Facebook outcome config from Tools. Using local extension fallback rules.',
+                meta: {
+                    baseUrl: baseUrl,
+                    error: extractApiMessage(result.data, 'Unknown outcome-config error.'),
+                }
+            });
+            return false;
+        }
+
+        chrome.storage.sync.set({
+            facebookAdminOutcomeConfig: result.data.outcome_detection,
+            facebookAdminOutcomeConfigVersion: result.data.outcome_detection.version || null,
+        });
+
+        return true;
+    }
+
     async function loadRemoteSettings() {
         const token = apiKeyInput.value.trim();
         if (!token) {
@@ -316,6 +341,7 @@ document.addEventListener('DOMContentLoaded', function () {
             defaultMood: settings.mood || DEFAULT_MOOD,
             defaultCustomMood: settings.custom_mood || '',
         });
+        await syncRemoteFacebookOutcomeConfig(token, baseUrl);
 
         setStatus(status, 'Settings loaded from ' + baseUrl + '.', false);
 
@@ -328,6 +354,8 @@ document.addEventListener('DOMContentLoaded', function () {
         'toolsApiToken',
         'devMode',
         'facebookAdminDebugEnabled',
+        'pageNetworkDebugEnabled',
+        'enableUnsupportedCompose',
         'responderName',
         'chatGptSystemPrompt',
         'autoDetectResponder',
@@ -341,6 +369,8 @@ document.addEventListener('DOMContentLoaded', function () {
         autoDetectCheckbox.checked = data.autoDetectResponder !== false;
         devModeCheckbox.checked = !!data.devMode;
         facebookAdminDebugCheckbox.checked = !!data.facebookAdminDebugEnabled;
+        pageNetworkDebugCheckbox.checked = !!data.pageNetworkDebugEnabled;
+        enableUnsupportedComposeCheckbox.checked = !!data.enableUnsupportedCompose;
         renderEndpointNote();
         renderDebugConsoleVisibility();
 
@@ -372,6 +402,22 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
+    pageNetworkDebugCheckbox.addEventListener('change', function () {
+        chrome.storage.sync.set({pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked}, function () {
+            setStatus(status, pageNetworkDebugCheckbox.checked
+                ? 'In-page XHR debug overlay enabled on supported pages.'
+                : 'In-page XHR debug overlay disabled.', false);
+        });
+    });
+
+    enableUnsupportedComposeCheckbox.addEventListener('change', function () {
+        chrome.storage.sync.set({enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked}, function () {
+            setStatus(status, enableUnsupportedComposeCheckbox.checked
+                ? 'Experimental compose button enabled on unsupported sites.'
+                : 'Compose button limited to supported sites again.', false);
+        });
+    });
+
     saveBtn.addEventListener('click', async function () {
         const token = apiKeyInput.value.trim();
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
@@ -380,6 +426,8 @@ document.addEventListener('DOMContentLoaded', function () {
             toolsApiToken: token,
             devMode: devModeCheckbox.checked,
             facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
+            pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
+            enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
         });
 
         if (!token) {
@@ -408,6 +456,7 @@ document.addEventListener('DOMContentLoaded', function () {
             defaultMood: DEFAULT_MOOD,
             defaultCustomMood: '',
         });
+        await syncRemoteFacebookOutcomeConfig(token, baseUrl);
 
         setStatus(status, 'Settings saved to ' + baseUrl + '.', false);
 
@@ -420,7 +469,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const token = apiKeyInput.value.trim();
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
         const question = testQuestionInput.value.trim() || DEFAULT_TEST_QUESTION;
-        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, autoDetectCheckbox];
+        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, pageNetworkDebugCheckbox, enableUnsupportedComposeCheckbox, autoDetectCheckbox];
 
         if (!token) {
             setStatus(status, 'Paste a personal bearer token first, then test the connection.', true);
@@ -434,6 +483,8 @@ document.addEventListener('DOMContentLoaded', function () {
             toolsApiToken: token,
             devMode: devModeCheckbox.checked,
             facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
+            pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
+            enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
         });
 
         const saveResult = await apiRequest(baseUrl, token, SETTINGS_PATH, {

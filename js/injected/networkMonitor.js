@@ -26,6 +26,213 @@
         return String(value || '').replace(/\s+/g, ' ').trim();
     }
 
+    function getCurrentAdminSourceUrl() {
+        return (window.location.origin + window.location.pathname).replace(/\/+$/, '');
+    }
+
+    function getCurrentAdminSourceLabel() {
+        var parts = String(document.title || '')
+            .split('|')
+            .map(function (part) {
+                return normalizeWhitespace(part);
+            })
+            .filter(function (part) {
+                return !!part && !/facebook/i.test(part) && !/admin[_\s-]*activit|activity log|aktivitetslogg|moderation/i.test(part);
+            });
+
+        if (!parts.length) {
+            return null;
+        }
+
+        parts.sort(function (a, b) {
+            return b.length - a.length;
+        });
+
+        return parts[0] || null;
+    }
+
+    function normalizeDigits(value) {
+        var text = normalizeWhitespace(value);
+        return /^\d{4,}$/.test(text) ? text : '';
+    }
+
+    function extractFacebookGroupPathIdentity(url) {
+        try {
+            var parsed = new URL(url, window.location.origin);
+            var segments = parsed.pathname.replace(/^\/+|\/+$/g, '').split('/');
+            var second = normalizeWhitespace(segments[1] || '');
+            if (segments[0] !== 'groups' || !second) {
+                return null;
+            }
+
+            return {
+                source_url: (parsed.origin + parsed.pathname).replace(/\/+$/, ''),
+                external_id: normalizeDigits(second) || '',
+                external_slug: normalizeDigits(second) ? '' : second,
+            };
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function mergeSourceIdentity(left, right) {
+        var base = left && typeof left === 'object' ? {
+            external_id: normalizeWhitespace(left.external_id || ''),
+            external_slug: normalizeWhitespace(left.external_slug || ''),
+            name: normalizeWhitespace(left.name || ''),
+            source_url: normalizeWhitespace(left.source_url || ''),
+            url_aliases: Array.isArray(left.url_aliases) ? left.url_aliases.slice() : [],
+        } : {
+            external_id: '',
+            external_slug: '',
+            name: '',
+            source_url: '',
+            url_aliases: [],
+        };
+
+        if (!right || typeof right !== 'object') {
+            return base;
+        }
+
+        var nextId = normalizeDigits(right.external_id || '');
+        var nextSlug = normalizeWhitespace(right.external_slug || '');
+        var nextName = normalizeWhitespace(right.name || '');
+        var nextSourceUrl = normalizeWhitespace(right.source_url || '');
+        var nextAliases = Array.isArray(right.url_aliases) ? right.url_aliases.slice() : [];
+
+        if (nextId) {
+            base.external_id = nextId;
+        }
+
+        if (nextSlug && !normalizeDigits(nextSlug)) {
+            base.external_slug = nextSlug;
+        }
+
+        if (nextName && (!base.name || nextName.length > base.name.length)) {
+            base.name = nextName;
+        }
+
+        if (nextSourceUrl) {
+            if (!base.source_url || (!base.external_slug && nextSourceUrl.indexOf('/groups/') !== -1 && nextSourceUrl.indexOf('/admin') !== -1)) {
+                base.source_url = nextSourceUrl;
+            }
+            nextAliases.push(nextSourceUrl);
+        }
+
+        base.url_aliases = Array.from(new Set(base.url_aliases.concat(nextAliases).map(function (url) {
+            return normalizeWhitespace(url);
+        }).filter(Boolean)));
+
+        if (!base.source_url && base.url_aliases.length) {
+            base.source_url = base.url_aliases[0];
+        }
+
+        if (!base.external_id && base.external_slug && normalizeDigits(base.external_slug)) {
+            base.external_id = base.external_slug;
+            base.external_slug = '';
+        }
+
+        return base;
+    }
+
+    function buildSourceIdentityFromCandidate(candidate) {
+        if (!candidate || typeof candidate !== 'object') {
+            return null;
+        }
+
+        var sourceUrl = normalizeWhitespace(candidate.url || candidate.group_url || candidate.permalink_url || '');
+        var urlIdentity = sourceUrl ? extractFacebookGroupPathIdentity(sourceUrl) : null;
+        var externalId = normalizeDigits(candidate.id || candidate.legacy_fbid || candidate.group_id || candidate.groupID || candidate.groupId || '') || (urlIdentity && urlIdentity.external_id ? urlIdentity.external_id : '');
+        var externalSlug = normalizeWhitespace(candidate.slug || candidate.vanity || candidate.username || '') || (urlIdentity && urlIdentity.external_slug ? urlIdentity.external_slug : '');
+
+        if (externalSlug && normalizeDigits(externalSlug)) {
+            if (!externalId) {
+                externalId = externalSlug;
+            }
+            externalSlug = '';
+        }
+
+        return {
+            external_id: externalId || '',
+            external_slug: externalSlug || '',
+            name: normalizeWhitespace(candidate.name || candidate.title || candidate.text || candidate.label || ''),
+            source_url: (urlIdentity && urlIdentity.source_url) || sourceUrl || '',
+            url_aliases: sourceUrl ? [sourceUrl] : [],
+        };
+    }
+
+    function looksLikeSourceIdentityCandidate(candidate) {
+        if (!candidate || typeof candidate !== 'object') {
+            return false;
+        }
+
+        var typename = normalizeWhitespace(candidate.__typename || '').toLowerCase();
+        var sourceUrl = normalizeWhitespace(candidate.url || candidate.group_url || candidate.permalink_url || '');
+
+        return !!(
+            candidate.group_id
+            || candidate.groupID
+            || candidate.groupId
+            || candidate.management_activities
+            || (sourceUrl && sourceUrl.indexOf('/groups/') !== -1)
+            || (typename.indexOf('group') !== -1 && typename.indexOf('activity') === -1)
+        );
+    }
+
+    function extractSourceIdentityFromValue(value) {
+        if (!value || typeof value !== 'object') {
+            return null;
+        }
+
+        var candidates = [];
+        var directUrl = normalizeWhitespace(value.url || value.group_url || value.permalink_url || '');
+
+        if (value.management_activity_log_target && typeof value.management_activity_log_target === 'object') {
+            candidates.push(value.management_activity_log_target);
+        }
+        if (value.data && value.data.management_activity_log_target && typeof value.data.management_activity_log_target === 'object') {
+            candidates.push(value.data.management_activity_log_target);
+        }
+        if (value.result && value.result.data && value.result.data.management_activity_log_target && typeof value.result.data.management_activity_log_target === 'object') {
+            candidates.push(value.result.data.management_activity_log_target);
+        }
+        if (value.__bbox && value.__bbox.result && value.__bbox.result.data && value.__bbox.result.data.management_activity_log_target && typeof value.__bbox.result.data.management_activity_log_target === 'object') {
+            candidates.push(value.__bbox.result.data.management_activity_log_target);
+        }
+        if (value.payload && value.payload.__bbox && value.payload.__bbox.result && value.payload.__bbox.result.data && value.payload.__bbox.result.data.management_activity_log_target && typeof value.payload.__bbox.result.data.management_activity_log_target === 'object') {
+            candidates.push(value.payload.__bbox.result.data.management_activity_log_target);
+        }
+        if (value.next && value.next.result && value.next.result.data && value.next.result.data.management_activity_log_target && typeof value.next.result.data.management_activity_log_target === 'object') {
+            candidates.push(value.next.result.data.management_activity_log_target);
+        }
+        if (value.next && value.next.payload && value.next.payload.__bbox && value.next.payload.__bbox.result && value.next.payload.__bbox.result.data && value.next.payload.__bbox.result.data.management_activity_log_target && typeof value.next.payload.__bbox.result.data.management_activity_log_target === 'object') {
+            candidates.push(value.next.payload.__bbox.result.data.management_activity_log_target);
+        }
+        if (value.data && value.data.node && looksLikeSourceIdentityCandidate(value.data.node)) {
+            candidates.push(value.data.node);
+        }
+        if (value.result && value.result.data && value.result.data.node && looksLikeSourceIdentityCandidate(value.result.data.node)) {
+            candidates.push(value.result.data.node);
+        }
+        if (value.payload && value.payload.__bbox && value.payload.__bbox.result && value.payload.__bbox.result.data && value.payload.__bbox.result.data.node && looksLikeSourceIdentityCandidate(value.payload.__bbox.result.data.node)) {
+            candidates.push(value.payload.__bbox.result.data.node);
+        }
+        if (value.next && value.next.result && value.next.result.data && value.next.result.data.node && looksLikeSourceIdentityCandidate(value.next.result.data.node)) {
+            candidates.push(value.next.result.data.node);
+        }
+        if (value.next && value.next.payload && value.next.payload.__bbox && value.next.payload.__bbox.result && value.next.payload.__bbox.result.data && value.next.payload.__bbox.result.data.node && looksLikeSourceIdentityCandidate(value.next.payload.__bbox.result.data.node)) {
+            candidates.push(value.next.payload.__bbox.result.data.node);
+        }
+
+        if (value.group_id || value.groupID || value.groupId || (directUrl && directUrl.indexOf('/groups/') !== -1)) {
+            candidates.push(value);
+        }
+
+        return candidates.reduce(function (context, candidate) {
+            return mergeSourceIdentity(context, buildSourceIdentityFromCandidate(candidate));
+        }, null);
+    }
+
     function detectHandledOutcome(text) {
         var lowered = normalizeWhitespace(text).toLowerCase();
 
@@ -86,14 +293,19 @@
                 return;
             }
 
-            var entityName = normalizeWhitespace(range.entity && (range.entity.name || range.entity.text || range.entity.short_name) ? (range.entity.name || range.entity.text || range.entity.short_name) : '');
+            var entityName = normalizeWhitespace(range.entity && (range.entity.name || range.entity.text) ? (range.entity.name || range.entity.text) : '');
             var slicedName = '';
+            var shortName = normalizeWhitespace(range.entity && range.entity.short_name ? range.entity.short_name : '');
 
             if (!entityName && titleText && typeof range.offset === 'number' && typeof range.length === 'number') {
                 slicedName = normalizeWhitespace(titleText.slice(range.offset, range.offset + range.length));
             }
 
-            var name = entityName || slicedName;
+            if (!slicedName && titleText && typeof range.offset === 'number' && typeof range.length === 'number') {
+                slicedName = normalizeWhitespace(titleText.slice(range.offset, range.offset + range.length));
+            }
+
+            var name = entityName || slicedName || shortName;
             if (name && names.indexOf(name) === -1) {
                 names.push(name);
             }
@@ -102,8 +314,13 @@
         return names;
     }
 
-    function parseActivityNode(node) {
-        if (!node || node.__typename !== 'GroupAdminActivity') {
+    function isAdminActivityTypename(typename) {
+        var value = normalizeWhitespace(typename);
+        return value === 'GroupAdminActivity' || value === 'GroupsCometAdminActivity';
+    }
+
+    function parseActivityNode(node, sourceIdentity) {
+        if (!node || !isAdminActivityTypename(node.__typename)) {
             return null;
         }
 
@@ -118,6 +335,8 @@
         var actorName = isAutomatic ? 'Automatic moderation' : (names[0] || '');
         var targetName = isAutomatic ? (names[0] || names[1] || '') : (names[1] || '');
         var handledOutcome = detectHandledOutcome(actionText);
+        var sourceUrl = normalizeWhitespace(sourceIdentity && sourceIdentity.source_url ? sourceIdentity.source_url : '') || getCurrentAdminSourceUrl();
+        var sourceName = normalizeWhitespace(sourceIdentity && sourceIdentity.name ? sourceIdentity.name : '') || getCurrentAdminSourceLabel();
 
         if (!actorName && names[0]) {
             actorName = names[0];
@@ -128,8 +347,9 @@
         }
 
         return {
-            key: [window.location.pathname, String(node.id || ''), actorName, targetName || '', actionText].join('|'),
-            source_url: window.location.origin + window.location.pathname,
+            key: [sourceUrl, String(node.id || ''), actorName, targetName || '', actionText].join('|'),
+            source_url: sourceUrl,
+            source_label: sourceName,
             activity_url: window.location.href,
             occurred_at: node.activity_time ? new Date(node.activity_time * 1000).toISOString() : null,
             actor_name: actorName,
@@ -139,18 +359,38 @@
             handled_status_text: detectHandledStatusText(actionText, isAutomatic, handledOutcome),
             raw_blue_segment: actionText,
             network_activity_id: node.id || null,
+            source_external_id: sourceIdentity && sourceIdentity.external_id ? sourceIdentity.external_id : null,
+            source_external_slug: sourceIdentity && sourceIdentity.external_slug ? sourceIdentity.external_slug : null,
+            source_name: sourceName || null,
             is_automatic_action: isAutomatic
         };
     }
 
-    function walkForActivities(value, results, seenKeys) {
+    function getActivityEdgeLists(value) {
+        return [
+            value.data && value.data.node && value.data.node.management_activities && value.data.node.management_activities.edges,
+            value.data && value.data.management_activity_log_target && value.data.management_activity_log_target.management_activities && value.data.management_activity_log_target.management_activities.edges,
+            value.result && value.result.data && value.result.data.management_activity_log_target && value.result.data.management_activity_log_target.management_activities && value.result.data.management_activity_log_target.management_activities.edges,
+            value.__bbox && value.__bbox.result && value.__bbox.result.data && value.__bbox.result.data.management_activity_log_target && value.__bbox.result.data.management_activity_log_target.management_activities && value.__bbox.result.data.management_activity_log_target.management_activities.edges,
+            value.payload && value.payload.__bbox && value.payload.__bbox.result && value.payload.__bbox.result.data && value.payload.__bbox.result.data.management_activity_log_target && value.payload.__bbox.result.data.management_activity_log_target.management_activities && value.payload.__bbox.result.data.management_activity_log_target.management_activities.edges,
+            value.result && value.result.data && value.result.data.node && value.result.data.node.management_activities && value.result.data.node.management_activities.edges,
+            value.next && value.next.result && value.next.result.data && value.next.result.data.management_activity_log_target && value.next.result.data.management_activity_log_target.management_activities && value.next.result.data.management_activity_log_target.management_activities.edges,
+            value.next && value.next.result && value.next.result.data && value.next.result.data.node && value.next.result.data.node.management_activities && value.next.result.data.node.management_activities.edges,
+            value.next && value.next.payload && value.next.payload.__bbox && value.next.payload.__bbox.result && value.next.payload.__bbox.result.data && value.next.payload.__bbox.result.data.management_activity_log_target && value.next.payload.__bbox.result.data.management_activity_log_target.management_activities && value.next.payload.__bbox.result.data.management_activity_log_target.management_activities.edges,
+            value.next && value.next.payload && value.next.payload.__bbox && value.next.payload.__bbox.result && value.next.payload.__bbox.result.data && value.next.payload.__bbox.result.data.node && value.next.payload.__bbox.result.data.node.management_activities && value.next.payload.__bbox.result.data.node.management_activities.edges,
+        ];
+    }
+
+    function walkForActivities(value, results, seenKeys, sourceIdentity) {
         if (!value) {
             return;
         }
 
+        var resolvedSourceIdentity = mergeSourceIdentity(sourceIdentity, extractSourceIdentityFromValue(value));
+
         if (Array.isArray(value)) {
             value.forEach(function (item) {
-                walkForActivities(item, results, seenKeys);
+                walkForActivities(item, results, seenKeys, resolvedSourceIdentity);
             });
             return;
         }
@@ -159,27 +399,21 @@
             return;
         }
 
-        if (value.__typename === 'GroupAdminActivity') {
-            var parsedNode = parseActivityNode(value);
+        if (isAdminActivityTypename(value.__typename)) {
+            var parsedNode = parseActivityNode(value, resolvedSourceIdentity);
             if (parsedNode && !seenKeys[parsedNode.key]) {
                 seenKeys[parsedNode.key] = true;
                 results.push(parsedNode);
             }
         }
 
-        var edges1 = value.data && value.data.node && value.data.node.management_activities && value.data.node.management_activities.edges;
-        var edges2 = value.data && value.data.management_activity_log_target && value.data.management_activity_log_target.management_activities && value.data.management_activity_log_target.management_activities.edges;
-        var edges3 = value.result && value.result.data && value.result.data.management_activity_log_target && value.result.data.management_activity_log_target.management_activities && value.result.data.management_activity_log_target.management_activities.edges;
-        var edges4 = value.__bbox && value.__bbox.result && value.__bbox.result.data && value.__bbox.result.data.management_activity_log_target && value.__bbox.result.data.management_activity_log_target.management_activities && value.__bbox.result.data.management_activity_log_target.management_activities.edges;
-        var edges5 = value.result && value.result.data && value.result.data.node && value.result.data.node.management_activities && value.result.data.node.management_activities.edges;
-
-        [edges1, edges2, edges3, edges4, edges5].forEach(function (edges) {
+        getActivityEdgeLists(value).forEach(function (edges) {
             if (!Array.isArray(edges)) {
                 return;
             }
 
             edges.forEach(function (edge) {
-                var parsedNode = parseActivityNode(edge && edge.node ? edge.node : null);
+                var parsedNode = parseActivityNode(edge && edge.node ? edge.node : null, resolvedSourceIdentity);
                 if (parsedNode && !seenKeys[parsedNode.key]) {
                     seenKeys[parsedNode.key] = true;
                     results.push(parsedNode);
@@ -188,35 +422,44 @@
         });
 
         Object.keys(value).forEach(function (key) {
-            if (key === 'data' || key === 'result' || key === 'payload' || key === 'extensions' || key === '__bbox' || key === 'require') {
-                walkForActivities(value[key], results, seenKeys);
+            if (key === 'data' || key === 'result' || key === 'payload' || key === 'extensions' || key === '__bbox' || key === 'require' || key === 'handle' || key === 'next') {
+                walkForActivities(value[key], results, seenKeys, resolvedSourceIdentity);
             }
         });
     }
 
-    function parseDetectedEntriesFromResponse(text) {
+    function parseDetectedEntriesFromResponse(text, sourceIdentity) {
         var raw = String(text || '');
         var lowered = raw.toLowerCase();
         var results = [];
         var seenKeys = {};
+        var parsedChunks = [];
 
-        if (!raw || (lowered.indexOf('groupadminactivity') === -1 && lowered.indexOf('management_activities') === -1 && lowered.indexOf('management_activity_log_target') === -1 && lowered.indexOf('admin_activities') === -1)) {
+        if (!raw || (lowered.indexOf('groupadminactivity') === -1 && lowered.indexOf('groupscometadminactivity') === -1 && lowered.indexOf('management_activities') === -1 && lowered.indexOf('management_activity_log_target') === -1 && lowered.indexOf('admin_activities') === -1 && lowered.indexOf('relayprefetchedstreamcache') === -1 && lowered.indexOf('scheduledserverjs') === -1 && lowered.indexOf('cometgroupadminactivitiesactivitylogcontentqueryrelaypreloader') === -1 && lowered.indexOf('adp_cometgroupadminactivitiesactivitylogcontentqueryrelaypreloader') === -1 && lowered.indexOf('activity_title') === -1)) {
             return results;
         }
 
         raw.split(/\n+(?=\{)/g).forEach(function (part) {
             var parsed = safeJsonParse(part);
             if (parsed) {
-                walkForActivities(parsed, results, seenKeys);
+                parsedChunks.push(parsed);
             }
         });
 
-        if (!results.length) {
+        if (!parsedChunks.length) {
             var singleParsed = safeJsonParse(raw);
             if (singleParsed) {
-                walkForActivities(singleParsed, results, seenKeys);
+                parsedChunks.push(singleParsed);
             }
         }
+
+        parsedChunks.forEach(function (parsed) {
+            sourceIdentity = mergeSourceIdentity(sourceIdentity, extractSourceIdentityFromValue(parsed));
+        });
+
+        parsedChunks.forEach(function (parsed) {
+            walkForActivities(parsed, results, seenKeys, sourceIdentity);
+        });
 
         return results;
     }
@@ -415,6 +658,7 @@
         var params = null;
         var json = null;
         var variables = null;
+        var sourceIdentity = null;
 
         if (raw) {
             try {
@@ -434,6 +678,14 @@
             variables = json.variables;
         }
 
+        if (variables && typeof variables === 'object') {
+            sourceIdentity = mergeSourceIdentity(sourceIdentity, extractSourceIdentityFromValue(variables));
+        }
+
+        if (json && typeof json === 'object') {
+            sourceIdentity = mergeSourceIdentity(sourceIdentity, extractSourceIdentityFromValue(json));
+        }
+
         return {
             raw: raw,
             preview: clip(raw, 1200),
@@ -442,6 +694,7 @@
             friendly_name: (params && (params.get('fb_api_req_friendly_name') || params.get('friendly_name'))) || (json && (json.fb_api_req_friendly_name || json.friendly_name || json.operationName)) || '',
             operation_name: (params && params.get('fb_api_req_friendly_name')) || (json && (json.operationName || json.fb_api_req_friendly_name)) || '',
             variables_preview: variables ? clip(typeof variables === 'string' ? variables : JSON.stringify(variables), 800) : '',
+            source_identity: sourceIdentity,
         };
     }
 
@@ -449,7 +702,7 @@
         var preview = clip(text, 2000);
         return {
             response_preview: preview,
-            mentions_activity_log: /GroupAdminActivity|management_activities|management_activity_log_target|admin_activities/i.test(String(text || '')),
+            mentions_activity_log: /GroupAdminActivity|GroupsCometAdminActivity|management_activities|management_activity_log_target|admin_activities|RelayPrefetchedStreamCache|ScheduledServerJS|CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|activity_title|"__typename"\s*:\s*"GroupAdminActivity"|"__typename"\s*:\s*"GroupsCometAdminActivity"/i.test(String(text || '')),
         };
     }
 
@@ -528,8 +781,8 @@
         var bodyMeta = parseBodyMeta(base.request_body);
         var responseMeta = extractResponseHints(base.response_text || '');
         var batchId = [Date.now(), Math.round(Math.random() * 1000000), clip(base.url || '', 120)].join(':');
-        var shouldParseDetections = !!(urlMeta.is_graphql || responseMeta.mentions_activity_log || /admin_activities|management_activities|management_activity_log_target|groupadminactivity/i.test(String(bodyMeta.preview || '')));
-        var detectedEntries = shouldParseDetections ? parseDetectedEntriesFromResponse(base.response_text || '') : [];
+        var shouldParseDetections = !!(urlMeta.is_graphql || responseMeta.mentions_activity_log || /admin_activities|management_activities|management_activity_log_target|groupadminactivity|groupscometadminactivity|relayprefetchedstreamcache|scheduledserverjs|cometgroupadminactivitiesactivitylogcontentqueryrelaypreloader|adp_cometgroupadminactivitiesactivitylogcontentqueryrelaypreloader|activity_title|"__typename"\s*:\s*"groupadminactivity"|"__typename"\s*:\s*"groupscometadminactivity"/i.test(String(bodyMeta.preview || '')));
+        var detectedEntries = shouldParseDetections ? parseDetectedEntriesFromResponse(base.response_text || '', bodyMeta.source_identity) : [];
         var shouldParseComments = !!(urlMeta.is_graphql && /comment|reply|feedback|ufi/i.test(String(bodyMeta.preview || '') + ' ' + String(responseMeta.response_preview || '')));
         var detectedComments = shouldParseComments ? parseDetectedCommentsFromResponse(base.response_text || '', batchId) : [];
 

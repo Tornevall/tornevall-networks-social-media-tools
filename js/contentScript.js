@@ -1483,6 +1483,7 @@ function handleLocationChange(reason) {
         : 'Admin activities page detected, but monitor injection has not completed yet.';
     updateAdminActivitiesControl();
     scheduleAdminActivitiesScan('location-change');
+    scheduleAdminActivitiesBootstrapWarmup('location-change');
     adminDebugConsoleInfo('[TN Social Tools] Facebook admin_activities route detected.', {
         version: EXTENSION_VERSION,
         reason: reason,
@@ -1630,6 +1631,309 @@ function rememberDetectedAdminEntries(entries, reason) {
     return added;
 }
 
+function bootstrapSafeJsonParse(value) {
+    try {
+        return JSON.parse(value);
+    } catch (error) {
+        return null;
+    }
+}
+
+function getBootstrapAdminScriptTextMatcher() {
+    return /GroupAdminActivity|GroupsCometAdminActivity|management_activities|management_activity_log_target|admin_activities|RelayPrefetchedStreamCache|ScheduledServerJS|CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|activity_title/i;
+}
+
+function isStrongBootstrapAdminScriptText(raw) {
+    const text = String(raw || '');
+    return /adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader/.test(text)
+        || /"__typename"\s*:\s*"GroupAdminActivity"|"__typename"\s*:\s*"GroupsCometAdminActivity"/.test(text)
+        || (/management_activity_log_target/.test(text) && /management_activities/.test(text) && /activity_title/.test(text));
+}
+
+function scoreBootstrapAdminActivityScriptNode(node, raw) {
+    const text = String(raw || '');
+    const type = normalizeWhitespace(node && node.getAttribute ? node.getAttribute('type') : '').toLowerCase();
+    let score = 0;
+
+    if (node && document.body && document.body.contains(node)) score += 20;
+    if (node && node.matches && node.matches('script[type="application/json"][data-sjs]')) {
+        score += 140;
+    } else if (node && node.hasAttribute && node.hasAttribute('data-sjs')) {
+        score += 90;
+    } else if (type === 'application/json') {
+        score += 60;
+    }
+
+    if (/adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader/.test(text)) score += 120;
+    if (/"__typename"\s*:\s*"GroupAdminActivity"|"__typename"\s*:\s*"GroupsCometAdminActivity"/.test(text)) score += 110;
+    if (/RelayPrefetchedStreamCache/.test(text)) score += 60;
+    if (/management_activity_log_target/.test(text)) score += 40;
+    if (/management_activities/.test(text)) score += 35;
+    if (/GroupAdminActivity|GroupsCometAdminActivity/.test(text)) score += 30;
+    if (/activity_title/.test(text)) score += 15;
+
+    return score;
+}
+
+function collectBootstrapAdminActivityScriptNodes() {
+    const bodyRoot = document.body || null;
+    const root = bodyRoot || document.documentElement;
+    const results = [];
+    const seenNodes = new Set();
+    const matcher = getBootstrapAdminScriptTextMatcher();
+    const targetedXpathQueries = [
+        ".//script[@type='application/json' and contains(., 'adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader')]",
+        ".//script[@type='application/json' and contains(., 'CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader')]",
+        ".//script[@type='application/json' and contains(., 'GroupAdminActivity')]",
+        ".//script[@type='application/json' and contains(., 'management_activity_log_target')]",
+    ];
+
+    function appendNode(node) {
+        if (!node || seenNodes.has(node)) {
+            return;
+        }
+        seenNodes.add(node);
+        results.push(node);
+    }
+
+    function appendXPathMatches(scope, xpath) {
+        if (!scope || typeof document.evaluate !== 'function' || typeof XPathResult === 'undefined') {
+            return;
+        }
+
+        try {
+            const snapshot = document.evaluate(xpath, scope, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+            for (let index = 0; index < snapshot.snapshotLength; index += 1) {
+                appendNode(snapshot.snapshotItem(index));
+            }
+        } catch (error) {
+            // Fall back to selector scanning below.
+        }
+    }
+
+    if (bodyRoot) {
+        targetedXpathQueries.forEach(function (xpath) {
+            appendXPathMatches(bodyRoot, xpath);
+        });
+    }
+
+    const primaryScripts = bodyRoot ? bodyRoot.querySelectorAll('script[type="application/json"]') : [];
+    for (let i = 0; i < primaryScripts.length; i += 1) {
+        const node = primaryScripts[i];
+        const raw = node && typeof node.textContent === 'string' ? node.textContent : '';
+        if (raw && raw.length >= 40 && (isStrongBootstrapAdminScriptText(raw) || matcher.test(raw))) {
+            appendNode(node);
+        }
+    }
+
+    if (!results.length && root) {
+        const fallbackScripts = root.querySelectorAll('script[type="application/json"], script[data-sjs], script:not([src])');
+        for (let i = 0; i < fallbackScripts.length; i += 1) {
+            const node = fallbackScripts[i];
+            const raw = node && typeof node.textContent === 'string' ? node.textContent : '';
+            if (raw && raw.length >= 40 && matcher.test(raw)) {
+                appendNode(node);
+            }
+        }
+    }
+
+    results.sort(function (left, right) {
+        return scoreBootstrapAdminActivityScriptNode(right, right && right.textContent) - scoreBootstrapAdminActivityScriptNode(left, left && left.textContent);
+    });
+
+    return results;
+}
+
+function extractAdminActivityNamesFromTitle(title) {
+    const titleText = normalizeWhitespace(title && title.text ? title.text : '');
+    const ranges = title && Array.isArray(title.ranges) ? title.ranges.slice() : [];
+    const names = [];
+
+    ranges.sort(function (a, b) {
+        return (a && typeof a.offset === 'number' ? a.offset : 0) - (b && typeof b.offset === 'number' ? b.offset : 0);
+    });
+
+    ranges.forEach(function (range) {
+        if (!range) {
+            return;
+        }
+
+        const entityName = normalizeWhitespace(range.entity && (range.entity.name || range.entity.text) ? (range.entity.name || range.entity.text) : '');
+        const shortName = normalizeWhitespace(range.entity && range.entity.short_name ? range.entity.short_name : '');
+        let slicedName = '';
+
+        if (!entityName && titleText && typeof range.offset === 'number' && typeof range.length === 'number') {
+            slicedName = normalizeWhitespace(titleText.slice(range.offset, range.offset + range.length));
+        }
+
+        const name = entityName || slicedName || shortName;
+        if (name && names.indexOf(name) === -1) {
+            names.push(name);
+        }
+    });
+
+    return names;
+}
+
+function isBootstrapAdminActivityTypename(typename) {
+    const value = normalizeWhitespace(typename);
+    return value === 'GroupAdminActivity' || value === 'GroupsCometAdminActivity';
+}
+
+function parseBootstrapAdminActivityNode(node) {
+    if (!node || !isBootstrapAdminActivityTypename(node.__typename)) {
+        return null;
+    }
+
+    const actionText = normalizeWhitespace(node.activity_title && node.activity_title.text ? node.activity_title.text : '');
+    if (!actionText || !shouldConsiderAdminActivityText(actionText)) {
+        return null;
+    }
+
+    const names = extractAdminActivityNamesFromTitle(node.activity_title);
+    const lowered = actionText.toLowerCase();
+    const isAutomatic = !!node.is_automatic_action || lowered.indexOf('automatiskt') !== -1 || lowered.indexOf('automatically') !== -1;
+    let actorName = isAutomatic ? 'Automatic moderation' : (names[0] || '');
+    const targetName = isAutomatic ? (names[0] || names[1] || '') : (names[1] || '');
+
+    if (!actorName && names[0]) {
+        actorName = names[0];
+    }
+    if (!actorName) {
+        actorName = isAutomatic ? 'Automatic moderation' : 'Unknown actor';
+    }
+
+    return normalizeAdminActivityEntry({
+        key: [location.href, String(node.id || ''), actorName, targetName || '', actionText].join('|'),
+        source_url: location.href,
+        activity_url: location.href,
+        occurred_at: node.activity_time ? new Date(node.activity_time * 1000).toISOString() : null,
+        actor_name: actorName,
+        action_text: actionText,
+        target_name: targetName || null,
+        handled_outcome: detectHandledOutcomeFromText(actionText),
+        handled_status_text: detectHandledStatusFromText(actionText),
+        raw_blue_segment: actionText,
+        is_automatic_action: isAutomatic,
+    });
+}
+
+function getBootstrapAdminActivityEdgeLists(value) {
+    return [
+        value.data && value.data.node && value.data.node.management_activities && value.data.node.management_activities.edges,
+        value.data && value.data.management_activity_log_target && value.data.management_activity_log_target.management_activities && value.data.management_activity_log_target.management_activities.edges,
+        value.result && value.result.data && value.result.data.management_activity_log_target && value.result.data.management_activity_log_target.management_activities && value.result.data.management_activity_log_target.management_activities.edges,
+        value.__bbox && value.__bbox.result && value.__bbox.result.data && value.__bbox.result.data.management_activity_log_target && value.__bbox.result.data.management_activity_log_target.management_activities && value.__bbox.result.data.management_activity_log_target.management_activities.edges,
+        value.payload && value.payload.__bbox && value.payload.__bbox.result && value.payload.__bbox.result.data && value.payload.__bbox.result.data.management_activity_log_target && value.payload.__bbox.result.data.management_activity_log_target.management_activities && value.payload.__bbox.result.data.management_activity_log_target.management_activities.edges,
+        value.next && value.next.result && value.next.result.data && value.next.result.data.management_activity_log_target && value.next.result.data.management_activity_log_target.management_activities && value.next.result.data.management_activity_log_target.management_activities.edges,
+        value.next && value.next.payload && value.next.payload.__bbox && value.next.payload.__bbox.result && value.next.payload.__bbox.result.data && value.next.payload.__bbox.result.data.management_activity_log_target && value.next.payload.__bbox.result.data.management_activity_log_target.management_activities && value.next.payload.__bbox.result.data.management_activity_log_target.management_activities.edges,
+    ];
+}
+
+function walkBootstrapAdminActivities(value, results, seenKeys) {
+    if (!value) {
+        return;
+    }
+
+    if (Array.isArray(value)) {
+        value.forEach(function (item) {
+            walkBootstrapAdminActivities(item, results, seenKeys);
+        });
+        return;
+    }
+
+    if (typeof value !== 'object') {
+        return;
+    }
+
+    if (isBootstrapAdminActivityTypename(value.__typename)) {
+        const parsedNode = parseBootstrapAdminActivityNode(value);
+        if (parsedNode && !seenKeys[parsedNode.key]) {
+            seenKeys[parsedNode.key] = true;
+            results.push(parsedNode);
+        }
+    }
+
+    getBootstrapAdminActivityEdgeLists(value).forEach(function (edgeList) {
+        if (!Array.isArray(edgeList)) {
+            return;
+        }
+
+        edgeList.forEach(function (edge) {
+            const parsedNode = parseBootstrapAdminActivityNode(edge && edge.node ? edge.node : null);
+            if (parsedNode && !seenKeys[parsedNode.key]) {
+                seenKeys[parsedNode.key] = true;
+                results.push(parsedNode);
+            }
+        });
+    });
+
+    Object.keys(value).forEach(function (key) {
+        if (key === 'data' || key === 'result' || key === 'payload' || key === 'extensions' || key === '__bbox' || key === 'require' || key === 'handle' || key === 'next') {
+            walkBootstrapAdminActivities(value[key], results, seenKeys);
+        }
+    });
+}
+
+function parseAdminActivityEntriesFromBootstrapText(text) {
+    const raw = String(text || '');
+    const lowered = raw.toLowerCase();
+    const results = [];
+    const seenKeys = {};
+    const parsedChunks = [];
+
+    if (!raw || (lowered.indexOf('groupadminactivity') === -1 && lowered.indexOf('groupscometadminactivity') === -1 && lowered.indexOf('management_activities') === -1 && lowered.indexOf('management_activity_log_target') === -1 && lowered.indexOf('admin_activities') === -1 && lowered.indexOf('relayprefetchedstreamcache') === -1 && lowered.indexOf('scheduledserverjs') === -1 && lowered.indexOf('cometgroupadminactivitiesactivitylogcontentqueryrelaypreloader') === -1 && lowered.indexOf('adp_cometgroupadminactivitiesactivitylogcontentqueryrelaypreloader') === -1 && lowered.indexOf('activity_title') === -1)) {
+        return results;
+    }
+
+    raw.split(/\n+(?=\{)/g).forEach(function (part) {
+        const parsed = bootstrapSafeJsonParse(part);
+        if (parsed) {
+            parsedChunks.push(parsed);
+        }
+    });
+
+    if (!parsedChunks.length) {
+        const singleParsed = bootstrapSafeJsonParse(raw);
+        if (singleParsed) {
+            parsedChunks.push(singleParsed);
+        }
+    }
+
+    parsedChunks.forEach(function (parsed) {
+        walkBootstrapAdminActivities(parsed, results, seenKeys);
+    });
+
+    return results;
+}
+
+function collectBootstrapAdminActivityEntries() {
+    if (!isFacebookAdminActivitiesPage()) {
+        return [];
+    }
+
+    const scripts = collectBootstrapAdminActivityScriptNodes();
+    const results = [];
+    const seenKeys = new Set();
+    const matcher = getBootstrapAdminScriptTextMatcher();
+
+    for (let i = 0; i < scripts.length; i += 1) {
+        const raw = scripts[i] && typeof scripts[i].textContent === 'string' ? scripts[i].textContent : '';
+        if (!raw || raw.length < 40 || !matcher.test(raw)) {
+            continue;
+        }
+
+        parseAdminActivityEntriesFromBootstrapText(raw).forEach(function (entry) {
+            if (entry && !seenKeys.has(entry.key)) {
+                seenKeys.add(entry.key);
+                results.push(entry);
+            }
+        });
+    }
+
+    return results;
+}
+
 function parseAdminActivityEntry(container) {
     const actionText = normalizeWhitespace(container.innerText || '');
     if (!shouldConsiderAdminActivityText(actionText)) {
@@ -1704,9 +2008,8 @@ async function submitAdminActivityEntriesBatch(entries) {
 }
 
 async function flushAdminActivitiesToTools(reason) {
-    if (!pendingAdminEntries.size) {
-        rememberDetectedAdminEntries(collectVisibleAdminActivityEntries(), reason || 'visible-scan');
-    }
+    rememberDetectedAdminEntries(collectBootstrapAdminActivityEntries(), reason || 'bootstrap-scan');
+    rememberDetectedAdminEntries(collectVisibleAdminActivityEntries(), reason || 'visible-scan');
 
     updateAdminActivitiesControl();
     if (!adminIngestEnabled) {
@@ -1766,6 +2069,22 @@ function scheduleAdminActivitiesScan(reason) {
         adminActivitiesScanScheduled = false;
         flushAdminActivitiesToTools(reason);
     }, 450);
+}
+
+function scheduleAdminActivitiesBootstrapWarmup(reason) {
+    if (!isFacebookAdminActivitiesPage()) {
+        return;
+    }
+
+    const expectedHref = location.href;
+    [0, 900, 2200].forEach(function (delay, index) {
+        setTimeout(function () {
+            if (location.href !== expectedHref || !isFacebookAdminActivitiesPage()) {
+                return;
+            }
+            scheduleAdminActivitiesScan((reason || 'bootstrap') + '-warmup-' + index);
+        }, delay);
+    });
 }
 
 // ---------------------------------------------
