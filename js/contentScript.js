@@ -61,16 +61,34 @@ function handleExtensionContextInvalidated(error) {
         return;
     }
 
+    const invalidationMessage = 'Extension was reloaded or updated. Uploads are paused in this tab until you reload the page.';
+
     extensionContextAvailable = false;
     adminDebugEnabled = false;
+    adminActivitiesScanScheduled = false;
+    adminFlushRequestedWhileBusy = false;
+    adminFlushInProgress = false;
+
+    if (adminActiveSendBatch && adminActiveSendBatch.length) {
+        adminActivityReporter.markBatchFailed(adminActiveSendBatch, invalidationMessage, {
+            reason: 'extension-context-invalidated',
+        });
+        adminActiveSendBatch = null;
+    }
+
+    adminLastStatusText = invalidationMessage;
 
     if (locationWatchIntervalId) {
         window.clearInterval(locationWatchIntervalId);
         locationWatchIntervalId = null;
     }
 
-    if (typeof console !== 'undefined' && console.warn) {
-        console.warn('[TN Social Tools] Extension context invalidated. Reload the page after reloading the extension.', {
+    if (adminActivitiesControl) {
+        updateAdminActivitiesControl();
+    }
+
+    if (typeof console !== 'undefined' && console.info) {
+        console.info('[TN Social Tools] Extension context invalidated. Reload the page to reattach the updated extension in this tab.', {
             error: error && error.message ? error.message : String(error || 'Unknown error'),
             url: location.href,
         });
@@ -190,6 +208,7 @@ let adminDebugEnabled = false;
 let adminActivitiesScanScheduled = false;
 let adminFlushInProgress = false;
 let adminFlushRequestedWhileBusy = false;
+let adminActiveSendBatch = null;
 let networkMonitorInjected = false;
 let adminLastStatusText = 'Passive activity detection is ready. Statistics are off.';
 let adminNetworkEventsSeen = 0;
@@ -2622,6 +2641,7 @@ async function flushAdminActivitiesToTools(reason) {
     let batch = adminActivityReporter.startNextBatch(MAX_ADMIN_BATCH_SIZE, {reason: reason || 'scheduled-scan'});
 
     while (batch.length) {
+        adminActiveSendBatch = batch.slice();
         adminLastStatusText = 'Sending Facebook admin bulk: ' + batch.length + ' entr' + (batch.length === 1 ? 'y' : 'ies') + ' in this batch.';
         updateAdminActivitiesControl();
 
@@ -2629,12 +2649,16 @@ async function flushAdminActivitiesToTools(reason) {
             const response = await submitAdminActivityEntriesBatch(batch);
             const data = response.data || {};
             adminActivityReporter.markBatchSent(batch, data, {reason: reason || 'scheduled-scan'});
+            adminActiveSendBatch = null;
             submittedThisRun += batch.length;
             receivedThisRun += typeof data.received === 'number' ? data.received : batch.length;
             createdThisRun += typeof data.created === 'number' ? data.created : 0;
             updatedThisRun += typeof data.updated === 'number' ? data.updated : 0;
         } catch (error) {
-            adminActivityReporter.markBatchFailed(batch, error, {reason: reason || 'scheduled-scan'});
+            if (adminActiveSendBatch && adminActiveSendBatch.length) {
+                adminActivityReporter.markBatchFailed(adminActiveSendBatch, error, {reason: reason || 'scheduled-scan'});
+            }
+            adminActiveSendBatch = null;
             const failedSnapshot = getAdminReporterSnapshot();
             adminLastStatusText = 'Bulk send failed after ' + submittedThisRun + ' submitted entr' + (submittedThisRun === 1 ? 'y' : 'ies') + '. '
                 + (error && error.message ? error.message : 'Could not submit admin-log batch.')
@@ -2657,6 +2681,7 @@ async function flushAdminActivitiesToTools(reason) {
         : 'Listening for admin-log changes. No new detected entries to submit right now.';
     updateAdminActivitiesControl();
     } finally {
+        adminActiveSendBatch = null;
         adminFlushInProgress = false;
         if (adminFlushRequestedWhileBusy) {
             adminFlushRequestedWhileBusy = false;
