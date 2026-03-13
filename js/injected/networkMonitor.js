@@ -352,6 +352,7 @@
             source_label: sourceName,
             activity_url: window.location.href,
             occurred_at: node.activity_time ? new Date(node.activity_time * 1000).toISOString() : null,
+            facebook_activity_time: node.activity_time ? new Date(node.activity_time * 1000).toISOString() : null,
             actor_name: actorName,
             action_text: actionText,
             target_name: targetName || null,
