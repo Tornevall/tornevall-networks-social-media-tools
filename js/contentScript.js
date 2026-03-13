@@ -225,6 +225,46 @@ const recentAdminNetworkEvents = [];
 const facebookCommentEntryKeys = new Set();
 const recentFacebookCommentEntries = [];
 
+function clearAdminActivityRuntimeDebugState() {
+    adminNetworkEventsSeen = 0;
+    adminInterestingNetworkEventsSeen = 0;
+    adminLastNetworkEventAt = 0;
+    adminNetworkDebugAnnounced = false;
+    latestBootstrapAdminScanDebug = null;
+    latestInjectedBootstrapAdminScanDebug = null;
+    recentAdminNetworkEvents.length = 0;
+}
+
+function disableAdminActivityCollection(message, meta) {
+    const snapshot = getAdminReporterSnapshot();
+    const hadPendingEntries = !!(snapshot && snapshot.totals && snapshot.totals.pending);
+
+    adminIngestEnabled = false;
+    adminActivitiesScanScheduled = false;
+    adminFlushRequestedWhileBusy = false;
+    adminFlushInProgress = false;
+    adminActiveSendBatch = null;
+    adminActivityReporter.reset();
+    clearAdminActivityRuntimeDebugState();
+    adminLastStatusText = message || 'Activity statistics are disabled for this tab.';
+
+    if (adminActivitiesControl) {
+        updateAdminActivitiesControl();
+    }
+
+    if (meta) {
+        debugLog({
+            level: 'info',
+            category: 'facebook-admin-ingest',
+            message: 'Facebook admin activity collection disabled.',
+            meta: Object.assign({
+                url: location.href,
+                cleared_pending_entries: hadPendingEntries,
+            }, meta),
+        });
+    }
+}
+
 function debugLog(entry) {
     safeSendRuntimeMessage({
         type: 'DEBUG_LOG',
@@ -257,6 +297,7 @@ const adminActivityReporter = typeof TNFacebookAdminReporter !== 'undefined' && 
         markBatchSent: function () {},
         markBatchFailed: function () {},
         getQueueSize: function () { return 0; },
+        reset: function () {},
         getSnapshot: function () {
             return {
                 totals: {
@@ -1871,15 +1912,20 @@ function ensureAdminActivitiesControl() {
             return;
         }
 
-        adminIngestEnabled = !adminIngestEnabled;
-        adminLastStatusText = adminIngestEnabled
-            ? 'Activity statistics enabled. Detected admin activities will now be batched and sent to Tools.'
-            : 'Activity statistics disabled. Passive detection is still running.';
+        if (adminIngestEnabled) {
+            disableAdminActivityCollection('Activity statistics disabled. This tab queue was cleared.', {
+                reason: 'manual-disable',
+                auto_disabled: false,
+            });
+            return;
+        }
+
+        adminIngestEnabled = true;
+        adminLastStatusText = 'Activity statistics enabled for this exact Facebook URI. Changing Facebook location will auto-disable and clear the queue.';
         updateAdminActivitiesControl();
         debugLog({level: 'info', category: 'facebook-admin-ingest', message: 'Facebook admin ingest toggled.', meta: {enabled: adminIngestEnabled, url: location.href}});
-        if (adminIngestEnabled) {
-            scheduleAdminActivitiesScan('manual-enable');
-        }
+        scheduleAdminActivitiesScan('manual-enable');
+        scheduleAdminActivitiesBootstrapWarmup('manual-enable');
     });
 
     document.body.appendChild(control);
@@ -1922,7 +1968,7 @@ function injectNetworkMonitor() {
     if (isFacebookAdminActivitiesPage()) {
         adminLastStatusText = adminIngestEnabled
             ? 'Network monitor injected. Waiting for admin-log traffic...'
-            : 'Passive activity detection is ready. Statistics are off.';
+            : 'Admin activities page detected. Statistics are disabled until you enable them for this exact Facebook URI.';
         updateAdminActivitiesControl();
     }
 
@@ -1941,8 +1987,21 @@ function injectNetworkMonitor() {
 
 function handleLocationChange(reason) {
     const changed = lastObservedLocationHref !== location.href;
+    const previousHref = lastObservedLocationHref;
     if (!changed && reason !== 'init') {
         return;
+    }
+
+    if (changed && isFacebookPage()) {
+        disableAdminActivityCollection(
+            'Facebook URI changed. Activity statistics were auto-disabled and any queued entries were cleared for this tab.',
+            {
+                reason: reason || 'location-change',
+                previous_url: previousHref,
+                next_url: location.href,
+                auto_disabled: true,
+            }
+        );
     }
 
     lastObservedLocationHref = location.href;
@@ -1959,11 +2018,17 @@ function handleLocationChange(reason) {
 
     injectNetworkMonitor();
     adminLastStatusText = networkMonitorInjected
-        ? 'Admin activities page detected. Waiting for Facebook XHR/fetch activity...'
-        : 'Admin activities page detected, but monitor injection has not completed yet.';
+        ? (adminIngestEnabled
+            ? 'Admin activities page detected. Waiting for Facebook XHR/fetch activity...'
+            : 'Admin activities page detected. Statistics are disabled until you enable them for this exact Facebook URI.')
+        : (adminIngestEnabled
+            ? 'Admin activities page detected, but monitor injection has not completed yet.'
+            : 'Admin activities page detected. Statistics are disabled until you enable them for this exact Facebook URI.');
     updateAdminActivitiesControl();
-    scheduleAdminActivitiesScan('location-change');
-    scheduleAdminActivitiesBootstrapWarmup('location-change');
+    if (adminIngestEnabled) {
+        scheduleAdminActivitiesScan('location-change');
+        scheduleAdminActivitiesBootstrapWarmup('location-change');
+    }
     adminDebugConsoleInfo('[TN Social Tools] Facebook admin_activities route detected.', {
         version: EXTENSION_VERSION,
         reason: reason,
@@ -2614,72 +2679,79 @@ async function flushAdminActivitiesToTools(reason) {
     adminFlushInProgress = true;
 
     try {
-    const bootstrapEntries = collectBootstrapAdminActivityEntries(reason || 'bootstrap-scan');
-    const bootstrapAdded = rememberDetectedAdminEntries(bootstrapEntries, reason || 'bootstrap-scan');
-    if (latestBootstrapAdminScanDebug) {
-        latestBootstrapAdminScanDebug.pending_added = bootstrapAdded;
-    }
-    rememberDetectedAdminEntries(collectVisibleAdminActivityEntries(), reason || 'visible-scan');
-
-    updateAdminActivitiesControl();
-    if (!adminIngestEnabled) {
-        return;
-    }
-
-    const initialSnapshot = getAdminReporterSnapshot();
-
-    if (!initialSnapshot.totals.pending) {
-        adminLastStatusText = 'Listening for admin-log changes. No new detected entries are waiting.';
-        updateAdminActivitiesControl();
-        return;
-    }
-
-    let submittedThisRun = 0;
-    let receivedThisRun = 0;
-    let createdThisRun = 0;
-    let updatedThisRun = 0;
-    let batch = adminActivityReporter.startNextBatch(MAX_ADMIN_BATCH_SIZE, {reason: reason || 'scheduled-scan'});
-
-    while (batch.length) {
-        adminActiveSendBatch = batch.slice();
-        adminLastStatusText = 'Sending Facebook admin bulk: ' + batch.length + ' entr' + (batch.length === 1 ? 'y' : 'ies') + ' in this batch.';
-        updateAdminActivitiesControl();
-
-        try {
-            const response = await submitAdminActivityEntriesBatch(batch);
-            const data = response.data || {};
-            adminActivityReporter.markBatchSent(batch, data, {reason: reason || 'scheduled-scan'});
-            adminActiveSendBatch = null;
-            submittedThisRun += batch.length;
-            receivedThisRun += typeof data.received === 'number' ? data.received : batch.length;
-            createdThisRun += typeof data.created === 'number' ? data.created : 0;
-            updatedThisRun += typeof data.updated === 'number' ? data.updated : 0;
-        } catch (error) {
-            if (adminActiveSendBatch && adminActiveSendBatch.length) {
-                adminActivityReporter.markBatchFailed(adminActiveSendBatch, error, {reason: reason || 'scheduled-scan'});
-            }
-            adminActiveSendBatch = null;
-            const failedSnapshot = getAdminReporterSnapshot();
-            adminLastStatusText = 'Bulk send failed after ' + submittedThisRun + ' submitted entr' + (submittedThisRun === 1 ? 'y' : 'ies') + '. '
-                + (error && error.message ? error.message : 'Could not submit admin-log batch.')
-                + ' Pending retry: ' + (failedSnapshot.totals.pending || 0) + '.';
-            updateAdminActivitiesControl();
-            debugLog({level: 'error', category: 'facebook-admin-ingest', message: adminLastStatusText, meta: {reason: reason, batch_size: batch.length}});
+        if (!isFacebookAdminActivitiesPage()) {
             return;
         }
 
-        batch = adminActivityReporter.startNextBatch(MAX_ADMIN_BATCH_SIZE, {reason: reason || 'scheduled-scan'});
-    }
+        if (!adminIngestEnabled) {
+            adminLastStatusText = 'Admin activities page detected. Statistics are disabled until you enable them for this exact Facebook URI.';
+            updateAdminActivitiesControl();
+            return;
+        }
 
-    const finalSnapshot = getAdminReporterSnapshot();
-    adminLastStatusText = submittedThisRun > 0
-        ? 'Facebook admin bulk complete. Attempted: ' + submittedThisRun
-            + ' · Received: ' + receivedThisRun
-            + ' · Created: ' + createdThisRun
-            + ' · Updated/duplicate-safe: ' + updatedThisRun
-            + ' · Queue remaining: ' + (finalSnapshot.totals.pending || 0)
-        : 'Listening for admin-log changes. No new detected entries to submit right now.';
-    updateAdminActivitiesControl();
+        const bootstrapEntries = collectBootstrapAdminActivityEntries(reason || 'bootstrap-scan');
+        const bootstrapAdded = rememberDetectedAdminEntries(bootstrapEntries, reason || 'bootstrap-scan');
+        if (latestBootstrapAdminScanDebug) {
+            latestBootstrapAdminScanDebug.pending_added = bootstrapAdded;
+        }
+        rememberDetectedAdminEntries(collectVisibleAdminActivityEntries(), reason || 'visible-scan');
+
+        updateAdminActivitiesControl();
+
+        const initialSnapshot = getAdminReporterSnapshot();
+
+        if (!initialSnapshot.totals.pending) {
+            adminLastStatusText = 'Listening for admin-log changes. No new detected entries are waiting.';
+            updateAdminActivitiesControl();
+            return;
+        }
+
+        let submittedThisRun = 0;
+        let receivedThisRun = 0;
+        let createdThisRun = 0;
+        let updatedThisRun = 0;
+        let batch = adminActivityReporter.startNextBatch(MAX_ADMIN_BATCH_SIZE, {reason: reason || 'scheduled-scan'});
+
+        while (batch.length) {
+            adminActiveSendBatch = batch.slice();
+            adminLastStatusText = 'Sending Facebook admin bulk: ' + batch.length + ' entr' + (batch.length === 1 ? 'y' : 'ies') + ' in this batch.';
+            updateAdminActivitiesControl();
+
+            try {
+                const response = await submitAdminActivityEntriesBatch(batch);
+                const data = response.data || {};
+                adminActivityReporter.markBatchSent(batch, data, {reason: reason || 'scheduled-scan'});
+                adminActiveSendBatch = null;
+                submittedThisRun += batch.length;
+                receivedThisRun += typeof data.received === 'number' ? data.received : batch.length;
+                createdThisRun += typeof data.created === 'number' ? data.created : 0;
+                updatedThisRun += typeof data.updated === 'number' ? data.updated : 0;
+            } catch (error) {
+                if (adminActiveSendBatch && adminActiveSendBatch.length) {
+                    adminActivityReporter.markBatchFailed(adminActiveSendBatch, error, {reason: reason || 'scheduled-scan'});
+                }
+                adminActiveSendBatch = null;
+                const failedSnapshot = getAdminReporterSnapshot();
+                adminLastStatusText = 'Bulk send failed after ' + submittedThisRun + ' submitted entr' + (submittedThisRun === 1 ? 'y' : 'ies') + '. '
+                    + (error && error.message ? error.message : 'Could not submit admin-log batch.')
+                    + ' Pending retry: ' + (failedSnapshot.totals.pending || 0) + '.';
+                updateAdminActivitiesControl();
+                debugLog({level: 'error', category: 'facebook-admin-ingest', message: adminLastStatusText, meta: {reason: reason, batch_size: batch.length}});
+                return;
+            }
+
+            batch = adminActivityReporter.startNextBatch(MAX_ADMIN_BATCH_SIZE, {reason: reason || 'scheduled-scan'});
+        }
+
+        const finalSnapshot = getAdminReporterSnapshot();
+        adminLastStatusText = submittedThisRun > 0
+            ? 'Facebook admin bulk complete. Attempted: ' + submittedThisRun
+                + ' · Received: ' + receivedThisRun
+                + ' · Created: ' + createdThisRun
+                + ' · Updated/duplicate-safe: ' + updatedThisRun
+                + ' · Queue remaining: ' + (finalSnapshot.totals.pending || 0)
+            : 'Listening for admin-log changes. No new detected entries to submit right now.';
+        updateAdminActivitiesControl();
     } finally {
         adminActiveSendBatch = null;
         adminFlushInProgress = false;
@@ -2691,7 +2763,7 @@ async function flushAdminActivitiesToTools(reason) {
 }
 
 function scheduleAdminActivitiesScan(reason) {
-    if (adminActivitiesScanScheduled || !isFacebookAdminActivitiesPage()) {
+    if (adminActivitiesScanScheduled || !adminIngestEnabled || !isFacebookAdminActivitiesPage()) {
         return;
     }
 
@@ -2718,7 +2790,7 @@ function requestInjectedBootstrapAdminScan(reason) {
 }
 
 function scheduleAdminActivitiesBootstrapWarmup(reason) {
-    if (!isFacebookAdminActivitiesPage()) {
+    if (!adminIngestEnabled || !isFacebookAdminActivitiesPage()) {
         return;
     }
 
@@ -3071,8 +3143,11 @@ window.addEventListener('message', function (event) {
     const networkEntry = rememberAdminNetworkEvent(payload);
     mirrorAdminNetworkEventToConsole(networkEntry);
     let addedFromPayload = 0;
-    if (networkEntry.detected_entries && networkEntry.detected_entries.length) {
+    if (adminIngestEnabled && networkEntry.detected_entries && networkEntry.detected_entries.length) {
         addedFromPayload = rememberDetectedAdminEntries(networkEntry.detected_entries, payload && payload.bootstrap_debug ? 'injected-bootstrap-scan' : 'network-event');
+    }
+
+    if (networkEntry.detected_entries && networkEntry.detected_entries.length) {
         mirrorAdminDetectionsToConsole(networkEntry.detected_entries, networkEntry);
     }
 
@@ -3133,12 +3208,12 @@ window.addEventListener('message', function (event) {
                 ? 'Activity statistics are enabled. Waiting for matching admin-log traffic.'
                 : 'Activity statistics are enabled. Waiting for matching admin-log traffic.'))
         : (networkEntry.detected_count
-            ? 'Detected ' + networkEntry.detected_count + ' admin activity entr' + (networkEntry.detected_count === 1 ? 'y' : 'ies') + '. Enable activity statistics to send batches to Tools.'
+            ? 'Observed ' + networkEntry.detected_count + ' admin activity entr' + (networkEntry.detected_count === 1 ? 'y' : 'ies') + '. Statistics are disabled, so nothing was queued.'
             : (networkEntry.interesting
-                ? 'Interesting activity detected. Enable activity statistics to send batches to Tools.'
-                : 'Passive activity detection is active. Enable activity statistics when you want to start sending entries.'));
+                ? 'Interesting activity detected, but statistics are disabled for this URI.'
+                : 'Statistics are disabled for this exact Facebook URI. Enable them only when you want to collect from this page.'));
     updateAdminActivitiesControl();
-    if (networkEntry.interesting) {
+    if (adminIngestEnabled && networkEntry.interesting) {
         scheduleAdminActivitiesScan('network-event');
     }
 }, true);
