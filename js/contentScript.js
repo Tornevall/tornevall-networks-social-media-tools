@@ -5,7 +5,7 @@ const EDITABLE_SELECTOR = 'textarea,input[type="text"],input:not([type]),[conten
 const TOOLS_PROD_BASE_URL = 'https://tools.tornevall.net';
 const TOOLS_DEV_BASE_URL = 'https://tools.tornevall.com';
 const FACEBOOK_INGEST_PATH = '/api/social-media-tools/facebook/ingest';
-const ADMIN_ACTIVITY_KEYWORDS = ['admin', 'activity', 'log', 'godk', 'approved', 'approve', 'avvis', 'rejected', 'reject', 'declined', 'request', 'participate', 'förfrågan', 'removed', 'tagit bort', 'deleted', 'delete', 'revoked', 'återkall', 'blocked', 'block', 'banned', 'ban', 'spam', 'member', 'pending post', 'comment', 'automatiskt', 'automatically', 'published', 'group'];
+const ADMIN_ACTIVITY_KEYWORDS = ['admin', 'activity', 'log', 'godk', 'approved', 'approve', 'avvis', 'rejected', 'reject', 'declined', 'request', 'participate', 'förfrågan', 'removed', 'tagit bort', 'deleted', 'delete', 'revoked', 'återkall', 'blocked', 'block', 'banned', 'ban', 'spam', 'member', 'reported', 'report', 'member-reported', 'anmält', 'anmälda', 'anmäld', 'rapporterad', 'pending post', 'comment', 'kommentar', 'automatiskt', 'automatically', 'published', 'group'];
 const IGNORED_LINK_TEXTS = ['gilla', 'svara', 'svara som', 'kommentera', 'dela', 'visa alla', 'visa fler svar', 'like', 'reply', 'share', 'comment', 'send', 'gif'];
 const MAX_RECENT_NETWORK_EVENTS = 8;
 const MAX_ADMIN_BATCH_SIZE = 50;
@@ -166,6 +166,8 @@ let lastObservedLocationHref = location.href;
 let adminActivitiesControlDragState = null;
 let adminActivitiesDragListenersBound = false;
 let activeReplyContextMeta = null;
+let latestBootstrapAdminScanDebug = null;
+let latestInjectedBootstrapAdminScanDebug = null;
 const discoveredAdminEntryKeys = new Set();
 const pendingAdminEntries = new Map();
 const submittedAdminEntryKeys = new Set();
@@ -188,6 +190,104 @@ function adminDebugConsoleInfo(message, meta) {
     }
 
     console.info(message, meta || {});
+}
+
+function buildBootstrapAdminScanDebug(reason) {
+    return {
+        reason: reason || 'bootstrap-scan',
+        started_at: new Date().toISOString(),
+        body_available: !!document.body,
+        body_application_json_count: 0,
+        xpath_hits: {},
+        matched_script_count: 0,
+        fallback_used: false,
+        scripts_considered: 0,
+        scripts_with_entries: 0,
+        entries_detected: 0,
+        pending_added: 0,
+        parse_failures: 0,
+        skipped_short: 0,
+        skipped_matcher: 0,
+        top_scripts: [],
+        parsed_scripts: [],
+        detected_entry_preview: [],
+        outcome: 'pending',
+    };
+}
+
+function getAdminEntryTimestamp(entry) {
+    if (!entry) {
+        return 0;
+    }
+
+    const occurred = entry.occurred_at ? Date.parse(entry.occurred_at) : 0;
+    if (occurred) {
+        return occurred;
+    }
+
+    const detected = entry.detected_at ? Date.parse(entry.detected_at) : 0;
+    return detected || 0;
+}
+
+function sortAdminEntriesByRecency(entries) {
+    return (entries || []).slice().sort(function (left, right) {
+        const timeDiff = getAdminEntryTimestamp(right) - getAdminEntryTimestamp(left);
+        if (timeDiff !== 0) {
+            return timeDiff;
+        }
+
+        return String(right && right.key || '').localeCompare(String(left && left.key || ''));
+    });
+}
+
+function summarizeBootstrapAdminScriptNode(node, raw, score) {
+    const text = String(raw || '');
+    return {
+        type: normalizeWhitespace(node && node.getAttribute ? node.getAttribute('type') : '') || '(none)',
+        has_data_sjs: !!(node && node.hasAttribute && node.hasAttribute('data-sjs')),
+        score: typeof score === 'number' ? score : scoreBootstrapAdminActivityScriptNode(node, text),
+        length: text.length,
+        preview: clipText(normalizeWhitespace(text), 220),
+        has_preloader: /adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader/.test(text),
+        has_admin_typename: /"__typename"\s*:\s*"GroupAdminActivity"|"__typename"\s*:\s*"GroupsCometAdminActivity"/.test(text),
+    };
+}
+
+function renderBootstrapAdminScanDebug(scan, title, emptyText) {
+    if (!adminDebugEnabled) {
+        return '';
+    }
+
+    if (!scan) {
+        return '<div style="color:#64748b;">' + escapeHtml(emptyText || 'No bootstrap scan has run yet.') + '</div>';
+    }
+
+    const xpathBits = Object.keys(scan.xpath_hits || {}).map(function (xpath) {
+        return escapeHtml(xpath.replace(/^\.\/\/script/, '//script') + ': ' + scan.xpath_hits[xpath]);
+    });
+    const topScripts = Array.isArray(scan.top_scripts) ? scan.top_scripts.slice(0, 3) : [];
+    const parsedScripts = Array.isArray(scan.parsed_scripts) ? scan.parsed_scripts.slice(0, 3) : [];
+
+    return [
+        '<div style="padding:8px; border-radius:8px; border:1px solid rgba(14,165,233,0.22); background:#f8fafc; color:#334155;">',
+        '<div style="font-weight:700; color:#0f172a;">' + escapeHtml(title || 'Bootstrap debug') + '</div>',
+        '<div style="margin-top:4px; color:#475569;">reason=' + escapeHtml(scan.reason || 'bootstrap-scan') + ' · outcome=' + escapeHtml(scan.outcome || 'pending') + '</div>',
+        '<div style="margin-top:4px; color:#475569;">body=' + escapeHtml(scan.body_available ? 'yes' : 'no') + ' · application/json scripts=' + escapeHtml(String(scan.body_application_json_count || 0)) + ' · matched=' + escapeHtml(String(scan.matched_script_count || 0)) + ' · entries=' + escapeHtml(String(scan.entries_detected || 0)) + '</div>',
+        '<div style="margin-top:4px; color:#475569;">considered=' + escapeHtml(String(scan.scripts_considered || 0)) + ' · scripts_with_entries=' + escapeHtml(String(scan.scripts_with_entries || 0)) + ' · pending_added=' + escapeHtml(String(scan.pending_added || 0)) + ' · parse_failures=' + escapeHtml(String(scan.parse_failures || 0)) + ' · fallback=' + escapeHtml(scan.fallback_used ? 'yes' : 'no') + '</div>',
+        xpathBits.length ? '<div style="margin-top:6px; color:#475569;">XPath hits:<br>' + xpathBits.join('<br>') + '</div>' : '<div style="margin-top:6px; color:#64748b;">XPath hits: none</div>',
+        (Array.isArray(scan.detected_entry_preview) && scan.detected_entry_preview.length)
+            ? '<div style="margin-top:6px; font-weight:600; color:#0f172a;">Body entries parsed</div>' + scan.detected_entry_preview.map(function (text) {
+                return '<div style="margin-top:3px; color:#475569;">' + escapeHtml(text) + '</div>';
+            }).join('')
+            : '<div style="margin-top:6px; color:#64748b;">Body entries parsed: none</div>',
+        topScripts.length ? '<div style="margin-top:6px; font-weight:600; color:#0f172a;">Top body scripts</div>' + topScripts.map(function (item, index) {
+            return '<div style="margin-top:4px; color:#475569;">#' + (index + 1) + ' score=' + escapeHtml(String(item.score || 0)) + ' len=' + escapeHtml(String(item.length || 0)) + ' preloader=' + escapeHtml(item.has_preloader ? 'yes' : 'no') + ' typename=' + escapeHtml(item.has_admin_typename ? 'yes' : 'no') + '<br>' + escapeHtml(item.preview || '') + '</div>';
+        }).join('') : '<div style="margin-top:6px; color:#64748b;">No matching body scripts.</div>',
+        parsedScripts.length ? '<div style="margin-top:6px; font-weight:600; color:#0f172a;">Parsed scripts</div>' + parsedScripts.map(function (item, index) {
+            return '<div style="margin-top:4px; color:#475569;">#' + (index + 1) + ' entries=' + escapeHtml(String(item.entry_count || 0)) + ' chunks=' + escapeHtml(String(item.chunk_count || 0)) + ' single=' + escapeHtml(item.used_single_parse ? 'yes' : 'no') + '<br>' + escapeHtml(item.preview || '') + (item.entry_preview ? '<br>→ ' + escapeHtml(item.entry_preview) : '') + '</div>';
+        }).join('') : '',
+        '</div>'
+    ].join('');
 }
 
 function syncAdminDebugPreference() {
@@ -1261,6 +1361,8 @@ function updateAdminActivitiesControl() {
     const recent = adminActivitiesControl.querySelector('[data-role="recent"]');
     const debugWrap = adminActivitiesControl.querySelector('[data-role="debug-wrap"]');
     const detected = adminActivitiesControl.querySelector('[data-role="detected"]');
+    const bootstrap = adminActivitiesControl.querySelector('[data-role="bootstrap"]');
+    const bootstrapMonitor = adminActivitiesControl.querySelector('[data-role="bootstrap-monitor"]');
 
     if (toggle) {
         toggle.textContent = adminIngestEnabled ? 'Disable activity statistics' : 'Enable activity statistics';
@@ -1294,7 +1396,7 @@ function updateAdminActivitiesControl() {
     }
 
     if (detected) {
-        const latestDetected = Array.from(pendingAdminEntries.values()).slice(-5).reverse();
+        const latestDetected = sortAdminEntriesByRecency(Array.from(pendingAdminEntries.values())).slice(0, 5);
         if (!latestDetected.length) {
             detected.innerHTML = '<div style="color:#64748b;">No reportable admin-log entries detected yet.</div>';
         } else {
@@ -1330,6 +1432,14 @@ function updateAdminActivitiesControl() {
                     + '</div>';
             }).join('');
         }
+    }
+
+    if (bootstrap) {
+        bootstrap.innerHTML = renderBootstrapAdminScanDebug(latestBootstrapAdminScanDebug, 'Bootstrap body-read debug (content script)', 'No bootstrap body-read scan has run yet.');
+    }
+
+    if (bootstrapMonitor) {
+        bootstrapMonitor.innerHTML = renderBootstrapAdminScanDebug(latestInjectedBootstrapAdminScanDebug, 'Bootstrap body-read debug (injected monitor)', 'No injected monitor bootstrap scan has run yet.');
     }
 }
 
@@ -1378,7 +1488,11 @@ function ensureAdminActivitiesControl() {
         '<div data-role="debug-wrap" style="display:none; margin-top:10px;">',
         '<div data-role="counters" style="margin-bottom:8px; color:#64748b;">Detected: 0 · Pending: 0 · Submitted: 0</div>',
         '<div data-role="monitor" style="margin-bottom:8px; padding:8px; border-radius:8px; border:1px solid rgba(59,130,246,0.25); background:#eff6ff; color:#1d4ed8; font-weight:600;">Monitor injected. Waiting for Facebook XHR/fetch activity...</div>',
-        '<div style="margin-top:10px; font-weight:600; color:#334155;">Recent XHR/fetch (dev mode only)</div>',
+        '<div style="margin-top:10px; font-weight:600; color:#334155;">Bootstrap body-read via content script</div>',
+        '<div data-role="bootstrap" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569; max-height:220px; overflow:auto;">No bootstrap body-read scan has run yet.</div>',
+        '<div style="margin-top:10px; font-weight:600; color:#334155;">Bootstrap body-read via injected monitor</div>',
+        '<div data-role="bootstrap-monitor" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569; max-height:220px; overflow:auto;">No injected monitor bootstrap scan has run yet.</div>',
+        '<div style="margin-top:10px; font-weight:600; color:#334155;">Recent monitor events (XHR/fetch/bootstrap)</div>',
         '<div data-role="recent" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569; max-height:180px; overflow:auto;">No captured XHR/fetch events yet.</div>',
         '</div>'
     ].join('');
@@ -1586,6 +1700,7 @@ function normalizeAdminActivityEntry(entry) {
         source_url: sourceUrl,
         activity_url: activityUrl,
         occurred_at: occurredAt,
+        detected_at: entry.detected_at || new Date().toISOString(),
         actor_name: finalActorName,
         action_text: actionText,
         target_name: targetName || null,
@@ -1675,7 +1790,7 @@ function scoreBootstrapAdminActivityScriptNode(node, raw) {
     return score;
 }
 
-function collectBootstrapAdminActivityScriptNodes() {
+function collectBootstrapAdminActivityScriptNodes(debugState) {
     const bodyRoot = document.body || null;
     const root = bodyRoot || document.documentElement;
     const results = [];
@@ -1703,10 +1818,16 @@ function collectBootstrapAdminActivityScriptNodes() {
 
         try {
             const snapshot = document.evaluate(xpath, scope, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+            if (debugState) {
+                debugState.xpath_hits[xpath] = snapshot.snapshotLength;
+            }
             for (let index = 0; index < snapshot.snapshotLength; index += 1) {
                 appendNode(snapshot.snapshotItem(index));
             }
         } catch (error) {
+            if (debugState) {
+                debugState.xpath_hits[xpath] = 'error';
+            }
             // Fall back to selector scanning below.
         }
     }
@@ -1718,6 +1839,10 @@ function collectBootstrapAdminActivityScriptNodes() {
     }
 
     const primaryScripts = bodyRoot ? bodyRoot.querySelectorAll('script[type="application/json"]') : [];
+    if (debugState) {
+        debugState.body_available = !!bodyRoot;
+        debugState.body_application_json_count = primaryScripts.length;
+    }
     for (let i = 0; i < primaryScripts.length; i += 1) {
         const node = primaryScripts[i];
         const raw = node && typeof node.textContent === 'string' ? node.textContent : '';
@@ -1727,6 +1852,9 @@ function collectBootstrapAdminActivityScriptNodes() {
     }
 
     if (!results.length && root) {
+        if (debugState) {
+            debugState.fallback_used = true;
+        }
         const fallbackScripts = root.querySelectorAll('script[type="application/json"], script[data-sjs], script:not([src])');
         for (let i = 0; i < fallbackScripts.length; i += 1) {
             const node = fallbackScripts[i];
@@ -1740,6 +1868,13 @@ function collectBootstrapAdminActivityScriptNodes() {
     results.sort(function (left, right) {
         return scoreBootstrapAdminActivityScriptNode(right, right && right.textContent) - scoreBootstrapAdminActivityScriptNode(left, left && left.textContent);
     });
+
+    if (debugState) {
+        debugState.matched_script_count = results.length;
+        debugState.top_scripts = results.slice(0, 5).map(function (node) {
+            return summarizeBootstrapAdminScriptNode(node, node && node.textContent);
+        });
+    }
 
     return results;
 }
@@ -1875,14 +2010,25 @@ function walkBootstrapAdminActivities(value, results, seenKeys) {
     });
 }
 
-function parseAdminActivityEntriesFromBootstrapText(text) {
+function parseAdminActivityEntriesFromBootstrapText(text, debugState) {
     const raw = String(text || '');
     const lowered = raw.toLowerCase();
     const results = [];
     const seenKeys = {};
     const parsedChunks = [];
+    const scriptDebug = debugState ? {
+        preview: clipText(normalizeWhitespace(raw), 180),
+        raw_length: raw.length,
+        chunk_count: 0,
+        used_single_parse: false,
+        entry_count: 0,
+        entry_preview: '',
+    } : null;
 
     if (!raw || (lowered.indexOf('groupadminactivity') === -1 && lowered.indexOf('groupscometadminactivity') === -1 && lowered.indexOf('management_activities') === -1 && lowered.indexOf('management_activity_log_target') === -1 && lowered.indexOf('admin_activities') === -1 && lowered.indexOf('relayprefetchedstreamcache') === -1 && lowered.indexOf('scheduledserverjs') === -1 && lowered.indexOf('cometgroupadminactivitiesactivitylogcontentqueryrelaypreloader') === -1 && lowered.indexOf('adp_cometgroupadminactivitiesactivitylogcontentqueryrelaypreloader') === -1 && lowered.indexOf('activity_title') === -1)) {
+        if (debugState) {
+            debugState.skipped_matcher += 1;
+        }
         return results;
     }
 
@@ -1893,10 +2039,19 @@ function parseAdminActivityEntriesFromBootstrapText(text) {
         }
     });
 
+    if (scriptDebug) {
+        scriptDebug.chunk_count = parsedChunks.length;
+    }
+
     if (!parsedChunks.length) {
         const singleParsed = bootstrapSafeJsonParse(raw);
         if (singleParsed) {
             parsedChunks.push(singleParsed);
+            if (scriptDebug) {
+                scriptDebug.used_single_parse = true;
+            }
+        } else if (debugState) {
+            debugState.parse_failures += 1;
         }
     }
 
@@ -1904,29 +2059,85 @@ function parseAdminActivityEntriesFromBootstrapText(text) {
         walkBootstrapAdminActivities(parsed, results, seenKeys);
     });
 
+    if (scriptDebug) {
+        scriptDebug.entry_count = results.length;
+        scriptDebug.entry_preview = results.length ? clipText(results.slice(0, 2).map(function (entry) {
+            return entry.action_text || '';
+        }).join(' · '), 180) : '';
+        debugState.parsed_scripts.push(scriptDebug);
+    }
+
     return results;
 }
 
-function collectBootstrapAdminActivityEntries() {
+function collectBootstrapAdminActivityEntries(reason) {
     if (!isFacebookAdminActivitiesPage()) {
         return [];
     }
 
-    const scripts = collectBootstrapAdminActivityScriptNodes();
+    const debugState = buildBootstrapAdminScanDebug(reason);
+    const scripts = collectBootstrapAdminActivityScriptNodes(debugState);
     const results = [];
     const seenKeys = new Set();
     const matcher = getBootstrapAdminScriptTextMatcher();
 
     for (let i = 0; i < scripts.length; i += 1) {
         const raw = scripts[i] && typeof scripts[i].textContent === 'string' ? scripts[i].textContent : '';
-        if (!raw || raw.length < 40 || !matcher.test(raw)) {
+        if (!raw || raw.length < 40) {
+            debugState.skipped_short += 1;
+            continue;
+        }
+        if (!matcher.test(raw)) {
+            debugState.skipped_matcher += 1;
             continue;
         }
 
-        parseAdminActivityEntriesFromBootstrapText(raw).forEach(function (entry) {
+        debugState.scripts_considered += 1;
+
+        const parsedEntries = parseAdminActivityEntriesFromBootstrapText(raw, debugState);
+        if (parsedEntries.length) {
+            debugState.scripts_with_entries += 1;
+        }
+
+        parsedEntries.forEach(function (entry) {
             if (entry && !seenKeys.has(entry.key)) {
                 seenKeys.add(entry.key);
                 results.push(entry);
+            }
+        });
+    }
+
+    debugState.entries_detected = results.length;
+    debugState.detected_entry_preview = results.slice(0, 5).map(function (entry) {
+        return clipText(entry && entry.action_text ? entry.action_text : '', 180);
+    });
+    debugState.outcome = results.length
+        ? 'entries-detected'
+        : (debugState.matched_script_count
+            ? 'matched-scripts-but-no-entries'
+            : (debugState.body_application_json_count ? 'body-json-found-no-matches' : 'no-body-json-scripts'));
+    latestBootstrapAdminScanDebug = debugState;
+
+    if (adminDebugEnabled) {
+        debugLog({
+            level: 'info',
+            category: 'facebook-admin-bootstrap',
+            message: 'Bootstrap body-read scan completed.',
+            meta: {
+                reason: debugState.reason,
+                outcome: debugState.outcome,
+                body_available: debugState.body_available,
+                body_application_json_count: debugState.body_application_json_count,
+                matched_script_count: debugState.matched_script_count,
+                scripts_considered: debugState.scripts_considered,
+                scripts_with_entries: debugState.scripts_with_entries,
+                entries_detected: debugState.entries_detected,
+                pending_added: debugState.pending_added,
+                fallback_used: debugState.fallback_used,
+                xpath_hits: debugState.xpath_hits,
+                top_scripts: debugState.top_scripts,
+                parsed_scripts: debugState.parsed_scripts.slice(0, 5),
+                detected_entry_preview: debugState.detected_entry_preview,
             }
         });
     }
@@ -2008,7 +2219,11 @@ async function submitAdminActivityEntriesBatch(entries) {
 }
 
 async function flushAdminActivitiesToTools(reason) {
-    rememberDetectedAdminEntries(collectBootstrapAdminActivityEntries(), reason || 'bootstrap-scan');
+    const bootstrapEntries = collectBootstrapAdminActivityEntries(reason || 'bootstrap-scan');
+    const bootstrapAdded = rememberDetectedAdminEntries(bootstrapEntries, reason || 'bootstrap-scan');
+    if (latestBootstrapAdminScanDebug) {
+        latestBootstrapAdminScanDebug.pending_added = bootstrapAdded;
+    }
     rememberDetectedAdminEntries(collectVisibleAdminActivityEntries(), reason || 'visible-scan');
 
     updateAdminActivitiesControl();
@@ -2016,9 +2231,9 @@ async function flushAdminActivitiesToTools(reason) {
         return;
     }
 
-    const unsentEntries = Array.from(pendingAdminEntries.values()).filter(function (entry) {
+    const unsentEntries = sortAdminEntriesByRecency(Array.from(pendingAdminEntries.values()).filter(function (entry) {
         return !submittedAdminEntryKeys.has(entry.key);
-    });
+    }));
 
     if (!unsentEntries.length) {
         adminLastStatusText = 'Listening for admin-log changes. No new detected entries are waiting.';
@@ -2071,6 +2286,21 @@ function scheduleAdminActivitiesScan(reason) {
     }, 450);
 }
 
+function requestInjectedBootstrapAdminScan(reason) {
+    if (!isFacebookAdminActivitiesPage()) {
+        return;
+    }
+
+    try {
+        window.postMessage({
+            source: 'tn-networks-social-media-tools-content',
+            type: 'REQUEST_BOOTSTRAP_SCAN',
+            reason: reason || 'content-script-request',
+        }, '*');
+    } catch (error) {
+    }
+}
+
 function scheduleAdminActivitiesBootstrapWarmup(reason) {
     if (!isFacebookAdminActivitiesPage()) {
         return;
@@ -2082,7 +2312,9 @@ function scheduleAdminActivitiesBootstrapWarmup(reason) {
             if (location.href !== expectedHref || !isFacebookAdminActivitiesPage()) {
                 return;
             }
-            scheduleAdminActivitiesScan((reason || 'bootstrap') + '-warmup-' + index);
+            const warmupReason = (reason || 'bootstrap') + '-warmup-' + index;
+            requestInjectedBootstrapAdminScan(warmupReason);
+            scheduleAdminActivitiesScan(warmupReason);
         }, delay);
     });
 }
@@ -2417,9 +2649,25 @@ window.addEventListener('message', function (event) {
     ensureAdminActivitiesControl();
     const networkEntry = rememberAdminNetworkEvent(payload);
     mirrorAdminNetworkEventToConsole(networkEntry);
+    let addedFromPayload = 0;
     if (networkEntry.detected_entries && networkEntry.detected_entries.length) {
-        rememberDetectedAdminEntries(networkEntry.detected_entries, 'network-event');
+        addedFromPayload = rememberDetectedAdminEntries(networkEntry.detected_entries, payload && payload.bootstrap_debug ? 'injected-bootstrap-scan' : 'network-event');
         mirrorAdminDetectionsToConsole(networkEntry.detected_entries, networkEntry);
+    }
+
+    if (payload && payload.bootstrap_debug) {
+        latestInjectedBootstrapAdminScanDebug = Object.assign({}, payload.bootstrap_debug, {
+            pending_added: addedFromPayload,
+        });
+
+        if (adminDebugEnabled) {
+            debugLog({
+                level: 'info',
+                category: 'facebook-admin-bootstrap-monitor',
+                message: 'Injected monitor bootstrap scan completed.',
+                meta: latestInjectedBootstrapAdminScanDebug,
+            });
+        }
     }
 
     if (!adminNetworkDebugAnnounced) {
