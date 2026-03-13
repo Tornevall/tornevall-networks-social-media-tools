@@ -1,7 +1,7 @@
 {
-  "name": "SocialGPT - ChatGPT for Social Medias",
-  "description": "Integrate ChatGPT into any website to process selected text elements.",
-  "version": "1.0.0",
+  "name": "Tornevall Networks Social Media Tools",
+  "description": "Tornevall Networks browser tools for social media workflows, server-side AI replies, and future admin/statistics integrations.",
+  "version": "1.2.4",
   "manifest_version": 3,
   "permissions": [
     "activeTab",
@@ -18,6 +18,10 @@
         "<all_urls>"
       ],
       "js": [
+        "js/shared/platformRegistry.js",
+        "js/shared/facebookAdminReporter.js",
+        "js/platforms/facebook.js",
+        "js/platforms/x.js",
         "js/contentScript.js"
       ],
       "css": [
@@ -34,7 +38,8 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "icons/*.png"
+        "icons/*.png",
+        "js/injected/networkMonitor.js"
       ],
       "matches": [
         "<all_urls>"

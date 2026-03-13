@@ -1,58 +1,107 @@
-# SocialGPT – Chrome Extension for Context-Aware ChatGPT Replies
+# Tornevall Networks Social Media Tools
 
-SocialGPT is a powerful Chrome extension for injecting ChatGPT into your social media workflows. It lets you mark
-elements on a page (comments, posts, threads), define tone and style, and generate responses directly with context –
-perfect for crafting quick replies, sarcastic roasts, or fact-based rebuttals.
+`Tornevall Networks Social Media Tools` is a standalone Chrome extension for Tools-backed reply assistance and Facebook admin activity workflows.
 
-## June 2025 Update Highlights
+## What it does
 
-- Floating panel UI with live prompt, context viewer, and output field
-- Tone selector with presets like "Brutally honest", "Academic and precise", "Snarky", or custom
-- Response length control: from "as short as possible" to extended replies
-- Panel is draggable, dockable and collapsible on double-click
-- Multi-element context marking for full thread responses
-- Automatic Facebook profile name detection as responder alias
-- Modify previous replies in-place
-- Supports multiple models: gpt-4o, gpt-4, and o3-mini
+The extension currently focuses on three things:
 
-### 🚧 Known Limitations (Work in Progress)
+- Tools-authenticated AI replies from the browser
+- per-user responder settings loaded from Tools
+- optional Facebook group `admin_activities` statistics submission
 
-While SocialGPT aims to extract relevant context including media and link previews, it’s not perfect yet.
-Certain visual elements like shared article blocks, background images, or embedded videos may not always be picked up.
-We're working on improving detection for:
+## Server targets
 
-- Background images styled via CSS (common in Facebook photo/video posts)
-- Link preview containers with metadata (e.g. news articles or Instagram embeds)
-- Image-only posts with no accompanying `<img>` tag (rendered via inline styles)
+The popup can target either of these servers:
 
-If something seems missing in the prompt – it probably is. :)
+- Production: `https://tools.tornevall.net`
+- Dev / beta: `https://tools.tornevall.com`
 
-## How it is written
+## Install / load the extension
 
-Yeah, I am not a front end developer so I asked my way through this one.
-Built with help from OpenAI, model o3 and 4o.
+1. Open `chrome://extensions`
+2. Enable **Developer mode**
+3. Click **Load unpacked**
+4. Select the `socialgpt-chrome` folder
 
-## How it works
+## First-time setup
 
-1. Right-click any comment, post, or thread block
-2. Select "Mark element for GPT reading" to store it as context
-3. Open the reply panel via "Reply/Add text" in the context menu
-4. Enter your prompt, choose tone, length and model
-5. Press Send to generate a reply with context-aware precision
+1. Open the extension popup
+2. Generate a personal bearer token in Tools
+3. Paste the token into the popup
+4. Optionally enable **Use dev / beta server**
+5. Click **Test Tools → OpenAI**
+6. Save your responder settings
 
-## Features for Power Users
+## Popup usage
 
-- Designed for rapid response workflows in public social media threads
-- Ideal for rebuttals, satire, activism, moderation, or education
-- Maintains full control over length, tone and structure
-- Can be used to refine, translate or rewrite replies live
+The popup is used for:
 
-## Requirements
+- bearer token setup
+- responder name
+- auto-detecting your Facebook name
+- quick responder profile editing
+- testing the Tools → OpenAI connection
 
-- OpenAI API key (required for ChatGPT access)
-- Chrome or any Chromium-compatible browser
+For more advanced settings, use the dashboard link in the popup.
 
-## Privacy
+## Facebook admin activities
 
-No data is currently sent to third-party servers. All processing is local except the direct call to OpenAI’s API
-endpoint. Your API key is stored locally using chrome.storage.sync and never shared.
+On Facebook group `admin_activities` pages, the extension can:
+
+- observe relevant page activity in the current tab
+- show a single inline control for enabling activity statistics
+- extract detected activity rows directly from Facebook XHR / GraphQL responses
+- queue detected rows locally and submit them to Tools in bulk instead of one request per row
+- keep the page overlay draggable so it does not block Facebook UI elements
+- show a local preview of reportable admin-log entries before statistics submission is enabled
+
+The Facebook-side monitor starts when the page is loaded so the extension can detect relevant `admin_activities` data in the open tab.
+Detected rows may be collected locally for the current page session, but no statistics are submitted to Tools unless the user explicitly enables statistics submission from the inline page control.
+
+Statistics submission is disabled by default on each page load.
+If the Facebook page is reloaded or reopened, submission must be explicitly enabled again.
+
+The point is to keep the Facebook-side workflow simple and page-local.
+The actual Tools submit is performed by the extension runtime, not directly by the Facebook page context, to avoid browser CORS issues.
+
+## Facebook reply context
+
+On Facebook comment/reply fields, the reply panel tries to build a cleaner thread-aware context by:
+
+- anchoring to the active reply composer
+- detecting the likely reply target from the surrounding comment thread
+- reusing recent comment/thread hints captured from Facebook XHR / GraphQL responses when available
+- remembering the last reply prompt so repetitive moderation/reply workflows are faster
+
+Reply generation and reply-assistance features are user-initiated.
+The extension does not post or submit replies automatically.
+
+## Local storage
+
+The extension keeps a small local cache for convenience.
+
+Stored locally in Chrome:
+
+- bearer token
+- current environment flag (`devMode`)
+- last synced responder values for UI fallback
+- temporary in-session admin activity data pending optional submission
+
+## Troubleshooting
+
+If **dev / beta mode** is enabled:
+
+- the popup shows a debug console
+
+If **Enable Facebook admin debug diagnostics** is enabled in the popup:
+
+- Facebook `admin_activities` pages can show extra diagnostics
+- interesting page events can be mirrored to Chrome DevTools console with the `TN Social Tools` prefix
+- detected admin-log entries can also be mirrored to the console before a bulk upload is sent
+
+The injected network monitor skips unsafe direct `responseText` reads for binary XHR response types such as `arraybuffer` and `blob`, so Facebook background traffic should no longer crash the page monitor while text/JSON admin-log payloads remain readable.
+
+If Facebook activity submission returns a server-side 500 error, make sure the Tools server is updated to the matching backend version for the extension workflow.
+
+If you change extension files locally, reload the extension in `chrome://extensions` before testing again.

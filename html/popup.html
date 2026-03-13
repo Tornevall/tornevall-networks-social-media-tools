@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8"/>
-    <title>SocialGPT Settings</title>
-    <link rel="stylesheet" href="./css/styles.css"/>
+    <title>Tornevall Networks Social Media Tools</title>
+    <link rel="stylesheet" href="../css/styles.css"/>
     <style>
         body {
             font-family: system-ui, sans-serif;
@@ -46,8 +46,10 @@
 
         #status {
             font-size: 12px;
-            margin-top: 6px;
-            color: green
+            margin-top: 10px;
+            color: green;
+            white-space: pre-wrap;
+            line-height: 1.4;
         }
 
         .checkbox-inline {
@@ -58,12 +60,161 @@
             margin-top: -8px;
             margin-bottom: 12px;
         }
+
+        .endpoint-note {
+            font-size: 12px;
+            line-height: 1.45;
+            opacity: 0.88;
+            margin: 0 0 10px 0;
+        }
+
+        .helper-note {
+            font-size: 12px;
+            line-height: 1.45;
+            background: #f5f5f5;
+            border: 1px solid #ddd;
+            padding: 8px;
+            margin: 0 0 12px 0;
+        }
+
+        .button-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 6px;
+        }
+
+        .button-row button {
+            margin-right: 0;
+        }
+
+        .debug-console {
+            margin-top: 12px;
+            border: 1px solid #ddd;
+            background: #fafafa;
+            padding: 8px;
+        }
+
+        .debug-console summary {
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .debug-console pre {
+            font-size: 11px;
+            line-height: 1.4;
+            white-space: pre-wrap;
+            max-height: 220px;
+            overflow: auto;
+            background: #fff;
+            border: 1px solid #ddd;
+            padding: 8px;
+            margin-top: 8px;
+        }
+
+        .status-card {
+            margin: 0 0 14px 0;
+            border: 1px solid #dbe4f0;
+            background: #f8fbff;
+            border-radius: 10px;
+            padding: 10px;
+        }
+
+        .status-card h2 {
+            margin: 0 0 6px 0;
+            font-size: 14px;
+        }
+
+        .status-card .status-line {
+            font-size: 12px;
+            line-height: 1.45;
+            margin: 0 0 6px 0;
+            color: #334155;
+        }
+
+        .status-card .status-muted {
+            color: #64748b;
+        }
+
+        .status-card .status-list {
+            display: grid;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .status-card .status-item {
+            border-top: 1px solid #e2e8f0;
+            padding-top: 8px;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .status-card .status-item:first-child {
+            border-top: none;
+            padding-top: 0;
+        }
+
+        .status-card .status-pill {
+            display: inline-block;
+            border-radius: 999px;
+            background: #dbeafe;
+            color: #1d4ed8;
+            padding: 2px 8px;
+            font-size: 11px;
+            font-weight: 700;
+            margin-right: 6px;
+        }
     </style>
 </head>
 <body>
-<h1>SocialGPT Settings</h1>
-<label for="apiKey">OpenAI API Key:</label>
-<input type="text" id="apiKey" placeholder="Enter your API key here" />
+<h1>Tornevall Networks Social Media Tools</h1>
+<p class="endpoint-note">
+    Browser companion for Tornevall Networks social media workflows, server-side AI assistance, and future admin/statistics tooling.
+</p>
+<p class="endpoint-note" id="endpointNote">
+    Requests are sent through <code>https://tools.tornevall.net/api/ai/socialgpt/respond</code> using your Tools bearer token.
+</p>
+<p class="helper-note">
+    Register at <strong>tools.tornevall.net</strong> and generate a <strong>personal bearer token</strong> there to use this extension.
+</p>
+<p class="helper-note">
+    More settings and Facebook admin-log tools live in Tools.
+    For more info, <a id="openToolsDashboardLink" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">open dashboard</a>.
+</p>
+
+<section class="status-card" id="facebookAdminStatusCard">
+    <h2>Facebook admin activity reporting</h2>
+    <p class="status-line" id="facebookAdminStatusState">Loading active-tab admin reporting status…</p>
+    <p class="status-line status-muted" id="facebookAdminStatusCounters"></p>
+    <p class="status-line" style="font-weight:700; margin-top:10px;">Reportable if enabled</p>
+    <div class="status-list" id="facebookAdminReportableList">
+        <div class="status-line status-muted">No reportable admin-log entries detected yet.</div>
+    </div>
+    <p class="status-line status-muted" id="facebookAdminLastSubmission" style="margin-top:10px;"></p>
+</section>
+
+<div class="checkbox-inline">
+    <input type="checkbox" id="devMode">
+    <label for="devMode">Use dev / beta server (<code>tools.tornevall.com</code>)</label>
+</div>
+
+<div class="checkbox-inline">
+    <input type="checkbox" id="facebookAdminDebugEnabled">
+    <label for="facebookAdminDebugEnabled">Enable Facebook admin debug diagnostics</label>
+</div>
+
+<div class="checkbox-inline">
+    <input type="checkbox" id="pageNetworkDebugEnabled">
+    <label for="pageNetworkDebugEnabled">Enable in-page XHR debug overlay on supported pages</label>
+</div>
+
+<div class="checkbox-inline">
+    <input type="checkbox" id="enableUnsupportedCompose">
+    <label for="enableUnsupportedCompose">Show <em>Write with Tools</em> on unsupported sites too (experimental)</label>
+</div>
+
+<label for="apiKey">Tools API Bearer Token:</label>
+<input type="text" id="apiKey" placeholder="Paste your personal Tools token here" />
 
 <label for="responderName">Responder name:</label>
 <input type="text" id="responderName" placeholder="Who are you?" />
@@ -73,13 +224,33 @@
     <label for="autoDetectName">Auto detect Facebook name</label>
 </div>
 
-<label for="systemPrompt">ChatGPT Behavior (system message):</label>
-<textarea id="systemPrompt" rows="4">You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.</textarea>
+<label for="systemPrompt">Responder profile / about the person (stored in Tools):</label>
+<textarea id="systemPrompt" rows="5">You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.</textarea>
+<p class="helper-note" style="margin-top: -6px;">
+    For <strong>custom instructions</strong>, use
+    <a id="openToolsDashboardLinkInline" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">Tools → Social Media Tools → Facebook</a>.
+</p>
 
-<button id="saveKeyBtn">Save Settings</button>
-<button id="resetPromptBtn">Reset Prompt</button>
+<label for="testQuestion">Test question (Tools → OpenAI):</label>
+<textarea id="testQuestion" rows="3" placeholder="Ask something that should reflect your Tools personalization.">Reply in one short sentence that shows which responder name, profile, and custom instructions you received from Tools.</textarea>
+
+<div class="button-row">
+    <button id="saveKeyBtn">Save Settings</button>
+    <button id="testConnectionBtn" type="button">Test Tools → OpenAI</button>
+    <button id="resetPromptBtn" type="button">Reset Prompt</button>
+</div>
 
 <p id="status"></p>
+
+<details class="debug-console" id="debugConsoleWrap" hidden>
+    <summary>Dev debug console</summary>
+    <div class="button-row" style="margin-top: 8px;">
+        <button id="refreshDebugBtn" type="button">Refresh</button>
+        <button id="copyDebugBtn" type="button">Copy</button>
+        <button id="clearDebugBtn" type="button">Clear</button>
+    </div>
+    <pre id="debugConsole">No logs yet.</pre>
+</details>
 <script src="../js/popup.js"></script>
 </body>
 </html>
