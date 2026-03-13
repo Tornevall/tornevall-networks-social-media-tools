@@ -13,6 +13,40 @@ const ADMIN_PANEL_POSITION_STORAGE_KEY = 'tn_social_tools_admin_panel_position';
 const MAX_RECENT_FACEBOOK_COMMENT_ENTRIES = 200;
 const DEFAULT_REPLY_PROMPT = 'Write a concise reply that fits the thread and handles the recipient appropriately.';
 const FACEBOOK_REPLY_NOISE_LINES = ['most relevant', 'mest relevant', 'like', 'reply', 'share', 'comment', 'send', 'gif', 'gilla', 'svara', 'dela', 'kommentera', 'skicka'];
+const FACEBOOK_ADMIN_MONTH_INDEX = {
+    jan: 0,
+    january: 0,
+    januari: 0,
+    feb: 1,
+    february: 1,
+    februari: 1,
+    mar: 2,
+    march: 2,
+    mars: 2,
+    apr: 3,
+    april: 3,
+    may: 4,
+    maj: 4,
+    jun: 5,
+    june: 5,
+    juni: 5,
+    jul: 6,
+    july: 6,
+    juli: 6,
+    aug: 7,
+    august: 7,
+    augusti: 7,
+    sep: 8,
+    sept: 8,
+    september: 8,
+    okt: 9,
+    october: 9,
+    oktober: 9,
+    nov: 10,
+    november: 10,
+    dec: 11,
+    december: 11,
+};
 
 let extensionContextAvailable = true;
 let locationWatchIntervalId = null;
@@ -154,12 +188,12 @@ const EXTENSION_VERSION = getExtensionVersion();
 let adminIngestEnabled = false;
 let adminDebugEnabled = false;
 let adminActivitiesScanScheduled = false;
+let adminFlushInProgress = false;
+let adminFlushRequestedWhileBusy = false;
 let networkMonitorInjected = false;
 let adminLastStatusText = 'Passive activity detection is ready. Statistics are off.';
-let adminSubmittedCount = 0;
 let adminNetworkEventsSeen = 0;
 let adminInterestingNetworkEventsSeen = 0;
-let adminDetectedEntryCount = 0;
 let adminLastNetworkEventAt = 0;
 let adminNetworkDebugAnnounced = false;
 let lastObservedLocationHref = location.href;
@@ -168,9 +202,6 @@ let adminActivitiesDragListenersBound = false;
 let activeReplyContextMeta = null;
 let latestBootstrapAdminScanDebug = null;
 let latestInjectedBootstrapAdminScanDebug = null;
-const discoveredAdminEntryKeys = new Set();
-const pendingAdminEntries = new Map();
-const submittedAdminEntryKeys = new Set();
 const recentAdminNetworkEvents = [];
 const facebookCommentEntryKeys = new Set();
 const recentFacebookCommentEntries = [];
@@ -182,6 +213,122 @@ function debugLog(entry) {
             source: 'content-script',
         }, entry || {}),
     });
+}
+
+const adminActivityReporter = typeof TNFacebookAdminReporter !== 'undefined' && TNFacebookAdminReporter && typeof TNFacebookAdminReporter.createReporter === 'function'
+    ? TNFacebookAdminReporter.createReporter({
+        storageKey: 'tn_social_tools_facebook_admin_reporter_v1',
+        ttlMs: 24 * 60 * 60 * 1000,
+        log: function (category, message, meta) {
+            debugLog({
+                level: 'info',
+                category: category,
+                message: message,
+                meta: meta || {},
+            });
+        },
+        debugEnabled: function () {
+            return adminDebugEnabled;
+        },
+    })
+    : {
+        normalizeEntry: function (entry) { return entry || null; },
+        discoverEntries: function () { return {added: 0, duplicates: 0, entries: []}; },
+        startNextBatch: function () { return []; },
+        markBatchSent: function () {},
+        markBatchFailed: function () {},
+        getQueueSize: function () { return 0; },
+        getSnapshot: function () {
+            return {
+                totals: {
+                    detected: 0,
+                    duplicates_ignored: 0,
+                    queued: 0,
+                    sending: 0,
+                    failed: 0,
+                    pending: 0,
+                    sent: 0,
+                    batches_started: 0,
+                    batches_succeeded: 0,
+                    batches_failed: 0,
+                },
+                reportable_entries: [],
+                recent_sent_entries: [],
+                last_submission: null,
+                has_reportable_entries: false,
+            };
+        },
+    };
+
+function getAdminReporterSnapshot() {
+    return adminActivityReporter.getSnapshot();
+}
+
+function buildAdminLastSubmissionSummary(lastSubmission) {
+    if (!lastSubmission || typeof lastSubmission !== 'object') {
+        return '';
+    }
+
+    if (lastSubmission.status === 'sending') {
+        return 'Bulk send in progress. Attempting ' + (lastSubmission.attempted || 0) + ' entr' + ((lastSubmission.attempted || 0) === 1 ? 'y' : 'ies') + '.';
+    }
+
+    if (lastSubmission.status === 'success') {
+        return 'Bulk sent: attempted ' + (lastSubmission.attempted || 0)
+            + ' · received ' + (lastSubmission.received || 0)
+            + ' · created ' + (lastSubmission.created || 0)
+            + ' · updated/duplicate-safe ' + (lastSubmission.updated || 0)
+            + ' · queue remaining ' + (lastSubmission.queue_remaining || 0);
+    }
+
+    if (lastSubmission.status === 'failed') {
+        return 'Bulk send failed: attempted ' + (lastSubmission.attempted || 0)
+            + ' · failed ' + (lastSubmission.failed || 0)
+            + ' · queue remaining ' + (lastSubmission.queue_remaining || 0)
+            + (lastSubmission.error ? ' · ' + lastSubmission.error : '');
+    }
+
+    return '';
+}
+
+function buildAdminReporterStatusPayload() {
+    const snapshot = getAdminReporterSnapshot();
+    const reportableEntries = sortAdminEntriesByRecency(snapshot.reportable_entries || []).slice(0, 5);
+    const counters = snapshot.totals || {};
+
+    return {
+        ok: true,
+        page_url: location.href,
+        is_facebook_page: isFacebookPage(),
+        is_admin_page: isFacebookAdminActivitiesPage(),
+        ingest_enabled: adminIngestEnabled,
+        debug_enabled: adminDebugEnabled,
+        state_text: adminLastStatusText,
+        reportable_heading: 'Reportable if enabled',
+        reportable_empty_text: 'No reportable admin-log entries detected yet.',
+        reportable_entries: reportableEntries.map(function (entry) {
+            return {
+                actor_name: entry.actor_name || 'Unknown actor',
+                action_text: entry.action_text || entry.description || '',
+                action: entry.action || entry.handled_outcome || '',
+                target_name: entry.target_name || '',
+                state: entry.state || 'queued',
+                occurred_at: entry.occurred_at || entry.facebook_activity_time || null,
+                key: entry.key || entry.dedupe_key || '',
+            };
+        }),
+        counters: {
+            detected: counters.detected || 0,
+            duplicates_ignored: counters.duplicates_ignored || 0,
+            queued: counters.queued || 0,
+            sending: counters.sending || 0,
+            failed: counters.failed || 0,
+            pending: counters.pending || 0,
+            sent: counters.sent || 0,
+        },
+        last_submission: snapshot.last_submission || null,
+        last_submission_text: buildAdminLastSubmissionSummary(snapshot.last_submission),
+    };
 }
 
 function adminDebugConsoleInfo(message, meta) {
@@ -299,6 +446,195 @@ function syncAdminDebugPreference() {
 
 function normalizeWhitespace(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizeAdminActivityTimeValue(value) {
+    if (value === null || typeof value === 'undefined' || value === '') {
+        return null;
+    }
+
+    if (typeof value === 'number' && isFinite(value)) {
+        const numericDate = new Date(value > 9999999999 ? value : value * 1000);
+        return isNaN(numericDate.getTime()) ? null : numericDate.toISOString();
+    }
+
+    const raw = normalizeWhitespace(value);
+    if (!raw) {
+        return null;
+    }
+
+    if (/^\d{10,13}$/.test(raw)) {
+        const numericValue = Number(raw);
+        if (isFinite(numericValue)) {
+            const unixDate = new Date(raw.length >= 13 ? numericValue : numericValue * 1000);
+            if (!isNaN(unixDate.getTime())) {
+                return unixDate.toISOString();
+            }
+        }
+    }
+
+    const parsed = Date.parse(raw);
+    if (!isNaN(parsed)) {
+        return new Date(parsed).toISOString();
+    }
+
+    return null;
+}
+
+function isGenericAdminTargetLabel(value) {
+    const normalized = normalizeWhitespace(value).toLowerCase();
+    if (!normalized) {
+        return false;
+    }
+
+    return [
+        'inlägg',
+        'post',
+        'kommentar',
+        'comment',
+        'medlem',
+        'member',
+        'förfrågan',
+        'request',
+        'reported content',
+        'content',
+        'reply',
+        'svar'
+    ].indexOf(normalized) !== -1;
+}
+
+function normalizeAdminTargetInfo(targetName, targetType) {
+    const normalizedTargetName = normalizeWhitespace(targetName || '');
+    const normalizedTargetType = normalizeWhitespace(targetType || '');
+
+    if (!normalizedTargetName) {
+        return {
+            target_name: null,
+            target_type: normalizedTargetType || null,
+        };
+    }
+
+    if (normalizedTargetType) {
+        return {
+            target_name: normalizedTargetName,
+            target_type: normalizedTargetType,
+        };
+    }
+
+    if (isGenericAdminTargetLabel(normalizedTargetName)) {
+        return {
+            target_name: null,
+            target_type: normalizedTargetName,
+        };
+    }
+
+    return {
+        target_name: normalizedTargetName,
+        target_type: null,
+    };
+}
+
+function buildLocalIsoTimestamp(year, monthIndex, day, hour, minute) {
+    const parsedYear = Number(year);
+    const parsedMonthIndex = Number(monthIndex);
+    const parsedDay = Number(day);
+    const parsedHour = Number(hour);
+    const parsedMinute = Number(minute);
+    if (!isFinite(parsedYear) || !isFinite(parsedMonthIndex) || !isFinite(parsedDay) || !isFinite(parsedHour) || !isFinite(parsedMinute)) {
+        return null;
+    }
+
+    const date = new Date(parsedYear, parsedMonthIndex, parsedDay, parsedHour, parsedMinute, 0, 0);
+    return isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function parseFacebookAdminDateLine(text) {
+    const normalized = normalizeWhitespace(text)
+        .replace(/\s+kl\.?\s+/i, ' ')
+        .replace(/,/g, '');
+    if (!normalized) {
+        return null;
+    }
+
+    const lower = normalized.toLowerCase();
+    const todayMatch = lower.match(/^(idag|today)\s+(\d{1,2}):(\d{2})$/i);
+    if (todayMatch) {
+        const now = new Date();
+        return buildLocalIsoTimestamp(now.getFullYear(), now.getMonth(), now.getDate(), todayMatch[2], todayMatch[3]);
+    }
+
+    const yesterdayMatch = lower.match(/^(igår|yesterday)\s+(\d{1,2}):(\d{2})$/i);
+    if (yesterdayMatch) {
+        const now = new Date();
+        now.setDate(now.getDate() - 1);
+        return buildLocalIsoTimestamp(now.getFullYear(), now.getMonth(), now.getDate(), yesterdayMatch[2], yesterdayMatch[3]);
+    }
+
+    const namedMonthMatch = lower.match(/^(\d{1,2})\s+([a-zåäö]+)\s+(\d{4})(?:\s+|\s*at\s*)(\d{1,2}):(\d{2})$/i)
+        || lower.match(/^(\d{1,2})\s+([a-zåäö]+)(?:\s+|\s*at\s*)(\d{1,2}):(\d{2})$/i);
+    if (namedMonthMatch) {
+        const hasExplicitYear = namedMonthMatch.length === 6;
+        const day = namedMonthMatch[1];
+        const monthLabel = namedMonthMatch[2];
+        const monthIndex = FACEBOOK_ADMIN_MONTH_INDEX[monthLabel];
+        if (typeof monthIndex === 'number') {
+            const year = hasExplicitYear ? namedMonthMatch[3] : String(new Date().getFullYear());
+            const hour = hasExplicitYear ? namedMonthMatch[4] : namedMonthMatch[3];
+            const minute = hasExplicitYear ? namedMonthMatch[5] : namedMonthMatch[4];
+            return buildLocalIsoTimestamp(year, monthIndex, day, hour, minute);
+        }
+    }
+
+    const directParsed = Date.parse(normalized);
+    if (!isNaN(directParsed)) {
+        return new Date(directParsed).toISOString();
+    }
+
+    return null;
+}
+
+function extractOccurredAtFromVisibleAdminContainer(container) {
+    if (!container) {
+        return null;
+    }
+
+    const directTimeNodes = container.querySelectorAll('time, abbr[data-utime], span[title], a[title]');
+    for (let index = 0; index < directTimeNodes.length; index += 1) {
+        const node = directTimeNodes[index];
+        const unixValue = node && node.getAttribute ? (node.getAttribute('data-utime') || node.getAttribute('data-store') || '') : '';
+        const normalizedUnix = normalizeAdminActivityTimeValue(unixValue);
+        if (normalizedUnix) {
+            return normalizedUnix;
+        }
+
+        const titledValue = node && node.getAttribute ? node.getAttribute('title') : '';
+        const titledTime = parseFacebookAdminDateLine(titledValue || '');
+        if (titledTime) {
+            return titledTime;
+        }
+
+        const nodeTextTime = parseFacebookAdminDateLine(node && node.textContent ? node.textContent : '');
+        if (nodeTextTime) {
+            return nodeTextTime;
+        }
+    }
+
+    const lines = String(container.innerText || '')
+        .split(/\n+/)
+        .map(function (line) {
+            return normalizeWhitespace(line);
+        })
+        .filter(Boolean)
+        .reverse();
+
+    for (let index = 0; index < lines.length; index += 1) {
+        const parsed = parseFacebookAdminDateLine(lines[index]);
+        if (parsed) {
+            return parsed;
+        }
+    }
+
+    return null;
 }
 
 function isFacebookPage() {
@@ -1354,6 +1690,9 @@ function updateAdminActivitiesControl() {
         return;
     }
 
+    const snapshot = getAdminReporterSnapshot();
+    const countersSnapshot = snapshot.totals || {};
+
     const toggle = adminActivitiesControl.querySelector('[data-role="toggle"]');
     const state = adminActivitiesControl.querySelector('[data-role="state"]');
     const counters = adminActivitiesControl.querySelector('[data-role="counters"]');
@@ -1374,7 +1713,12 @@ function updateAdminActivitiesControl() {
     }
 
     if (counters) {
-        counters.textContent = 'Detected: ' + adminDetectedEntryCount + ' · Pending: ' + pendingAdminEntries.size + ' · Submitted: ' + adminSubmittedCount;
+        counters.textContent = 'Detected: ' + (countersSnapshot.detected || 0)
+            + ' · Pending: ' + (countersSnapshot.pending || 0)
+            + ' · Sending: ' + (countersSnapshot.sending || 0)
+            + ' · Failed: ' + (countersSnapshot.failed || 0)
+            + ' · Submitted: ' + (countersSnapshot.sent || 0)
+            + ' · Duplicates ignored: ' + (countersSnapshot.duplicates_ignored || 0);
         counters.style.display = adminDebugEnabled ? 'block' : 'none';
     }
 
@@ -1396,13 +1740,15 @@ function updateAdminActivitiesControl() {
     }
 
     if (detected) {
-        const latestDetected = sortAdminEntriesByRecency(Array.from(pendingAdminEntries.values())).slice(0, 5);
+        const latestDetected = sortAdminEntriesByRecency(snapshot.reportable_entries || []).slice(0, 5);
         if (!latestDetected.length) {
             detected.innerHTML = '<div style="color:#64748b;">No reportable admin-log entries detected yet.</div>';
         } else {
             detected.innerHTML = latestDetected.map(function (entry) {
                 const labelParts = [entry.actor_name || 'Unknown actor'];
-                if (entry.handled_outcome) {
+                if (entry.action) {
+                    labelParts.push('→ ' + entry.action);
+                } else if (entry.handled_outcome) {
                     labelParts.push('→ ' + entry.handled_outcome);
                 }
                 if (entry.target_name) {
@@ -1411,6 +1757,7 @@ function updateAdminActivitiesControl() {
 
                 return '<div style="padding:6px 0; border-top:1px solid rgba(148,163,184,0.2);">'
                     + '<div style="font-weight:600; color:#0f766e;">' + escapeHtml(labelParts.join(' ')) + '</div>'
+                    + '<div style="margin-top:2px; color:#64748b;">state=' + escapeHtml(entry.state || 'queued') + (entry.occurred_at ? ' · fb_time=' + escapeHtml(entry.occurred_at) : '') + '</div>'
                     + '<div style="margin-top:3px; color:#475569;">' + escapeHtml(clipText(entry.action_text || '', 150)) + '</div>'
                     + '</div>';
             }).join('');
@@ -1684,10 +2031,16 @@ function normalizeAdminActivityEntry(entry) {
     const actorName = normalizeWhitespace(entry.actor_name || '');
     const handledOutcome = entry.handled_outcome || detectHandledOutcomeFromText(actionText);
     const handledStatusText = entry.handled_status_text || detectHandledStatusFromText(actionText);
-    const targetName = normalizeWhitespace(entry.target_name || '');
+    const normalizedTarget = normalizeAdminTargetInfo(entry.target_name || '', entry.target_type || '');
+    const targetName = normalizedTarget.target_name ? normalizeWhitespace(normalizedTarget.target_name) : '';
+    const targetType = normalizedTarget.target_type ? normalizeWhitespace(normalizedTarget.target_type) : '';
     const sourceUrl = normalizeWhitespace(entry.source_url || location.origin + location.pathname);
     const activityUrl = normalizeWhitespace(entry.activity_url || location.href);
-    const occurredAt = entry.occurred_at || null;
+    const occurredAt = normalizeAdminActivityTimeValue(entry.occurred_at || entry.facebook_activity_time || entry.activity_time || null);
+    const groupId = typeof TNFacebookAdminReporter !== 'undefined' && TNFacebookAdminReporter
+        ? TNFacebookAdminReporter.extractGroupIdFromUrl(sourceUrl || activityUrl)
+        : '';
+    const action = normalizeWhitespace(entry.action || handledStatusText || handledOutcome || actionText);
     const fallbackActorName = (handledStatusText && handledStatusText.indexOf('automatic') !== -1) ? 'Automatic moderation' : actorName;
     const finalActorName = actorName || fallbackActorName;
 
@@ -1696,17 +2049,28 @@ function normalizeAdminActivityEntry(entry) {
     }
 
     return {
-        key: entry.key || [sourceUrl, occurredAt || '', finalActorName, targetName || '', actionText].join('|'),
+        key: entry.key || [groupId || sourceUrl, occurredAt || '', finalActorName, actionText, action].join('|'),
+        dedupe_key: entry.dedupe_key || null,
+        group_id: entry.group_id || groupId || null,
+        facebook_activity_time: occurredAt,
         source_url: sourceUrl,
         activity_url: activityUrl,
         occurred_at: occurredAt,
         detected_at: entry.detected_at || new Date().toISOString(),
         actor_name: finalActorName,
+        description: actionText,
         action_text: actionText,
+        action: action,
         target_name: targetName || null,
+        target_type: targetType || null,
         handled_outcome: handledOutcome,
         handled_status_text: handledStatusText,
         raw_blue_segment: entry.raw_blue_segment || actionText,
+        source_external_id: entry.source_external_id || null,
+        source_external_slug: entry.source_external_slug || null,
+        source_label: entry.source_label || entry.source_name || null,
+        network_activity_id: entry.network_activity_id || null,
+        client_event_key: entry.client_event_key || entry.dedupe_key || entry.key || null,
         plugin_version: 'tornevall-networks-social-media-tools/' + EXTENSION_VERSION,
     };
 }
@@ -1716,29 +2080,24 @@ function rememberDetectedAdminEntries(entries, reason) {
         return 0;
     }
 
-    let added = 0;
-    entries.forEach(function (entry) {
-        const normalized = normalizeAdminActivityEntry(entry);
-        if (!normalized || discoveredAdminEntryKeys.has(normalized.key)) {
-            return;
-        }
+    const normalizedEntries = entries.map(function (entry) {
+        return normalizeAdminActivityEntry(entry);
+    }).filter(Boolean);
+    const discovery = adminActivityReporter.discoverEntries(normalizedEntries, {reason: reason || 'scan'});
+    const added = discovery && typeof discovery.added === 'number' ? discovery.added : 0;
 
-        discoveredAdminEntryKeys.add(normalized.key);
-        pendingAdminEntries.set(normalized.key, normalized);
-        adminDetectedEntryCount += 1;
-        added += 1;
-    });
-
-    if (added && adminDebugEnabled) {
+    if ((added || (discovery && discovery.duplicates)) && adminDebugEnabled) {
+        const snapshot = getAdminReporterSnapshot();
         debugLog({
             level: 'info',
             category: 'facebook-admin-detection',
-            message: 'Detected Facebook admin activity entries.',
+            message: 'Processed Facebook admin activity entries through the shared reporter queue.',
             meta: {
                 reason: reason,
                 added: added,
-                detected_total: adminDetectedEntryCount,
-                pending_total: pendingAdminEntries.size,
+                duplicates_ignored: discovery && discovery.duplicates ? discovery.duplicates : 0,
+                detected_total: snapshot.totals.detected,
+                pending_total: snapshot.totals.pending,
             }
         });
     }
@@ -1755,7 +2114,7 @@ function bootstrapSafeJsonParse(value) {
 }
 
 function getBootstrapAdminScriptTextMatcher() {
-    return /GroupAdminActivity|GroupsCometAdminActivity|management_activities|management_activity_log_target|admin_activities|RelayPrefetchedStreamCache|ScheduledServerJS|CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|activity_title/i;
+    return /GroupAdminActivity|GroupsCometAdminActivity|management_activities|management_activity_log_target|admin_activities|RelayPrefetchedStreamCache|ScheduledServerJS|CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|activity_time|activity_title/i;
 }
 
 function isStrongBootstrapAdminScriptText(raw) {
@@ -1943,12 +2302,14 @@ function parseBootstrapAdminActivityNode(node) {
         source_url: location.href,
         activity_url: location.href,
         occurred_at: node.activity_time ? new Date(node.activity_time * 1000).toISOString() : null,
+        facebook_activity_time: node.activity_time ? new Date(node.activity_time * 1000).toISOString() : null,
         actor_name: actorName,
         action_text: actionText,
         target_name: targetName || null,
         handled_outcome: detectHandledOutcomeFromText(actionText),
         handled_status_text: detectHandledStatusFromText(actionText),
         raw_blue_segment: actionText,
+        network_activity_id: node.id || null,
         is_automatic_action: isAutomatic,
     });
 }
@@ -2157,16 +2518,23 @@ function parseAdminActivityEntry(container) {
         return null;
     }
 
-    const targetName = names.length > 1 ? names[1] : null;
-    const key = [location.href, actorName, targetName || '', actionText].join('|');
+    const targetCandidate = names.length > 1 ? names[1] : null;
+    const normalizedTarget = normalizeAdminTargetInfo(targetCandidate, null);
+    const targetName = normalizedTarget.target_name;
+    const targetType = normalizedTarget.target_type;
+    const occurredAt = extractOccurredAtFromVisibleAdminContainer(container);
+    const key = [location.href, actorName, occurredAt || '', actionText].join('|');
 
     return normalizeAdminActivityEntry({
         key: key,
         source_url: location.href,
         activity_url: location.href,
+        occurred_at: occurredAt,
+        facebook_activity_time: occurredAt,
         actor_name: actorName,
         action_text: actionText,
         target_name: targetName,
+        target_type: targetType,
         handled_outcome: detectHandledOutcomeFromText(actionText),
         handled_status_text: detectHandledStatusFromText(actionText),
         raw_blue_segment: actionText,
@@ -2219,6 +2587,14 @@ async function submitAdminActivityEntriesBatch(entries) {
 }
 
 async function flushAdminActivitiesToTools(reason) {
+    if (adminFlushInProgress) {
+        adminFlushRequestedWhileBusy = true;
+        return;
+    }
+
+    adminFlushInProgress = true;
+
+    try {
     const bootstrapEntries = collectBootstrapAdminActivityEntries(reason || 'bootstrap-scan');
     const bootstrapAdded = rememberDetectedAdminEntries(bootstrapEntries, reason || 'bootstrap-scan');
     if (latestBootstrapAdminScanDebug) {
@@ -2231,47 +2607,62 @@ async function flushAdminActivitiesToTools(reason) {
         return;
     }
 
-    const unsentEntries = sortAdminEntriesByRecency(Array.from(pendingAdminEntries.values()).filter(function (entry) {
-        return !submittedAdminEntryKeys.has(entry.key);
-    }));
+    const initialSnapshot = getAdminReporterSnapshot();
 
-    if (!unsentEntries.length) {
+    if (!initialSnapshot.totals.pending) {
         adminLastStatusText = 'Listening for admin-log changes. No new detected entries are waiting.';
         updateAdminActivitiesControl();
         return;
     }
 
     let submittedThisRun = 0;
+    let receivedThisRun = 0;
     let createdThisRun = 0;
     let updatedThisRun = 0;
-    const chunks = chunkAdminEntries(unsentEntries, MAX_ADMIN_BATCH_SIZE);
+    let batch = adminActivityReporter.startNextBatch(MAX_ADMIN_BATCH_SIZE, {reason: reason || 'scheduled-scan'});
 
-    for (let index = 0; index < chunks.length; index += 1) {
-        const batch = chunks[index];
+    while (batch.length) {
+        adminLastStatusText = 'Sending Facebook admin bulk: ' + batch.length + ' entr' + (batch.length === 1 ? 'y' : 'ies') + ' in this batch.';
+        updateAdminActivitiesControl();
 
         try {
             const response = await submitAdminActivityEntriesBatch(batch);
             const data = response.data || {};
+            adminActivityReporter.markBatchSent(batch, data, {reason: reason || 'scheduled-scan'});
             submittedThisRun += batch.length;
+            receivedThisRun += typeof data.received === 'number' ? data.received : batch.length;
             createdThisRun += typeof data.created === 'number' ? data.created : 0;
             updatedThisRun += typeof data.updated === 'number' ? data.updated : 0;
-            batch.forEach(function (entry) {
-                submittedAdminEntryKeys.add(entry.key);
-                pendingAdminEntries.delete(entry.key);
-            });
         } catch (error) {
-            adminLastStatusText = error && error.message ? error.message : 'Could not submit admin-log batch.';
+            adminActivityReporter.markBatchFailed(batch, error, {reason: reason || 'scheduled-scan'});
+            const failedSnapshot = getAdminReporterSnapshot();
+            adminLastStatusText = 'Bulk send failed after ' + submittedThisRun + ' submitted entr' + (submittedThisRun === 1 ? 'y' : 'ies') + '. '
+                + (error && error.message ? error.message : 'Could not submit admin-log batch.')
+                + ' Pending retry: ' + (failedSnapshot.totals.pending || 0) + '.';
             updateAdminActivitiesControl();
             debugLog({level: 'error', category: 'facebook-admin-ingest', message: adminLastStatusText, meta: {reason: reason, batch_size: batch.length}});
             return;
         }
+
+        batch = adminActivityReporter.startNextBatch(MAX_ADMIN_BATCH_SIZE, {reason: reason || 'scheduled-scan'});
     }
 
-    adminSubmittedCount += submittedThisRun;
+    const finalSnapshot = getAdminReporterSnapshot();
     adminLastStatusText = submittedThisRun > 0
-        ? 'Submitted ' + submittedThisRun + ' detected entr' + (submittedThisRun === 1 ? 'y' : 'ies') + ' to Tools in bulk.' + (createdThisRun || updatedThisRun ? ' Created: ' + createdThisRun + ' · Updated/duplicate-safe: ' + updatedThisRun : '')
+        ? 'Facebook admin bulk complete. Attempted: ' + submittedThisRun
+            + ' · Received: ' + receivedThisRun
+            + ' · Created: ' + createdThisRun
+            + ' · Updated/duplicate-safe: ' + updatedThisRun
+            + ' · Queue remaining: ' + (finalSnapshot.totals.pending || 0)
         : 'Listening for admin-log changes. No new detected entries to submit right now.';
     updateAdminActivitiesControl();
+    } finally {
+        adminFlushInProgress = false;
+        if (adminFlushRequestedWhileBusy) {
+            adminFlushRequestedWhileBusy = false;
+            scheduleAdminActivitiesScan((reason || 'scheduled-scan') + '-followup');
+        }
+    }
 }
 
 function scheduleAdminActivitiesScan(reason) {
@@ -2585,7 +2976,12 @@ function resetMarksAndContext() {
 // ---------------------------------------------
 // MAIN LISTENER
 // ---------------------------------------------
-safeAddRuntimeMessageListener(req => {
+safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
+    if (req.type === 'GET_FACEBOOK_ADMIN_REPORTER_STATUS') {
+        sendResponse(buildAdminReporterStatusPayload());
+        return true;
+    }
+
     if (req.type === 'SHOW_LOADER') return showLoader();
     if (req.type === 'HIDE_LOADER') return hideLoader();
 

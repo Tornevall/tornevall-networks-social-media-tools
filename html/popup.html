@@ -111,6 +111,59 @@
             padding: 8px;
             margin-top: 8px;
         }
+
+        .status-card {
+            margin: 0 0 14px 0;
+            border: 1px solid #dbe4f0;
+            background: #f8fbff;
+            border-radius: 10px;
+            padding: 10px;
+        }
+
+        .status-card h2 {
+            margin: 0 0 6px 0;
+            font-size: 14px;
+        }
+
+        .status-card .status-line {
+            font-size: 12px;
+            line-height: 1.45;
+            margin: 0 0 6px 0;
+            color: #334155;
+        }
+
+        .status-card .status-muted {
+            color: #64748b;
+        }
+
+        .status-card .status-list {
+            display: grid;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .status-card .status-item {
+            border-top: 1px solid #e2e8f0;
+            padding-top: 8px;
+            font-size: 12px;
+            line-height: 1.4;
+        }
+
+        .status-card .status-item:first-child {
+            border-top: none;
+            padding-top: 0;
+        }
+
+        .status-card .status-pill {
+            display: inline-block;
+            border-radius: 999px;
+            background: #dbeafe;
+            color: #1d4ed8;
+            padding: 2px 8px;
+            font-size: 11px;
+            font-weight: 700;
+            margin-right: 6px;
+        }
     </style>
 </head>
 <body>
@@ -128,6 +181,17 @@
     More settings and Facebook admin-log tools live in Tools.
     For more info, <a id="openToolsDashboardLink" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">open dashboard</a>.
 </p>
+
+<section class="status-card" id="facebookAdminStatusCard">
+    <h2>Facebook admin activity reporting</h2>
+    <p class="status-line" id="facebookAdminStatusState">Loading active-tab admin reporting status…</p>
+    <p class="status-line status-muted" id="facebookAdminStatusCounters"></p>
+    <p class="status-line" style="font-weight:700; margin-top:10px;">Reportable if enabled</p>
+    <div class="status-list" id="facebookAdminReportableList">
+        <div class="status-line status-muted">No reportable admin-log entries detected yet.</div>
+    </div>
+    <p class="status-line status-muted" id="facebookAdminLastSubmission" style="margin-top:10px;"></p>
+</section>
 
 <div class="checkbox-inline">
     <input type="checkbox" id="devMode">

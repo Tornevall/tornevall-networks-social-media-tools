@@ -19,6 +19,7 @@
       ],
       "js": [
         "js/shared/platformRegistry.js",
+        "js/shared/facebookAdminReporter.js",
         "js/platforms/facebook.js",
         "js/platforms/x.js",
         "js/contentScript.js"

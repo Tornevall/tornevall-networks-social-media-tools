@@ -82,6 +82,15 @@ function excerptText(value, maxLength) {
     return text.slice(0, Math.max(0, maxLength - 1)).trim() + '…';
 }
 
+function escapeHtml(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
 async function apiRequest(baseUrl, token, path, options) {
     const config = options || {};
     const method = config.method || 'GET';
@@ -181,6 +190,38 @@ function sendRuntimeMessage(message) {
     });
 }
 
+function queryActiveTabFacebookAdminStatus() {
+    return new Promise(function (resolve) {
+        chrome.tabs.query({active: true, currentWindow: true}, function (tabs) {
+            if (chrome.runtime.lastError) {
+                resolve({ok: false, error: chrome.runtime.lastError.message});
+                return;
+            }
+
+            var tab = Array.isArray(tabs) && tabs.length ? tabs[0] : null;
+            if (!tab || typeof tab.id !== 'number') {
+                resolve({ok: false, error: 'No active tab is available.'});
+                return;
+            }
+
+            chrome.tabs.sendMessage(tab.id, {type: 'GET_FACEBOOK_ADMIN_REPORTER_STATUS'}, function (response) {
+                if (chrome.runtime.lastError) {
+                    resolve({
+                        ok: false,
+                        error: chrome.runtime.lastError.message,
+                    });
+                    return;
+                }
+
+                resolve(response && response.ok ? {ok: true, status: response} : {
+                    ok: false,
+                    error: response && response.error ? response.error : 'No Facebook admin reporting status is available for the active tab.',
+                });
+            });
+        });
+    });
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     const apiKeyInput = document.getElementById('apiKey');
     const responderNameInput = document.getElementById('responderName');
@@ -203,6 +244,75 @@ document.addEventListener('DOMContentLoaded', function () {
     const refreshDebugBtn = document.getElementById('refreshDebugBtn');
     const copyDebugBtn = document.getElementById('copyDebugBtn');
     const clearDebugBtn = document.getElementById('clearDebugBtn');
+    const facebookAdminStatusState = document.getElementById('facebookAdminStatusState');
+    const facebookAdminStatusCounters = document.getElementById('facebookAdminStatusCounters');
+    const facebookAdminReportableList = document.getElementById('facebookAdminReportableList');
+    const facebookAdminLastSubmission = document.getElementById('facebookAdminLastSubmission');
+
+    function renderFacebookAdminStatus(result) {
+        if (!facebookAdminStatusState || !facebookAdminStatusCounters || !facebookAdminReportableList || !facebookAdminLastSubmission) {
+            return;
+        }
+
+        if (!result || !result.ok || !result.status) {
+            facebookAdminStatusState.textContent = (result && result.error)
+                ? ('Could not read Facebook admin reporting status from the active tab: ' + result.error)
+                : 'Could not read Facebook admin reporting status from the active tab.';
+            facebookAdminStatusCounters.textContent = 'Open a Facebook group admin activities page to inspect reportable entries and batch totals.';
+            facebookAdminReportableList.innerHTML = '<div class="status-line status-muted">No reportable admin-log entries detected yet.</div>';
+            facebookAdminLastSubmission.textContent = '';
+            return;
+        }
+
+        var statusPayload = result.status;
+        var counters = statusPayload.counters || {};
+        var entries = Array.isArray(statusPayload.reportable_entries) ? statusPayload.reportable_entries : [];
+        var pageStatePrefix = statusPayload.is_admin_page
+            ? 'Active tab is on a Facebook admin activities page.'
+            : (statusPayload.is_facebook_page
+                ? 'Active tab is on Facebook, but not on an admin activities page.'
+                : 'Active tab is not on Facebook admin activities.');
+        var ingestState = statusPayload.ingest_enabled
+            ? ' Reporting is enabled.'
+            : ' Reporting is disabled, but detections below are still reportable if enabled.';
+
+        facebookAdminStatusState.textContent = statusPayload.state_text || (pageStatePrefix + ingestState);
+        facebookAdminStatusCounters.textContent = pageStatePrefix + ingestState
+            + ' Detected: ' + (counters.detected || 0)
+            + ' · Pending: ' + (counters.pending || 0)
+            + ' · Sending: ' + (counters.sending || 0)
+            + ' · Failed: ' + (counters.failed || 0)
+            + ' · Submitted: ' + (counters.sent || 0)
+            + ' · Duplicates ignored: ' + (counters.duplicates_ignored || 0);
+
+        if (!entries.length) {
+            facebookAdminReportableList.innerHTML = '<div class="status-line status-muted">'
+                + (statusPayload.reportable_empty_text || 'No reportable admin-log entries detected yet.')
+                + '</div>';
+        } else {
+            facebookAdminReportableList.innerHTML = entries.map(function (entry) {
+                var headline = [entry.actor_name || 'Unknown actor'];
+                if (entry.action) {
+                    headline.push('→ ' + entry.action);
+                }
+                if (entry.target_name) {
+                    headline.push('(' + entry.target_name + ')');
+                }
+
+                return '<div class="status-item">'
+                    + '<div><span class="status-pill">' + escapeHtml(entry.state || 'queued') + '</span>' + escapeHtml(headline.join(' ')) + '</div>'
+                    + '<div class="status-muted" style="margin-top:4px;">' + escapeHtml(excerptText(entry.action_text || '', 180)) + '</div>'
+                    + (entry.occurred_at ? '<div class="status-muted" style="margin-top:4px;">Facebook time: ' + escapeHtml(entry.occurred_at) + '</div>' : '')
+                    + '</div>';
+            }).join('');
+        }
+
+        facebookAdminLastSubmission.textContent = statusPayload.last_submission_text || '';
+    }
+
+    async function refreshFacebookAdminStatus() {
+        renderFacebookAdminStatus(await queryActiveTabFacebookAdminStatus());
+    }
 
     function renderEndpointNote() {
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
@@ -380,6 +490,8 @@ document.addEventListener('DOMContentLoaded', function () {
         } else if (devModeCheckbox.checked) {
             await refreshDebugConsole();
         }
+
+        await refreshFacebookAdminStatus();
     });
 
     devModeCheckbox.addEventListener('change', function () {
@@ -563,6 +675,7 @@ document.addEventListener('DOMContentLoaded', function () {
     refreshDebugBtn.addEventListener('click', async function () {
         await refreshDebugConsole();
         setStatus(status, 'Debug console refreshed.', false);
+        await refreshFacebookAdminStatus();
     });
 
     copyDebugBtn.addEventListener('click', async function () {
@@ -583,5 +696,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
         debugConsole.textContent = 'No logs yet.';
         setStatus(status, 'Debug console cleared.', false);
+    });
+
+    window.addEventListener('focus', function () {
+        refreshFacebookAdminStatus();
     });
 });
