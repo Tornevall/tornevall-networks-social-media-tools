@@ -9,6 +9,9 @@ const DEBUG_CLEAR_REQUEST = 'CLEAR_DEBUG_LOGS';
 const DEFAULT_MOOD = 'Neutral and formal';
 const DEFAULT_PERSONA_PROFILE = 'You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.';
 const DEFAULT_TEST_QUESTION = 'A Facebook user writes: "Hi, what does this tool help you with?" Reply in one short sentence in your configured tone and style.';
+const DEFAULT_RESPONSE_LANGUAGE = 'auto';
+const DEFAULT_QUICK_REPLY_PRESET = 'default';
+const DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION = '';
 
 function getBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
@@ -226,6 +229,9 @@ document.addEventListener('DOMContentLoaded', function () {
     const apiKeyInput = document.getElementById('apiKey');
     const responderNameInput = document.getElementById('responderName');
     const autoDetectCheckbox = document.getElementById('autoDetectName');
+    const responseLanguageSelect = document.getElementById('responseLanguage');
+    const quickReplyPresetSelect = document.getElementById('quickReplyPreset');
+    const quickReplyInstructionInput = document.getElementById('quickReplyInstruction');
     const systemPromptInput = document.getElementById('systemPrompt');
     const devModeCheckbox = document.getElementById('devMode');
     const facebookAdminDebugCheckbox = document.getElementById('facebookAdminDebugEnabled');
@@ -398,6 +404,9 @@ document.addEventListener('DOMContentLoaded', function () {
             autoDetectResponder: values.autoDetectResponder,
             defaultMood: values.defaultMood,
             defaultCustomMood: values.defaultCustomMood,
+            defaultResponseLanguage: values.defaultResponseLanguage,
+            defaultQuickReplyPreset: values.defaultQuickReplyPreset,
+            defaultQuickReplyCustomInstruction: values.defaultQuickReplyCustomInstruction,
         });
     }
 
@@ -441,6 +450,7 @@ document.addEventListener('DOMContentLoaded', function () {
         responderNameInput.value = settings.responder_name || '';
         systemPromptInput.value = settings.persona_profile || systemPromptInput.value.trim() || DEFAULT_PERSONA_PROFILE;
         autoDetectCheckbox.checked = settings.auto_detect_responder !== false;
+        responseLanguageSelect.value = settings.response_language || DEFAULT_RESPONSE_LANGUAGE;
         if (!testQuestionInput.value.trim()) {
             testQuestionInput.value = DEFAULT_TEST_QUESTION;
         }
@@ -451,6 +461,9 @@ document.addEventListener('DOMContentLoaded', function () {
             autoDetectResponder: autoDetectCheckbox.checked,
             defaultMood: settings.mood || DEFAULT_MOOD,
             defaultCustomMood: settings.custom_mood || '',
+            defaultResponseLanguage: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
+            defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
+            defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
         });
         await syncRemoteFacebookOutcomeConfig(token, baseUrl);
 
@@ -471,13 +484,19 @@ document.addEventListener('DOMContentLoaded', function () {
         'chatGptSystemPrompt',
         'autoDetectResponder',
         'defaultMood',
-        'defaultCustomMood'
+        'defaultCustomMood',
+        'defaultResponseLanguage',
+        'defaultQuickReplyPreset',
+        'defaultQuickReplyCustomInstruction'
     ], async function (data) {
         if (data.toolsApiToken) apiKeyInput.value = data.toolsApiToken;
         if (data.responderName) responderNameInput.value = data.responderName;
         systemPromptInput.value = data.chatGptSystemPrompt || DEFAULT_PERSONA_PROFILE;
         testQuestionInput.value = DEFAULT_TEST_QUESTION;
         autoDetectCheckbox.checked = data.autoDetectResponder !== false;
+        responseLanguageSelect.value = data.defaultResponseLanguage || DEFAULT_RESPONSE_LANGUAGE;
+        quickReplyPresetSelect.value = data.defaultQuickReplyPreset || DEFAULT_QUICK_REPLY_PRESET;
+        quickReplyInstructionInput.value = data.defaultQuickReplyCustomInstruction || DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
         devModeCheckbox.checked = !!data.devMode;
         facebookAdminDebugCheckbox.checked = !!data.facebookAdminDebugEnabled;
         pageNetworkDebugCheckbox.checked = !!data.pageNetworkDebugEnabled;
@@ -541,6 +560,8 @@ document.addEventListener('DOMContentLoaded', function () {
             facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
             pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
             enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
+            defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
+            defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
         });
 
         if (!token) {
@@ -554,6 +575,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 responder_name: responderNameInput.value.trim(),
                 persona_profile: systemPromptInput.value.trim(),
                 auto_detect_responder: autoDetectCheckbox.checked,
+                response_language: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
             },
         });
 
@@ -568,6 +590,9 @@ document.addEventListener('DOMContentLoaded', function () {
             autoDetectResponder: autoDetectCheckbox.checked,
             defaultMood: DEFAULT_MOOD,
             defaultCustomMood: '',
+            defaultResponseLanguage: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
+            defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
+            defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
         });
         await syncRemoteFacebookOutcomeConfig(token, baseUrl);
 
@@ -582,7 +607,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const token = apiKeyInput.value.trim();
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
         const question = testQuestionInput.value.trim() || DEFAULT_TEST_QUESTION;
-        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, pageNetworkDebugCheckbox, enableUnsupportedComposeCheckbox, autoDetectCheckbox];
+        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, responseLanguageSelect, quickReplyPresetSelect, quickReplyInstructionInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, pageNetworkDebugCheckbox, enableUnsupportedComposeCheckbox, autoDetectCheckbox];
 
         if (!token) {
             setStatus(status, 'Paste a personal bearer token first, then test the connection.', true);
@@ -598,6 +623,8 @@ document.addEventListener('DOMContentLoaded', function () {
             facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
             pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
             enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
+            defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
+            defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
         });
 
         const saveResult = await apiRequest(baseUrl, token, SETTINGS_PATH, {
@@ -606,6 +633,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 responder_name: responderNameInput.value.trim(),
                 persona_profile: systemPromptInput.value.trim(),
                 auto_detect_responder: autoDetectCheckbox.checked,
+                response_language: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
             },
         });
 
@@ -668,6 +696,9 @@ document.addEventListener('DOMContentLoaded', function () {
 
     resetBtn.addEventListener('click', function () {
         systemPromptInput.value = DEFAULT_PERSONA_PROFILE;
+        responseLanguageSelect.value = DEFAULT_RESPONSE_LANGUAGE;
+        quickReplyPresetSelect.value = DEFAULT_QUICK_REPLY_PRESET;
+        quickReplyInstructionInput.value = DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
         testQuestionInput.value = DEFAULT_TEST_QUESTION;
         setStatus(status, 'Responder profile reset to the default local fallback. Save to push it to Tools.', false);
     });

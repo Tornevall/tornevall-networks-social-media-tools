@@ -4,12 +4,25 @@ let panelContextDirty = false;
 let verifyActionButton = null;
 let verifyActionContext = '';
 let verifyActionAnchor = null;
+let verifyHoverButton = null;
+let verifyHoverContext = '';
+let verifyHoverAnchor = null;
+let verifyHoverTarget = null;
+let verifyHoverShowTimer = null;
+let verifyHoverHideTimer = null;
+let verifyHoverButtonDragState = null;
+let verifyHoverButtonDragOffset = null;
 let factResultBox = null;
 let factResultAnchor = null;
 let composerActionButtonDragState = null;
 let composerActionButtonDragOffset = null;
 let composerActionButtonDragListenersBound = false;
 let frontResponserName = '';
+let defaultResponseLanguage = 'auto';
+let defaultQuickReplyPreset = 'default';
+let defaultQuickReplyCustomInstruction = '';
+let pendingAiRequestMode = null;
+let lastVerificationRequest = null;
 
 const EDITABLE_SELECTOR = 'textarea,input[type="text"],input:not([type]),[contenteditable=""],[contenteditable="true"],[role="textbox"]';
 const TOOLS_PROD_BASE_URL = 'https://tools.tornevall.net';
@@ -22,6 +35,24 @@ const MAX_ADMIN_BATCH_SIZE = 50;
 const ADMIN_PANEL_POSITION_STORAGE_KEY = 'tn_social_tools_admin_panel_position';
 const MAX_RECENT_FACEBOOK_COMMENT_ENTRIES = 200;
 const DEFAULT_REPLY_PROMPT = 'Write text that fits the visible context and can be pasted into the selected field.';
+const QUICK_REPLY_PRESETS = {
+    default: {
+        label: 'Balanced default',
+        instruction: 'Write the best possible short public reply to the current message or comment. Sound natural, relevant, and ready to paste.',
+    },
+    empathetic: {
+        label: 'Empathetic and human',
+        instruction: 'Write a warm, human quick reply that shows understanding, avoids sounding robotic, and still stays concise.',
+    },
+    factual: {
+        label: 'Calm and factual',
+        instruction: 'Write a calm, factual quick reply that keeps emotions low, stays concrete, and avoids unnecessary filler.',
+    },
+    deescalate: {
+        label: 'De-escalate tension',
+        instruction: 'Write a short reply that lowers tension, stays respectful, and keeps the conversation constructive.',
+    },
+};
 const FACEBOOK_REPLY_NOISE_LINES = ['most relevant', 'mest relevant', 'like', 'reply', 'share', 'comment', 'send', 'gif', 'gilla', 'svara', 'dela', 'kommentera', 'skicka'];
 const FACEBOOK_ADMIN_MONTH_INDEX = {
     jan: 0,
@@ -210,6 +241,42 @@ function safeAddStorageChangeListener(handler) {
         return true;
     }, false);
 }
+
+function normalizeResponseLanguageChoice(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return ['auto', 'sv', 'en', 'da', 'no', 'de', 'fr', 'es'].indexOf(normalized) !== -1
+        ? normalized
+        : 'auto';
+}
+
+function normalizeQuickReplyPresetChoice(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return Object.prototype.hasOwnProperty.call(QUICK_REPLY_PRESETS, normalized)
+        ? normalized
+        : 'default';
+}
+
+safeStorageSyncGet(['defaultResponseLanguage', 'defaultQuickReplyPreset', 'defaultQuickReplyCustomInstruction'], function (data) {
+    defaultResponseLanguage = normalizeResponseLanguageChoice(data.defaultResponseLanguage || 'auto');
+    defaultQuickReplyPreset = normalizeQuickReplyPresetChoice(data.defaultQuickReplyPreset || 'default');
+    defaultQuickReplyCustomInstruction = normalizeWhitespace(data.defaultQuickReplyCustomInstruction || '');
+});
+
+safeAddStorageChangeListener(function (changes, areaName) {
+    if (areaName !== 'sync') {
+        return;
+    }
+
+    if (changes.defaultResponseLanguage) {
+        defaultResponseLanguage = normalizeResponseLanguageChoice(changes.defaultResponseLanguage.newValue || 'auto');
+    }
+    if (changes.defaultQuickReplyPreset) {
+        defaultQuickReplyPreset = normalizeQuickReplyPresetChoice(changes.defaultQuickReplyPreset.newValue || 'default');
+    }
+    if (changes.defaultQuickReplyCustomInstruction) {
+        defaultQuickReplyCustomInstruction = normalizeWhitespace(changes.defaultQuickReplyCustomInstruction.newValue || '');
+    }
+});
 
 const EXTENSION_VERSION = getExtensionVersion();
 
@@ -1166,7 +1233,85 @@ function positionFactResultBox() {
     factResultBox.style.bottom = 'auto';
 }
 
-function showFactResultBox(content, anchor) {
+function clearCurrentSelection() {
+    const selection = window.getSelection ? window.getSelection() : null;
+    if (!selection) {
+        return;
+    }
+
+    try {
+        selection.removeAllRanges();
+    } catch (error) {
+    }
+}
+
+function getResponseLanguageLabel(value) {
+    const normalized = normalizeResponseLanguageChoice(value || defaultResponseLanguage);
+    return {
+        auto: 'Same as context',
+        sv: 'Swedish',
+        en: 'English',
+        da: 'Danish',
+        no: 'Norwegian',
+        de: 'German',
+        fr: 'French',
+        es: 'Spanish',
+    }[normalized] || 'Same as context';
+}
+
+function buildFactBoxSubtitle(anchor, responseLanguage, isError) {
+    const parts = [anchor ? 'Anchored to the selected content.' : 'Verification result'];
+    if (responseLanguage) {
+        parts.push('Language: ' + getResponseLanguageLabel(responseLanguage));
+    }
+    if (isError) {
+        parts.push('You can retry below.');
+    }
+    return parts.join(' · ');
+}
+
+function buildFactBoxActions() {
+    if (!lastVerificationRequest || !lastVerificationRequest.context) {
+        return [];
+    }
+
+    return [
+        {
+            label: 'Refresh',
+            title: 'Run the same fact-check again.',
+            background: '#e2e8f0',
+            color: '#0f172a',
+            onClick: function () {
+                startFactVerification(lastVerificationRequest.context, {
+                    anchor: lastVerificationRequest.anchor,
+                    model: lastVerificationRequest.model,
+                    responseLanguage: lastVerificationRequest.responseLanguage,
+                    sourceLabel: lastVerificationRequest.sourceLabel || 'Fact verification',
+                    keepMarks: true,
+                });
+            },
+        },
+        {
+            label: 'Dig deeper',
+            title: 'Retry with a deeper pass that looks for broader context and stricter verification.',
+            background: '#7c3aed',
+            color: '#ffffff',
+            onClick: function () {
+                startFactVerification(lastVerificationRequest.context, {
+                    anchor: lastVerificationRequest.anchor,
+                    model: lastVerificationRequest.model === 'o3-mini' ? lastVerificationRequest.model : 'o3-mini',
+                    responseLanguage: lastVerificationRequest.responseLanguage,
+                    sourceLabel: 'Dig deeper',
+                    keepMarks: true,
+                    verificationInstruction: 'Dig deeper before answering. Look for broader context, more relevant source angles, chronology, counts, names, places, and whether there are related facts or caveats that materially change the interpretation. Be extra strict and say clearly when evidence is incomplete or uncertain.',
+                });
+            },
+        },
+    ];
+}
+
+function showFactResultBox(content, anchor, options) {
+    const config = options || {};
     if (factResultBox && document.contains(factResultBox)) {
         factResultBox.remove();
     }
@@ -1179,8 +1324,8 @@ function showFactResultBox(content, anchor) {
     box.style.width = '400px';
     box.style.maxHeight = '60vh';
     box.style.overflow = 'auto';
-    box.style.background = '#fff';
-    box.style.border = '1px solid #d8b4fe';
+    box.style.background = config.background || '#fff';
+    box.style.border = '1px solid ' + (config.borderColor || '#d8b4fe');
     box.style.borderRadius = '10px';
     box.style.boxShadow = '0 10px 28px rgba(0,0,0,0.18)';
     box.style.padding = '12px';
@@ -1189,6 +1334,7 @@ function showFactResultBox(content, anchor) {
     box.style.fontSize = '14px';
     box.style.whiteSpace = 'pre-wrap';
     box.style.lineHeight = '1.45';
+    box.style.color = config.textColor || '#0f172a';
 
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '×';
@@ -1208,28 +1354,79 @@ function showFactResultBox(content, anchor) {
     });
 
     const title = document.createElement('div');
-    title.textContent = '✅ Fact checking via OpenAI';
+    title.textContent = config.title || '✅ Fact checking via OpenAI';
     title.style.fontWeight = '700';
     title.style.marginBottom = '4px';
-    title.style.color = '#0284c7';
+    title.style.color = config.titleColor || '#0284c7';
 
     const subtitle = document.createElement('div');
-    subtitle.textContent = anchor ? 'Anchored to the selected content.' : 'Verification result';
+    subtitle.textContent = config.subtitle || (anchor ? 'Anchored to the selected content.' : 'Verification result');
     subtitle.style.marginBottom = '10px';
-    subtitle.style.color = '#7c3aed';
+    subtitle.style.color = config.subtitleColor || '#7c3aed';
     subtitle.style.fontSize = '12px';
     subtitle.style.fontWeight = '600';
 
     const text = document.createElement('div');
     text.textContent = content;
+    if (config.isLoading) {
+        text.style.color = '#475569';
+    }
+
+    const actions = Array.isArray(config.actions) ? config.actions.filter(Boolean) : [];
+    const actionsRow = document.createElement('div');
+    actionsRow.style.display = actions.length ? 'flex' : 'none';
+    actionsRow.style.gap = '8px';
+    actionsRow.style.flexWrap = 'wrap';
+    actionsRow.style.marginTop = '12px';
+    actions.forEach(function (action) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = action.label || 'Action';
+        button.title = action.title || '';
+        button.style.border = 'none';
+        button.style.borderRadius = '999px';
+        button.style.padding = '6px 10px';
+        button.style.cursor = 'pointer';
+        button.style.background = action.background || '#e2e8f0';
+        button.style.color = action.color || '#0f172a';
+        button.style.fontSize = '12px';
+        button.addEventListener('click', function (event) {
+            event.preventDefault();
+            if (typeof action.onClick === 'function') {
+                action.onClick();
+            }
+        });
+        actionsRow.appendChild(button);
+    });
 
     box.appendChild(closeBtn);
     box.appendChild(title);
     box.appendChild(subtitle);
     box.appendChild(text);
+    box.appendChild(actionsRow);
     document.body.appendChild(box);
     factResultBox = box;
     positionFactResultBox();
+}
+
+function showFactVerificationPending(context, anchor, sourceLabel) {
+    const normalizedContext = normalizeWhitespace(context || '');
+    const preview = normalizedContext ? clipText(normalizedContext, 280) : 'Preparing verification context…';
+
+    showFactResultBox(
+        'Preview:\n' + preview,
+        anchor,
+        {
+            title: '⏳ Verifying facts…',
+            titleColor: '#7c3aed',
+            subtitle: 'Result appears here automatically · Language: ' + getResponseLanguageLabel(lastVerificationRequest ? lastVerificationRequest.responseLanguage : defaultResponseLanguage),
+            subtitleColor: '#6d28d9',
+            borderColor: '#c4b5fd',
+            background: '#faf5ff',
+            isLoading: true,
+            actions: buildFactBoxActions(),
+        }
+    );
 }
 
 function showLoader() {
@@ -1370,6 +1567,14 @@ function setComposerActionButtonCoordinates(button, left, top) {
     button.style.top = Math.round(clamped.top) + 'px';
 }
 
+function getButtonRectForPlacement(button, fallbackWidth, fallbackHeight) {
+    const rect = button && button.getBoundingClientRect ? button.getBoundingClientRect() : null;
+    return {
+        width: Math.max(1, Math.round((rect && rect.width) || fallbackWidth || 72)),
+        height: Math.max(1, Math.round((rect && rect.height) || fallbackHeight || 30)),
+    };
+}
+
 function enableComposerActionButtonDragging(button) {
     if (!button || button.dataset.dragReady === 'true') {
         return;
@@ -1489,6 +1694,179 @@ function enableComposerActionButtonDragging(button) {
 
     button.addEventListener('pointerup', finishComposerActionButtonDrag);
     button.addEventListener('pointercancel', finishComposerActionButtonDrag);
+}
+
+function getVerifyHoverButtonAnchorPosition(target, button) {
+    if (!target || !target.getBoundingClientRect) {
+        return null;
+    }
+
+    const rect = target.getBoundingClientRect();
+    const gap = 8;
+    const buttonRect = getButtonRectForPlacement(button, 64, 28);
+    const centeredTop = rect.top + Math.max(0, Math.round((rect.height - buttonRect.height) / 2));
+    const candidates = [
+        {left: rect.right + gap, top: centeredTop},
+        {left: rect.right - buttonRect.width, top: rect.bottom + gap},
+        {left: rect.left, top: rect.bottom + gap},
+        {left: rect.left - buttonRect.width - gap, top: centeredTop},
+        {left: rect.right - buttonRect.width, top: rect.top - buttonRect.height - gap},
+    ];
+
+    for (let i = 0; i < candidates.length; i += 1) {
+        const candidate = candidates[i];
+        if (candidate.left >= 12
+            && candidate.top >= 12
+            && candidate.left + buttonRect.width <= window.innerWidth - 12
+            && candidate.top + buttonRect.height <= window.innerHeight - 12) {
+            return candidate;
+        }
+    }
+
+    return {
+        left: Math.max(12, Math.min(rect.right - buttonRect.width, window.innerWidth - buttonRect.width - 12)),
+        top: Math.max(12, Math.min(rect.top - buttonRect.height - gap, window.innerHeight - buttonRect.height - 12)),
+    };
+}
+
+function positionVerifyHoverButton() {
+    if (!verifyHoverButton || !verifyHoverTarget || !document.contains(verifyHoverTarget)) {
+        return;
+    }
+
+    if (verifyHoverButtonDragState && verifyHoverButtonDragState.dragging) {
+        return;
+    }
+
+    const anchor = getVerifyHoverButtonAnchorPosition(verifyHoverTarget, verifyHoverButton);
+    if (!anchor) {
+        return;
+    }
+
+    const left = anchor.left + (verifyHoverButtonDragOffset ? verifyHoverButtonDragOffset.left : 0);
+    const top = anchor.top + (verifyHoverButtonDragOffset ? verifyHoverButtonDragOffset.top : 0);
+    setComposerActionButtonCoordinates(verifyHoverButton, left, top);
+}
+
+function enableVerifyHoverButtonDragging(button) {
+    if (!button || button.dataset.dragReady === 'true') {
+        return;
+    }
+
+    button.dataset.dragReady = 'true';
+
+    button.addEventListener('pointerdown', function (event) {
+        if (event.button !== 0 || !button.isConnected) {
+            return;
+        }
+
+        const rect = button.getBoundingClientRect();
+        verifyHoverButtonDragState = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+            dragging: false,
+            anchorPosition: getVerifyHoverButtonAnchorPosition(verifyHoverTarget, button) || {left: rect.left, top: rect.top},
+        };
+
+        if (typeof button.setPointerCapture === 'function') {
+            try {
+                button.setPointerCapture(event.pointerId);
+            } catch (error) {
+            }
+        }
+    });
+
+    button.addEventListener('dblclick', function (event) {
+        verifyHoverButtonDragOffset = null;
+        button.dataset.dragSuppressClick = 'true';
+        window.setTimeout(function () {
+            if (button) {
+                button.dataset.dragSuppressClick = 'false';
+            }
+        }, 120);
+        positionVerifyHoverButton();
+        event.preventDefault();
+    });
+
+    button.addEventListener('keydown', function (event) {
+        if (event.key !== 'Escape') {
+            return;
+        }
+
+        verifyHoverButtonDragOffset = null;
+        button.dataset.dragSuppressClick = 'true';
+        window.setTimeout(function () {
+            if (button) {
+                button.dataset.dragSuppressClick = 'false';
+            }
+        }, 120);
+        positionVerifyHoverButton();
+        event.preventDefault();
+    });
+
+    button.addEventListener('pointermove', function (event) {
+        if (!verifyHoverButtonDragState || !verifyHoverButton || verifyHoverButtonDragState.pointerId !== event.pointerId) {
+            return;
+        }
+
+        const distance = Math.max(Math.abs(event.clientX - verifyHoverButtonDragState.startX), Math.abs(event.clientY - verifyHoverButtonDragState.startY));
+        if (!verifyHoverButtonDragState.dragging && distance < 4) {
+            return;
+        }
+
+        verifyHoverButtonDragState.dragging = true;
+        verifyHoverButton.style.cursor = 'grabbing';
+        setComposerActionButtonCoordinates(
+            verifyHoverButton,
+            event.clientX - verifyHoverButtonDragState.offsetX,
+            event.clientY - verifyHoverButtonDragState.offsetY
+        );
+    });
+
+    function finishVerifyHoverButtonDrag(event) {
+        if (!verifyHoverButtonDragState || !verifyHoverButton) {
+            verifyHoverButtonDragState = null;
+            return;
+        }
+
+        if (event && verifyHoverButtonDragState.pointerId != null && verifyHoverButtonDragState.pointerId !== event.pointerId) {
+            return;
+        }
+
+        if (verifyHoverButtonDragState.dragging) {
+            const rect = verifyHoverButton.getBoundingClientRect();
+            const anchorPosition = getVerifyHoverButtonAnchorPosition(verifyHoverTarget, verifyHoverButton) || verifyHoverButtonDragState.anchorPosition || {left: rect.left, top: rect.top};
+            verifyHoverButtonDragOffset = {
+                left: Math.round(rect.left - anchorPosition.left),
+                top: Math.round(rect.top - anchorPosition.top),
+            };
+            verifyHoverButton.dataset.dragSuppressClick = 'true';
+            window.setTimeout(function () {
+                if (verifyHoverButton) {
+                    verifyHoverButton.dataset.dragSuppressClick = 'false';
+                }
+            }, 120);
+        }
+
+        if (event && typeof verifyHoverButton.releasePointerCapture === 'function') {
+            try {
+                if (verifyHoverButton.hasPointerCapture && verifyHoverButton.hasPointerCapture(event.pointerId)) {
+                    verifyHoverButton.releasePointerCapture(event.pointerId);
+                }
+            } catch (error) {
+            }
+        }
+
+        verifyHoverButton.style.cursor = 'grab';
+        verifyHoverButtonDragState = null;
+        positionVerifyHoverButton();
+    }
+
+    button.addEventListener('pointerup', finishVerifyHoverButtonDrag);
+    button.addEventListener('pointercancel', finishVerifyHoverButtonDrag);
 }
 
 function isComposerContentEditable(node) {
@@ -1806,6 +2184,7 @@ function updatePanelComposerActions(statusOverride, tone) {
     const contextField = panel.querySelector('#sgpt-context');
     const outputField = panel.querySelector('#sgpt-out');
     const verifyButton = panel.querySelector('#sgpt-verify');
+    const quickButton = panel.querySelector('#sgpt-quick');
     const pasteButton = panel.querySelector('#sgpt-paste');
     const status = panel.querySelector('#sgpt-compose-status');
     const capabilities = getComposerFillCapabilities();
@@ -1818,6 +2197,10 @@ function updatePanelComposerActions(statusOverride, tone) {
 
     if (pasteButton) {
         pasteButton.disabled = !outputText || !capabilities.canPaste;
+    }
+
+    if (quickButton) {
+        quickButton.disabled = !capabilities.hasComposer && !contextText;
     }
 
     if (status) {
@@ -2200,6 +2583,65 @@ function ensureVerifyActionButton() {
     return verifyActionButton;
 }
 
+function ensureVerifyHoverButton() {
+    if (verifyHoverButton) {
+        return verifyHoverButton;
+    }
+
+    verifyHoverButton = document.createElement('button');
+    verifyHoverButton.id = 'sgpt-verify-hover';
+    verifyHoverButton.type = 'button';
+    verifyHoverButton.textContent = 'Verify';
+    verifyHoverButton.style.position = 'fixed';
+    verifyHoverButton.style.zIndex = '2147483646';
+    verifyHoverButton.style.padding = '4px 9px';
+    verifyHoverButton.style.border = '1px solid #c4b5fd';
+    verifyHoverButton.style.borderRadius = '999px';
+    verifyHoverButton.style.background = 'rgba(124,58,237,0.96)';
+    verifyHoverButton.style.color = '#fff';
+    verifyHoverButton.style.fontSize = '11px';
+    verifyHoverButton.style.cursor = 'grab';
+    verifyHoverButton.style.userSelect = 'none';
+    verifyHoverButton.style.touchAction = 'none';
+    verifyHoverButton.style.boxShadow = '0 2px 10px rgba(0,0,0,0.14)';
+    verifyHoverButton.style.display = 'none';
+    verifyHoverButton.title = 'Verify the hovered image or link. Drag to move it away and double-click to reset.';
+    verifyHoverButton.addEventListener('mousedown', function (event) {
+        event.preventDefault();
+    });
+    verifyHoverButton.addEventListener('click', function () {
+        if (verifyHoverButton.dataset.dragSuppressClick === 'true') {
+            return;
+        }
+        if (!verifyHoverContext) {
+            return;
+        }
+
+        const context = verifyHoverContext;
+        const anchor = verifyHoverAnchor;
+        hideVerifyHoverButton(true);
+        startFactVerification(context, {
+            preferPanel: false,
+            anchor: anchor,
+            sourceLabel: 'Hover verify',
+        });
+    });
+    document.body.appendChild(verifyHoverButton);
+    enableVerifyHoverButtonDragging(verifyHoverButton);
+
+    return verifyHoverButton;
+}
+
+function createFactAnchorForNode(node) {
+    const targetNode = node ? (findFullContextNode(node) || node) : null;
+    const rect = targetNode && targetNode.getBoundingClientRect ? targetNode.getBoundingClientRect() : null;
+
+    return {
+        targetNode: targetNode,
+        rect: rect ? cloneAnchorRect(rect) : null,
+    };
+}
+
 function buildSelectionVerificationContext(selectedText, node) {
     const claim = normalizeWhitespace(selectedText || '');
     if (!claim) {
@@ -2221,6 +2663,95 @@ function buildSelectionVerificationContext(selectedText, node) {
     }
 
     return lines.join('\n\n');
+}
+
+function buildHoverVerificationContext(target) {
+    if (!target) {
+        return '';
+    }
+
+    const snapshot = convertNodeToReadableText(target.cloneNode(true));
+    const contextNode = findFullContextNode(target) || target;
+    const nearbyContext = normalizeWhitespace(getReadableContext(contextNode));
+    const isImage = target.tagName === 'IMG';
+    const lines = [isImage ? 'Image or visual to verify:' : 'Link or URL to verify:', snapshot || (isImage ? '[IMG]' : '[LINK]')];
+
+    if (nearbyContext) {
+        const normalizedSnapshot = normalizeWhitespace(snapshot).toLowerCase();
+        const normalizedContext = nearbyContext.toLowerCase();
+        if (!normalizedSnapshot || normalizedContext !== normalizedSnapshot) {
+            lines.push('Nearby page context (including visible links/media references when available):', clipText(nearbyContext, 2200));
+        }
+    }
+
+    return lines.join('\n\n');
+}
+
+function findVerifiableHoverTarget(node) {
+    if (!node || !node.closest) {
+        return null;
+    }
+
+    if (node.closest('#sgpt-panel, #sgpt-factbox, #sgpt-verify-action, #sgpt-verify-hover')) {
+        return null;
+    }
+
+    const image = node.closest('img');
+    if (image && image.src) {
+        return image;
+    }
+
+    const link = node.closest('a[href]');
+    if (link && link.href) {
+        return link;
+    }
+
+    return null;
+}
+
+function hideVerifyHoverButton(clearState) {
+    if (verifyHoverShowTimer) {
+        window.clearTimeout(verifyHoverShowTimer);
+        verifyHoverShowTimer = null;
+    }
+    if (verifyHoverHideTimer) {
+        window.clearTimeout(verifyHoverHideTimer);
+        verifyHoverHideTimer = null;
+    }
+    if (verifyHoverButton) {
+        verifyHoverButton.style.display = 'none';
+    }
+    if (clearState) {
+        verifyHoverContext = '';
+        verifyHoverAnchor = null;
+        verifyHoverTarget = null;
+    }
+}
+
+function showVerifyHoverButtonForTarget(target) {
+    if (!target || panel || (window.getSelection && window.getSelection() && !window.getSelection().isCollapsed)) {
+        hideVerifyHoverButton(!target);
+        return;
+    }
+
+    const button = ensureVerifyHoverButton();
+    const rect = target.getBoundingClientRect();
+    if (!rect || rect.width < 0 || rect.height < 0) {
+        hideVerifyHoverButton(true);
+        return;
+    }
+
+    const context = buildHoverVerificationContext(target);
+    if (!context) {
+        hideVerifyHoverButton(true);
+        return;
+    }
+
+    verifyHoverTarget = target;
+    verifyHoverContext = context;
+    verifyHoverAnchor = createFactAnchorForNode(target);
+    button.style.display = 'block';
+    positionVerifyHoverButton();
 }
 
 function getSelectionVerificationSource() {
@@ -2249,10 +2780,9 @@ function getSelectionVerificationSource() {
 
     return {
         context: buildSelectionVerificationContext(text, commonNode),
-        anchor: {
-            targetNode: findFullContextNode(commonNode),
+        anchor: Object.assign(createFactAnchorForNode(commonNode), {
             rect: cloneAnchorRect(rect),
-        },
+        }),
         left: Math.round(rect.right - 92),
         top: Math.round(rect.top - 36),
     };
@@ -2270,9 +2800,13 @@ function positionVerifyActionButton() {
     if (!source) {
         button.style.display = 'none';
         verifyActionContext = '';
+        if (verifyHoverTarget) {
+            showVerifyHoverButtonForTarget(verifyHoverTarget);
+        }
         return;
     }
 
+    hideVerifyHoverButton(false);
     verifyActionContext = source.context;
     verifyActionAnchor = source.anchor || null;
     button.style.display = 'block';
@@ -2310,7 +2844,7 @@ function positionPanelNearComposer() {
     }
 
     if (!activeComposer) {
-        panel.style.width = '360px';
+        panel.style.width = '440px';
         panel.style.left = 'auto';
         panel.style.top = 'auto';
         panel.style.right = '16px';
@@ -2321,7 +2855,7 @@ function positionPanelNearComposer() {
     const rect = activeComposer.getBoundingClientRect();
     const spacing = 12;
     const minMargin = 12;
-    const panelWidth = Math.min(380, Math.max(300, window.innerWidth - (minMargin * 2)));
+    const panelWidth = Math.min(440, Math.max(320, window.innerWidth - (minMargin * 2)));
     panel.style.width = panelWidth + 'px';
 
     const measuredHeight = Math.min(panel.offsetHeight || 420, Math.max(220, window.innerHeight - (minMargin * 2)));
@@ -3849,7 +4383,7 @@ function scheduleAdminActivitiesBootstrapWarmup(reason) {
 function panelHTML() {
     return `
     <style id="sgpt-style">
-      #sgpt-panel{position:fixed;bottom:16px;right:16px;width:360px;max-height:70vh;background:#fff !important;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,0.15);z-index:2147483647;display:flex;flex-direction:column;font-family:system-ui,sans-serif !important;font-size:14px;color:#0f172a !important;color-scheme:light;isolation:isolate}
+      #sgpt-panel{position:fixed;bottom:16px;right:16px;width:440px;max-width:min(440px,calc(100vw - 24px));max-height:70vh;background:#fff !important;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,0.15);z-index:2147483647;display:flex;flex-direction:column;font-family:system-ui,sans-serif !important;font-size:14px;color:#0f172a !important;color-scheme:light;isolation:isolate}
       #sgpt-panel,#sgpt-panel *{box-sizing:border-box}
       #sgpt-panel[data-collapsed="true"]{transform:translateX(calc(100% - 42px));transition:transform .3s}
       #sgpt-head{display:flex;align-items:center;background:#008CBA;color:#fff;padding:4px 8px;border-top-left-radius:6px;border-top-right-radius:6px}
@@ -3861,16 +4395,19 @@ function panelHTML() {
       #sgpt-body input[type=text]:focus,#sgpt-body textarea:focus,#sgpt-body select:focus{outline:none;border-color:#1999c6 !important;box-shadow:0 0 0 2px rgba(25,153,198,.15)}
       #sgpt-body textarea{resize:vertical;min-height:60px;max-height:160px}
       #sgpt-context{background:#f8fafc !important}
-      #sgpt-send,#sgpt-mod,#sgpt-verify,#sgpt-paste{margin-right:4px;padding:4px 10px;border:none;border-radius:4px;background:#008CBA;color:#fff;cursor:pointer;font:13px/1.35 Arial,sans-serif !important}
+      #sgpt-send,#sgpt-mod,#sgpt-verify,#sgpt-paste,#sgpt-quick{margin-right:4px;padding:4px 10px;border:none;border-radius:4px;background:#008CBA;color:#fff;cursor:pointer;font:13px/1.35 Arial,sans-serif !important}
       #sgpt-verify{background:#7c3aed}
       #sgpt-paste{background:#0f766e}
-      #sgpt-send[disabled],#sgpt-mod[disabled],#sgpt-verify[disabled],#sgpt-paste[disabled]{opacity:.55;cursor:not-allowed}
+      #sgpt-quick{background:#ea580c}
+      #sgpt-send[disabled],#sgpt-mod[disabled],#sgpt-verify[disabled],#sgpt-paste[disabled],#sgpt-quick[disabled]{opacity:.55;cursor:not-allowed}
       #sgpt-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
       #sgpt-responder-label{font-size:12px;color:#666;margin-bottom:6px;text-align:right}
       #sgpt-anchor-note{font-size:11px;color:#666;margin-bottom:8px}
       #sgpt-compose-status{font-size:11px;color:#64748b;flex:1 1 180px}
       .sgpt-quick-settings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:8px}
       .sgpt-quick-settings select,.sgpt-quick-settings input{margin-bottom:0}
+      .sgpt-quick-reply-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-bottom:8px}
+      .sgpt-quick-reply-row label{margin-bottom:0}
       .sgpt-inline-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
       .sgpt-inline-tools > span{font-size:12px;font-weight:600;color:#334155 !important}
       .sgpt-inline-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
@@ -3923,12 +4460,31 @@ function panelHTML() {
             <option value="long">Extended (whatever is needed)</option>
           </select></label>
       </div>
-      <div class="sgpt-quick-settings" style="grid-template-columns:repeat(2,minmax(0,1fr));">
+      <div class="sgpt-quick-settings" style="grid-template-columns:repeat(3,minmax(0,1fr));">
         <label>Custom mood<input type="text" id="sgpt-custom"></label>
         <label>Modifier<input type="text" id="sgpt-modifier"></label>
+        <label>Language<select id="sgpt-language">
+            <option value="auto">Same as context</option>
+            <option value="sv">Swedish</option>
+            <option value="en">English</option>
+            <option value="da">Danish</option>
+            <option value="no">Norwegian</option>
+            <option value="de">German</option>
+            <option value="fr">French</option>
+            <option value="es">Spanish</option>
+        </select></label>
+      </div>
+      <div class="sgpt-quick-reply-row">
+        <label>Quick preset<select id="sgpt-quick-preset">
+            <option value="default">Balanced default</option>
+            <option value="empathetic">Empathetic and human</option>
+            <option value="factual">Calm and factual</option>
+            <option value="deescalate">De-escalate tension</option>
+        </select></label>
+        <button id="sgpt-quick" type="button">Quick response</button>
       </div>
       <div class="sgpt-inline-tools"><span>Context</span><div class="sgpt-inline-actions"><button type="button" id="sgpt-context-mark" aria-pressed="false">Mark context</button><button type="button" id="sgpt-context-import">Import</button><button type="button" id="sgpt-context-clear">Clear</button></div></div>
-      <textarea id="sgpt-context" placeholder="Import visible page context or write your own context here."></textarea>
+      <textarea id="sgpt-context" placeholder="Optional context: import visible page context or write your own notes here."></textarea>
       <label>Output<textarea id="sgpt-out"></textarea></label>
       <div id="sgpt-foot"><div id="sgpt-compose-status">Select a text field to enable paste/fill actions.</div><div><button id="sgpt-send">Generate</button><button id="sgpt-mod">Modify</button><button id="sgpt-verify">Verify fact</button><button id="sgpt-paste">Paste into field</button></div></div>
     </div>`;
@@ -3956,6 +4512,7 @@ function createPanel() {
     panel.querySelector('#sgpt-send').addEventListener('click', () => sendGPT(false));
     panel.querySelector('#sgpt-mod').addEventListener('click', () => sendGPT(true));
     panel.querySelector('#sgpt-verify').addEventListener('click', () => startFactVerification());
+    panel.querySelector('#sgpt-quick').addEventListener('click', () => sendQuickReply());
     panel.querySelector('#sgpt-paste').addEventListener('click', () => {
         const result = pasteTextIntoActiveComposer(panel.querySelector('#sgpt-out').value, {submit: false});
         updatePanelComposerActions(result.ok ? result.message : result.error, result.ok ? 'success' : 'error');
@@ -4025,6 +4582,9 @@ function closeReplyPanel() {
     panelAttachedComposer = null;
     panelContextDirty = false;
     positionVerifyActionButton();
+    if (verifyHoverTarget) {
+        showVerifyHoverButtonForTarget(verifyHoverTarget);
+    }
 }
 
 function openReplyPanel() {
@@ -4040,13 +4600,16 @@ function openReplyPanel() {
     positionVerifyActionButton();
     p.querySelector('#sgpt-prompt').focus();
 
+    hideVerifyHoverButton(true);
     isClickMarkingActive = false;
     safeSendRuntimeMessage({type: 'TOGGLE_MARK_MODE', enabled: false});
 
-    safeStorageSyncGet(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood', 'lastResponseLength'], (data) => {
+    safeStorageSyncGet(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood', 'defaultResponseLanguage', 'defaultQuickReplyPreset', 'lastResponseLength'], (data) => {
         const label = p.querySelector('#sgpt-responder-name');
         const moodField = p.querySelector('#sgpt-mood');
         const customMoodField = p.querySelector('#sgpt-custom');
+        const languageField = p.querySelector('#sgpt-language');
+        const quickPresetField = p.querySelector('#sgpt-quick-preset');
         const lengthField = p.querySelector('#sgpt-length');
 
         if (moodField && data.defaultMood) {
@@ -4059,6 +4622,14 @@ function openReplyPanel() {
 
         if (customMoodField) {
             customMoodField.value = data.defaultCustomMood || '';
+        }
+
+        if (languageField) {
+            languageField.value = normalizeResponseLanguageChoice(data.defaultResponseLanguage || defaultResponseLanguage);
+        }
+
+        if (quickPresetField) {
+            quickPresetField.value = normalizeQuickReplyPresetChoice(data.defaultQuickReplyPreset || defaultQuickReplyPreset);
         }
 
         if (data.autoDetectResponder) {
@@ -4083,7 +4654,7 @@ function openReplyPanel() {
 // SEND TO GPT
 // ---------------------------------------------
 function sendGPT(mod, mode) {
-    const ctx = panel.querySelector('#sgpt-context').value;
+    const ctx = getContextForAiRequest({includeCurrentTarget: false});
     const promptField = panel.querySelector('#sgpt-prompt');
     const prompt = promptField ? promptField.value.trim() : '';
     const effectivePrompt = prompt || DEFAULT_REPLY_PROMPT;
@@ -4098,11 +4669,14 @@ function sendGPT(mod, mode) {
 
     const moodField = panel.querySelector('#sgpt-mood');
     const customMoodField = panel.querySelector('#sgpt-custom');
+    const languageField = panel.querySelector('#sgpt-language');
     const outputField = panel.querySelector('#sgpt-out');
     const responderField = panel.querySelector('#sgpt-responder-name');
     const responderName = responderField && responderField.dataset
         ? ((responderField.dataset.name || '').trim() || frontResponserName || 'Anonymous')
         : (frontResponserName || 'Anonymous');
+
+    pendingAiRequestMode = mode || 'reply';
 
     safeSendRuntimeMessage({
         type: 'GPT_REQUEST',
@@ -4112,6 +4686,7 @@ function sendGPT(mod, mode) {
         mood: moodField ? moodField.value : '',
         responseLength: selectedLength,
         customMood: customMoodField ? customMoodField.value.trim() : '',
+        responseLanguage: languageField ? languageField.value : defaultResponseLanguage,
         previousReply: outputField ? outputField.value : '',
         model,
         responderName,
@@ -4155,10 +4730,66 @@ document.addEventListener('selectionchange', () => {
     positionVerifyActionButton();
 }, true);
 
+document.addEventListener('mouseover', event => {
+    if (panel) {
+        hideVerifyHoverButton(true);
+        return;
+    }
+
+    if (verifyHoverButton && verifyHoverButton.contains(event.target)) {
+        if (verifyHoverHideTimer) {
+            window.clearTimeout(verifyHoverHideTimer);
+            verifyHoverHideTimer = null;
+        }
+        return;
+    }
+
+    const target = findVerifiableHoverTarget(event.target);
+    if (!target) {
+        if (verifyHoverButton && verifyHoverButton.style.display === 'block') {
+            return;
+        }
+        hideVerifyHoverButton(true);
+        return;
+    }
+
+    if (verifyHoverTarget === target && verifyHoverButton && verifyHoverButton.style.display === 'block') {
+        return;
+    }
+
+    hideVerifyHoverButton(false);
+    verifyHoverTarget = target;
+    verifyHoverShowTimer = window.setTimeout(function () {
+        verifyHoverShowTimer = null;
+        showVerifyHoverButtonForTarget(target);
+    }, 220);
+}, true);
+
+document.addEventListener('mouseout', event => {
+    if (!verifyHoverTarget) {
+        return;
+    }
+
+    const nextTarget = event.relatedTarget;
+    if ((verifyHoverButton && nextTarget && verifyHoverButton.contains(nextTarget)) || (verifyHoverTarget && nextTarget && verifyHoverTarget.contains(nextTarget))) {
+        return;
+    }
+
+    if (verifyHoverHideTimer) {
+        window.clearTimeout(verifyHoverHideTimer);
+    }
+    verifyHoverHideTimer = window.setTimeout(function () {
+        hideVerifyHoverButton(true);
+    }, 120);
+}, true);
+
 window.addEventListener('resize', () => {
     positionPanelNearComposer();
     positionComposerActionButton();
     positionVerifyActionButton();
+    if (verifyHoverTarget) {
+        positionVerifyHoverButton();
+    }
     positionFactResultBox();
 }, true);
 
@@ -4166,6 +4797,9 @@ window.addEventListener('scroll', () => {
     positionPanelNearComposer();
     positionComposerActionButton();
     positionVerifyActionButton();
+    if (verifyHoverTarget) {
+        positionVerifyHoverButton();
+    }
     positionFactResultBox();
 }, true);
 
@@ -4198,10 +4832,102 @@ function getPreferredFactCheckModel() {
     return selected || 'gpt-4o';
 }
 
+function getPreferredResponseLanguage() {
+    const languageField = panel ? panel.querySelector('#sgpt-language') : null;
+    return normalizeResponseLanguageChoice(languageField ? languageField.value : defaultResponseLanguage);
+}
+
+function getSelectedQuickReplyPreset() {
+    const presetField = panel ? panel.querySelector('#sgpt-quick-preset') : null;
+    return normalizeQuickReplyPresetChoice(presetField ? presetField.value : defaultQuickReplyPreset);
+}
+
+function sanitizeContextForAi(value) {
+    const normalized = normalizeWhitespace(value || '');
+    if (!normalized || normalized === '(Focus a text field or mark elements to build context)') {
+        return '';
+    }
+
+    return String(value || '').trim();
+}
+
+function getContextForAiRequest(options) {
+    const settings = options || {};
+    const contextField = panel ? panel.querySelector('#sgpt-context') : null;
+    const manualContext = sanitizeContextForAi(contextField ? contextField.value : '');
+    if (manualContext !== '') {
+        return manualContext;
+    }
+
+    if (settings.includeCurrentTarget !== false) {
+        return sanitizeContextForAi(getCurrentPanelContextValue());
+    }
+
+    return '';
+}
+
+function buildQuickReplyPrompt(options) {
+    const settings = options || {};
+    const presetKey = normalizeQuickReplyPresetChoice(settings.presetKey || defaultQuickReplyPreset);
+    const preset = QUICK_REPLY_PRESETS[presetKey] || QUICK_REPLY_PRESETS.default;
+    const pieces = [preset.instruction];
+
+    if (settings.extraInstruction) {
+        pieces.push('Extra quick-reply instruction: ' + settings.extraInstruction);
+    }
+
+    if (settings.promptHint) {
+        pieces.push('User hint: ' + settings.promptHint);
+    }
+
+    return pieces.join('\n\n');
+}
+
+function sendQuickReply() {
+    if (!panel) {
+        return;
+    }
+
+    const moodField = panel.querySelector('#sgpt-mood');
+    const customMoodField = panel.querySelector('#sgpt-custom');
+    const outputField = panel.querySelector('#sgpt-out');
+    const promptField = panel.querySelector('#sgpt-prompt');
+    const responderField = panel.querySelector('#sgpt-responder-name');
+    const modelField = panel.querySelector('#sgpt-model');
+    const responderName = responderField && responderField.dataset
+        ? ((responderField.dataset.name || '').trim() || frontResponserName || 'Anonymous')
+        : (frontResponserName || 'Anonymous');
+    const presetKey = getSelectedQuickReplyPreset();
+    const promptHint = promptField ? normalizeWhitespace(promptField.value || '') : '';
+    const context = getContextForAiRequest({includeCurrentTarget: true});
+
+    showLoader();
+    pendingAiRequestMode = 'quick-reply';
+    updatePanelComposerActions('Building a quick response from the current comment context…', 'success');
+
+    safeSendRuntimeMessage({
+        type: 'GPT_REQUEST',
+        context: context,
+        userPrompt: buildQuickReplyPrompt({
+            presetKey: presetKey,
+            extraInstruction: defaultQuickReplyCustomInstruction,
+            promptHint: promptHint,
+        }),
+        mood: moodField ? moodField.value : '',
+        customMood: customMoodField ? customMoodField.value.trim() : '',
+        responseLength: 'very-short',
+        responseLanguage: getPreferredResponseLanguage(),
+        previousReply: outputField ? outputField.value : '',
+        model: modelField ? modelField.value : '',
+        responderName: responderName,
+        requestMode: 'quick-reply'
+    });
+}
+
 function startFactVerification(contextOverride, options) {
     const settings = options || {};
     const contextField = panel ? panel.querySelector('#sgpt-context') : null;
-    const context = normalizeWhitespace(contextOverride || (contextField ? contextField.value : ''));
+    const context = normalizeWhitespace(contextOverride || sanitizeContextForAi(contextField ? contextField.value : ''));
 
     if (!context) {
         alert('There is no context to verify yet. Import, mark, or write context first.');
@@ -4209,19 +4935,30 @@ function startFactVerification(contextOverride, options) {
     }
 
     showLoader();
+    clearCurrentSelection();
     if (panel) {
-        updatePanelComposerActions('Verifying the current context…', 'success');
+        updatePanelComposerActions('Verify started. Collecting context and checking facts now…', 'success');
     }
 
+    pendingAiRequestMode = 'verify';
     factResultAnchor = settings.anchor || null;
+    lastVerificationRequest = {
+        context: context,
+        anchor: factResultAnchor,
+        model: settings.model || getPreferredFactCheckModel(),
+        responseLanguage: settings.responseLanguage || getPreferredResponseLanguage(),
+        sourceLabel: settings.sourceLabel || 'Fact verification',
+    };
+    showFactVerificationPending(context, factResultAnchor, settings.sourceLabel || 'Fact verification');
 
     safeSendRuntimeMessage({
         type: 'GPT_REQUEST',
         context,
-        userPrompt: 'Search facts and verify the following statements. If you find any false or misleading information, provide a detailed explanation of why it is incorrect. Use plain text, no format and no markdown.',
+        userPrompt: (settings.verificationInstruction ? settings.verificationInstruction + '\n\n' : '') + 'Search facts and verify the following statements. If you find any false or misleading information, provide a detailed explanation of why it is incorrect. Use plain text, no format and no markdown.',
         requestMode: 'verify',
         responderName: frontResponserName || 'VerifierBot',
-        model: settings.model || getPreferredFactCheckModel()
+        model: lastVerificationRequest.model,
+        responseLanguage: lastVerificationRequest.responseLanguage,
     });
 
     if (!settings.keepMarks && markedElements.length) {
@@ -4249,6 +4986,27 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
         openReplyPanel();
     } else if (req.type === 'GPT_RESPONSE') {
         hideLoader();
+        if (pendingAiRequestMode === 'verify') {
+            showFactResultBox(
+                req.ok ? getReadablePanelText(req.payload) : getReadablePanelErrorText(req.error || req.payload),
+                factResultAnchor,
+                {
+                    title: req.ok ? '✅ Fact checking via OpenAI' : '⚠️ Fact check failed',
+                    titleColor: req.ok ? '#0284c7' : '#b91c1c',
+                    subtitle: buildFactBoxSubtitle(factResultAnchor, lastVerificationRequest ? lastVerificationRequest.responseLanguage : defaultResponseLanguage, !req.ok),
+                    subtitleColor: req.ok ? '#7c3aed' : '#b91c1c',
+                    borderColor: req.ok ? '#d8b4fe' : '#fecaca',
+                    background: req.ok ? '#fff' : '#fef2f2',
+                    actions: buildFactBoxActions(),
+                }
+            );
+            pendingAiRequestMode = null;
+            if (panel) {
+                updatePanelComposerActions(req.ok ? 'Fact check complete. Review the popup result.' : 'Fact check failed. Try refresh or think harder.', req.ok ? 'success' : 'error');
+            }
+            return;
+        }
+
         if (panel) {
             const outputElement = panel.querySelector('#sgpt-out');
             if (outputElement) {
@@ -4261,11 +5019,13 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
                 } else {
                     updatePanelComposerActions('Tools request failed. Review the output above before pasting anything.', 'error');
                 }
+                pendingAiRequestMode = null;
                 return;
             }
         }
 
         showFactResultBox(req.ok ? getReadablePanelText(req.payload) : getReadablePanelErrorText(req.error || req.payload), factResultAnchor);
+        pendingAiRequestMode = null;
 
     } else if (req.type === 'START_FACT_VERIFICATION') {
         startFactVerification();

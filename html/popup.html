@@ -22,7 +22,7 @@
             margin-top: 12px
         }
 
-        input, textarea {
+        input, textarea, select {
             width: 100%;
             margin-top: 4px;
             margin-bottom: 12px;
@@ -223,6 +223,29 @@
     <input type="checkbox" id="autoDetectName">
     <label for="autoDetectName">Auto detect Facebook name</label>
 </div>
+
+<label for="responseLanguage">Answer language:</label>
+<select id="responseLanguage">
+    <option value="auto">Same as the prompt/context</option>
+    <option value="sv">Swedish</option>
+    <option value="en">English</option>
+    <option value="da">Danish</option>
+    <option value="no">Norwegian</option>
+    <option value="de">German</option>
+    <option value="fr">French</option>
+    <option value="es">Spanish</option>
+</select>
+
+<label for="quickReplyPreset">Default quick-reply style:</label>
+<select id="quickReplyPreset">
+    <option value="default">Balanced default</option>
+    <option value="empathetic">Empathetic and human</option>
+    <option value="factual">Calm and factual</option>
+    <option value="deescalate">De-escalate tension</option>
+</select>
+
+<label for="quickReplyInstruction">Extra quick-reply instruction (optional):</label>
+<textarea id="quickReplyInstruction" rows="3" placeholder="Example: Keep it kind, short, and suitable for public replies."></textarea>
 
 <label for="systemPrompt">Responder profile / about the person (stored in Tools):</label>
 <textarea id="systemPrompt" rows="5">You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.</textarea>
