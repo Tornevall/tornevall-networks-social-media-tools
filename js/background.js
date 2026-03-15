@@ -81,42 +81,13 @@ function normalizeToolsApiError(status, data) {
 }
 
 chrome.runtime.onInstalled.addListener(function () {
-    chrome.contextMenus.create({id: 'socialGptRoot', title: 'Tornevall Networks Social Media Tools', contexts: ['all']});
-    chrome.contextMenus.create({
-        id: 'verifyFact',
-        parentId: 'socialGptRoot',
-        title: 'Verify fact',
-        contexts: ['all']
-    });
-    chrome.contextMenus.create({
-        id: 'replyToThis', parentId: 'socialGptRoot', title: 'Reply/Add text', contexts: ['all']
-    });
-    chrome.contextMenus.create({
-        id: 'markWithGPT', parentId: 'socialGptRoot', title: 'Mark element for GPT reading', contexts: ['all']
-    });
-
     appendDebugLog({level: 'info', category: 'lifecycle', message: 'Extension installed / updated.'});
 });
 
-chrome.contextMenus.onClicked.addListener(async function (info, tab) {
-    if (info.menuItemId === 'replyToThis') {
-        chrome.tabs.sendMessage(tab.id, {type: 'OPEN_REPLY_PANEL'});
-    } else if (info.menuItemId === 'markWithGPT') {
-        var curr = await getTabMarking(tab.id);
-        var next = !curr;
-        setTabMarking(tab.id, next);
-        chrome.contextMenus.update('markWithGPT', {title: next ? 'Stop marking for GPT' : 'Mark element for GPT reading'});
-        chrome.tabs.sendMessage(tab.id, {type: 'TOGGLE_MARK_MODE', enabled: next});
-        appendDebugLog({level: 'info', category: 'ui', message: 'Mark mode toggled.', meta: {enabled: next, tabId: tab.id}});
-    } else if (info.menuItemId === 'verifyFact') {
-        chrome.tabs.sendMessage(tab.id, {type: 'START_FACT_VERIFICATION'});
-    }
-});
 
 chrome.tabs.onUpdated.addListener(function (tabId, info) {
     if (info.status === 'loading') {
         setTabMarking(tabId, false);
-        chrome.contextMenus.update('markWithGPT', {title: 'Mark element for GPT reading'});
     }
 });
 
@@ -279,9 +250,38 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
     if (req.type === 'RESET_MARK_MODE') {
         var tabId = sender.tab.id;
         setTabMarking(tabId, false);
-        chrome.contextMenus.update('markWithGPT', {title: 'Mark element for GPT reading'});
         chrome.tabs.sendMessage(tabId, {type: 'TOGGLE_MARK_MODE', enabled: false});
         return;
+    }
+
+    if (req.type === 'GET_MARK_MODE') {
+        var getTabId = sender && sender.tab ? sender.tab.id : null;
+        if (getTabId === null || typeof getTabId === 'undefined') {
+            sendResponse({ok: true, enabled: false});
+            return true;
+        }
+
+        getTabMarking(getTabId).then(function (enabled) {
+            sendResponse({ok: true, enabled: !!enabled});
+        });
+        return true;
+    }
+
+    if (req.type === 'SET_MARK_MODE') {
+        var setTabId = sender && sender.tab ? sender.tab.id : null;
+        var enabled = !!req.enabled;
+        if (setTabId === null || typeof setTabId === 'undefined') {
+            sendResponse({ok: false, error: 'No active tab was available for mark mode.'});
+            return true;
+        }
+
+        setTabMarking(setTabId, enabled);
+        chrome.tabs.sendMessage(setTabId, {type: 'TOGGLE_MARK_MODE', enabled: enabled}, function () {
+            appendDebugLog({level: 'info', category: 'ui', message: 'Mark mode toggled from panel.', meta: {enabled: enabled, tabId: setTabId}}).then(function () {
+                sendResponse({ok: true, enabled: enabled});
+            });
+        });
+        return true;
     }
 
     if (req.type === 'DEBUG_LOG') {
