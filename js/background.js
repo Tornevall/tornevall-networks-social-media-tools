@@ -276,10 +276,9 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
         }
 
         setTabMarking(setTabId, enabled);
-        chrome.tabs.sendMessage(setTabId, {type: 'TOGGLE_MARK_MODE', enabled: enabled}, function () {
-            appendDebugLog({level: 'info', category: 'ui', message: 'Mark mode toggled from panel.', meta: {enabled: enabled, tabId: setTabId}}).then(function () {
-                sendResponse({ok: true, enabled: enabled});
-            });
+        chrome.tabs.sendMessage(setTabId, {type: 'TOGGLE_MARK_MODE', enabled: enabled});
+        appendDebugLog({level: 'info', category: 'ui', message: 'Mark mode toggled from panel.', meta: {enabled: enabled, tabId: setTabId}}).then(function () {
+            sendResponse({ok: true, enabled: enabled});
         });
         return true;
     }
