@@ -63,6 +63,12 @@
         isSupportedPage: isSupportedPage,
         supportsComposerTarget: supportsComposerTarget,
         detectResponderName: detectResponderName,
+        sendButtonSelectors: [
+            '[data-testid="tweetButtonInline"]',
+            '[data-testid="tweetButton"]',
+            '[data-testid="tweetButtonInline"] [role="button"]',
+            '[data-testid="tweetButton"] [role="button"]'
+        ],
         enableNetworkCapture: true,
     });
 }());

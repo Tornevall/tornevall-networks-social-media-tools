@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.5 - 2026-03-15
+
+### Added
+- The reply/composer panel now includes explicit `Paste into field` and `Paste + Send` actions so generated text can be pushed back into the currently selected editor
+- The public/admin Tools services page now includes a compact Social Media Tools card alongside the existing navbar/dashboard entry points
+
+### Changed
+- The floating composer CTA now uses a more generic `Fill in with Tools` label instead of reply-specific wording
+- The floating composer CTA can now be dragged away from the active field and double-clicked to snap back to its anchored position
+- Generated output now tries to auto-fill the active composer on supported platforms, while Facebook stays on a safer paste-first/manual-submit flow
+- Generic nearby parent/sibling thread context is now gathered for non-Facebook editors to give the AI more visible discussion context when available
+
 ## 1.2.2 - 2026-03-12
 
 ### Added

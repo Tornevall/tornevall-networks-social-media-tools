@@ -1,4 +1,7 @@
 let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null, composerActionButton = null, adminActivitiesControl = null;
+let composerActionButtonDragState = null;
+let composerActionButtonDragOffset = null;
+let composerActionButtonDragListenersBound = false;
 let frontResponserName = '';
 
 const EDITABLE_SELECTOR = 'textarea,input[type="text"],input:not([type]),[contenteditable=""],[contenteditable="true"],[role="textbox"]';
@@ -11,7 +14,7 @@ const MAX_RECENT_NETWORK_EVENTS = 8;
 const MAX_ADMIN_BATCH_SIZE = 50;
 const ADMIN_PANEL_POSITION_STORAGE_KEY = 'tn_social_tools_admin_panel_position';
 const MAX_RECENT_FACEBOOK_COMMENT_ENTRIES = 200;
-const DEFAULT_REPLY_PROMPT = 'Write a concise reply that fits the thread and handles the recipient appropriately.';
+const DEFAULT_REPLY_PROMPT = 'Write text that fits the visible context and can be pasted into the selected field.';
 const FACEBOOK_REPLY_NOISE_LINES = ['most relevant', 'mest relevant', 'like', 'reply', 'share', 'comment', 'send', 'gif', 'gilla', 'svara', 'dela', 'kommentera', 'skicka'];
 const FACEBOOK_ADMIN_MONTH_INDEX = {
     jan: 0,
@@ -1221,6 +1224,438 @@ function findEditableTarget(node) {
     return node.closest ? node.closest(EDITABLE_SELECTOR) : null;
 }
 
+function getActivePlatformDefinition() {
+    if (!window.TNNetworksPlatformRegistry || typeof window.TNNetworksPlatformRegistry.getActive !== 'function') {
+        return null;
+    }
+
+    try {
+        return window.TNNetworksPlatformRegistry.getActive(location.hostname);
+    } catch (error) {
+        return null;
+    }
+}
+
+function getComposerActionButtonAnchorPosition() {
+    if (!activeComposer || !document.contains(activeComposer)) {
+        return null;
+    }
+
+    const rect = activeComposer.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) {
+        return null;
+    }
+
+    return {
+        left: Math.max(12, Math.min(rect.right - 140, window.innerWidth - 160)),
+        top: Math.max(12, rect.top - 34),
+    };
+}
+
+function clampFixedPosition(left, top, element, minMargin) {
+    const margin = typeof minMargin === 'number' ? minMargin : 12;
+    const rect = element && element.getBoundingClientRect ? element.getBoundingClientRect() : {width: 150, height: 34};
+    const width = Math.max(1, Math.round(rect.width || 150));
+    const height = Math.max(1, Math.round(rect.height || 34));
+
+    return {
+        left: Math.min(Math.max(margin, left), Math.max(margin, window.innerWidth - width - margin)),
+        top: Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - height - margin)),
+    };
+}
+
+function setComposerActionButtonCoordinates(button, left, top) {
+    const clamped = clampFixedPosition(left, top, button, 12);
+    button.style.left = Math.round(clamped.left) + 'px';
+    button.style.top = Math.round(clamped.top) + 'px';
+}
+
+function enableComposerActionButtonDragging(button) {
+    if (!button || button.dataset.dragReady === 'true') {
+        return;
+    }
+
+    button.dataset.dragReady = 'true';
+
+    button.addEventListener('mousedown', function (event) {
+        if (event.button !== 0) {
+            return;
+        }
+
+        const rect = button.getBoundingClientRect();
+        composerActionButtonDragState = {
+            startX: event.clientX,
+            startY: event.clientY,
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+            dragging: false,
+            anchorPosition: getComposerActionButtonAnchorPosition() || {left: rect.left, top: rect.top},
+        };
+    });
+
+    button.addEventListener('dblclick', function (event) {
+        composerActionButtonDragOffset = null;
+        button.dataset.dragSuppressClick = 'true';
+        window.setTimeout(function () {
+            if (button) {
+                button.dataset.dragSuppressClick = 'false';
+            }
+        }, 120);
+        positionComposerActionButton();
+        event.preventDefault();
+    });
+
+    if (composerActionButtonDragListenersBound) {
+        return;
+    }
+
+    composerActionButtonDragListenersBound = true;
+
+    window.addEventListener('mousemove', function (event) {
+        if (!composerActionButtonDragState || !composerActionButton) {
+            return;
+        }
+
+        const distance = Math.max(Math.abs(event.clientX - composerActionButtonDragState.startX), Math.abs(event.clientY - composerActionButtonDragState.startY));
+        if (!composerActionButtonDragState.dragging && distance < 4) {
+            return;
+        }
+
+        composerActionButtonDragState.dragging = true;
+        composerActionButton.style.cursor = 'grabbing';
+        setComposerActionButtonCoordinates(
+            composerActionButton,
+            event.clientX - composerActionButtonDragState.offsetX,
+            event.clientY - composerActionButtonDragState.offsetY
+        );
+    }, true);
+
+    window.addEventListener('mouseup', function () {
+        if (!composerActionButtonDragState || !composerActionButton) {
+            composerActionButtonDragState = null;
+            return;
+        }
+
+        if (composerActionButtonDragState.dragging) {
+            const rect = composerActionButton.getBoundingClientRect();
+            const anchorPosition = getComposerActionButtonAnchorPosition() || composerActionButtonDragState.anchorPosition || {left: rect.left, top: rect.top};
+            composerActionButtonDragOffset = {
+                left: Math.round(rect.left - anchorPosition.left),
+                top: Math.round(rect.top - anchorPosition.top),
+            };
+            composerActionButton.dataset.dragSuppressClick = 'true';
+            window.setTimeout(function () {
+                if (composerActionButton) {
+                    composerActionButton.dataset.dragSuppressClick = 'false';
+                }
+            }, 120);
+        }
+
+        composerActionButton.style.cursor = 'grab';
+        composerActionButtonDragState = null;
+        positionComposerActionButton();
+    }, true);
+}
+
+function isComposerContentEditable(node) {
+    return !!(node && (node.isContentEditable || (node.getAttribute && /^(|true)$/i.test(node.getAttribute('contenteditable') || ''))));
+}
+
+function dispatchComposerInputEvents(node, insertedText) {
+    if (!node || !node.dispatchEvent) {
+        return;
+    }
+
+    try {
+        if (typeof InputEvent === 'function') {
+            node.dispatchEvent(new InputEvent('input', {
+                bubbles: true,
+                cancelable: true,
+                data: insertedText,
+                inputType: 'insertText',
+            }));
+        } else {
+            node.dispatchEvent(new Event('input', {bubbles: true, cancelable: true}));
+        }
+    } catch (error) {
+        node.dispatchEvent(new Event('input', {bubbles: true, cancelable: true}));
+    }
+
+    node.dispatchEvent(new Event('change', {bubbles: true}));
+}
+
+function setNativeTextInputValue(node, value) {
+    const prototype = node instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+
+    if (descriptor && typeof descriptor.set === 'function') {
+        descriptor.set.call(node, value);
+    } else {
+        node.value = value;
+    }
+}
+
+function replaceComposerText(node, text) {
+    if (!node || !document.contains(node)) {
+        return {ok: false, error: 'No selected field is available anymore.'};
+    }
+
+    const value = String(text || '');
+
+    try {
+        node.focus();
+    } catch (error) {
+    }
+
+    if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
+        setNativeTextInputValue(node, value);
+        if (typeof node.setSelectionRange === 'function') {
+            node.setSelectionRange(value.length, value.length);
+        }
+        dispatchComposerInputEvents(node, value);
+        return {ok: true};
+    }
+
+    if (isComposerContentEditable(node)) {
+        let inserted = false;
+
+        try {
+            const selection = window.getSelection();
+            if (selection) {
+                const range = document.createRange();
+                range.selectNodeContents(node);
+                selection.removeAllRanges();
+                selection.addRange(range);
+            }
+
+            if (typeof document.execCommand === 'function') {
+                inserted = document.execCommand('insertText', false, value);
+            }
+        } catch (error) {
+        }
+
+        if (!inserted) {
+            node.textContent = value;
+        }
+
+        dispatchComposerInputEvents(node, value);
+        return {ok: true};
+    }
+
+    return {ok: false, error: 'The selected field could not be filled automatically.'};
+}
+
+function isVisibleElement(node) {
+    if (!node || !node.getBoundingClientRect) {
+        return false;
+    }
+
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+}
+
+function isDisabledSubmitButton(node) {
+    return !!(node && (
+        node.disabled
+        || node.getAttribute('aria-disabled') === 'true'
+        || node.getAttribute('data-disabled') === 'true'
+    ));
+}
+
+function findSendButtonForComposer(node, platform, options) {
+    if (!node || !document.contains(node)) {
+        return null;
+    }
+
+    const includeDisabled = !!(options && options.includeDisabled);
+    const selectors = [];
+    if (platform && Array.isArray(platform.sendButtonSelectors)) {
+        selectors.push.apply(selectors, platform.sendButtonSelectors);
+    }
+
+    selectors.push('button[type="submit"]', '[role="button"]', 'button');
+
+    const scopes = [
+        node.closest('form'),
+        node.closest('[role="dialog"]'),
+        node.closest('[role="article"]'),
+        node.closest('[data-testid="cellInnerDiv"]'),
+        node.parentElement,
+        document,
+    ].filter(Boolean);
+
+    const seen = new Set();
+    const labelPattern = /(send|reply|post|tweet|comment|publish|share|submit|skicka|svara|posta|publicera|kommentera)/i;
+
+    for (let scopeIndex = 0; scopeIndex < scopes.length; scopeIndex += 1) {
+        const scope = scopes[scopeIndex];
+        for (let selectorIndex = 0; selectorIndex < selectors.length; selectorIndex += 1) {
+            const selector = selectors[selectorIndex];
+            const matches = scope.querySelectorAll ? scope.querySelectorAll(selector) : [];
+
+            for (let i = 0; i < matches.length; i += 1) {
+                const button = matches[i];
+                if (!button || seen.has(button) || button.closest('#sgpt-panel') || button.id === 'sgpt-composer-action') {
+                    continue;
+                }
+
+                seen.add(button);
+
+                if (!isVisibleElement(button) || (!includeDisabled && isDisabledSubmitButton(button))) {
+                    continue;
+                }
+
+                const label = [
+                    button.textContent || '',
+                    button.getAttribute ? (button.getAttribute('aria-label') || '') : '',
+                    button.getAttribute ? (button.getAttribute('title') || '') : '',
+                    button.getAttribute ? (button.getAttribute('data-testid') || '') : '',
+                ].join(' ');
+
+                if (selector === 'button[type="submit"]' || labelPattern.test(label)) {
+                    return button;
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+function clickComposerSendButton(button) {
+    if (!button || typeof button.click !== 'function') {
+        return false;
+    }
+
+    try {
+        button.focus();
+    } catch (error) {
+    }
+
+    button.click();
+    return true;
+}
+
+function getComposerFillCapabilities() {
+    const platform = getActivePlatformDefinition();
+    const hasComposer = !!(activeComposer && document.contains(activeComposer));
+    const prefersManualPaste = !!(platform && platform.preferManualPaste);
+    const sendButton = hasComposer && !prefersManualPaste
+        ? findSendButtonForComposer(activeComposer, platform, {includeDisabled: true})
+        : null;
+
+    return {
+        platform: platform,
+        hasComposer: hasComposer,
+        canPaste: hasComposer,
+        canSubmit: !!sendButton,
+        prefersManualPaste: prefersManualPaste,
+        sendButton: sendButton,
+    };
+}
+
+function buildComposeStatusMessage(outputText, capabilities) {
+    if (!capabilities.hasComposer) {
+        return 'Select a text field to enable paste/fill actions.';
+    }
+
+    if (!outputText) {
+        return capabilities.prefersManualPaste
+            ? 'Generate text, then paste it into the selected field. Submit manually after reviewing it.'
+            : 'Generate text, then paste it into the selected field or paste and send it.';
+    }
+
+    if (capabilities.prefersManualPaste) {
+        return 'Output is ready. Paste it into the selected field and send manually after reviewing it.';
+    }
+
+    return capabilities.canSubmit
+        ? 'Output is ready. Paste it into the selected field, or use Paste + Send.'
+        : 'Output is ready. Paste is available, but no send button was detected nearby yet.';
+}
+
+function updatePanelComposerActions(statusOverride, tone) {
+    if (!panel) {
+        return;
+    }
+
+    const outputField = panel.querySelector('#sgpt-out');
+    const pasteButton = panel.querySelector('#sgpt-paste');
+    const pasteSendButton = panel.querySelector('#sgpt-paste-send');
+    const status = panel.querySelector('#sgpt-compose-status');
+    const capabilities = getComposerFillCapabilities();
+    const outputText = outputField ? outputField.value.trim() : '';
+
+    if (pasteButton) {
+        pasteButton.disabled = !outputText || !capabilities.canPaste;
+    }
+
+    if (pasteSendButton) {
+        pasteSendButton.disabled = !outputText || !capabilities.canPaste || !capabilities.canSubmit;
+        pasteSendButton.style.display = capabilities.prefersManualPaste ? 'none' : 'inline-block';
+    }
+
+    if (status) {
+        status.textContent = statusOverride || buildComposeStatusMessage(outputText, capabilities);
+        status.style.color = tone === 'error'
+            ? '#b91c1c'
+            : (tone === 'success' ? '#047857' : '#64748b');
+    }
+}
+
+function pasteTextIntoActiveComposer(text, options) {
+    const output = String(text || '').trim();
+    if (!output) {
+        return {ok: false, error: 'There is no generated text to paste yet.'};
+    }
+
+    const capabilities = getComposerFillCapabilities();
+    if (!capabilities.hasComposer) {
+        return {ok: false, error: 'Select a text field first.'};
+    }
+
+    const fillResult = replaceComposerText(activeComposer, output);
+    if (!fillResult.ok) {
+        return fillResult;
+    }
+
+    if (options && options.submit) {
+        if (capabilities.prefersManualPaste) {
+            return {
+                ok: true,
+                submitted: false,
+                message: 'Text pasted into the selected field. Submit it manually after reviewing it.',
+            };
+        }
+
+        const sendButton = findSendButtonForComposer(activeComposer, capabilities.platform) || (capabilities.sendButton && !isDisabledSubmitButton(capabilities.sendButton) ? capabilities.sendButton : null);
+        if (!sendButton) {
+            return {
+                ok: true,
+                submitted: false,
+                message: 'Text pasted into the selected field, but no send button was detected nearby.',
+            };
+        }
+
+        clickComposerSendButton(sendButton);
+        return {
+            ok: true,
+            submitted: true,
+            message: 'Text pasted into the selected field and the nearby send button was triggered.',
+        };
+    }
+
+    return {
+        ok: true,
+        submitted: false,
+        message: capabilities.prefersManualPaste
+            ? 'Text pasted into the selected field. Submit it manually after reviewing it.'
+            : 'Text pasted into the selected field.',
+    };
+}
+
 function setActiveComposer(node) {
     activeComposer = node && document.contains(node) ? node : null;
     if (panel) {
@@ -1232,6 +1667,7 @@ function setActiveComposer(node) {
         }
         positionPanelNearComposer();
         updatePanelAnchorNote();
+        updatePanelComposerActions();
     }
     positionComposerActionButton();
 }
@@ -1295,6 +1731,11 @@ function updatePanelAnchorNote() {
         return;
     }
 
+    if (activeReplyContextMeta && activeReplyContextMeta.source === 'generic-thread' && activeReplyContextMeta.threadSize > 1) {
+        note.textContent = 'Anchored to the current field with nearby conversation context from visible parent/sibling blocks.';
+        return;
+    }
+
     note.textContent = activeComposer && document.contains(activeComposer)
         ? 'Anchored to the currently focused text field.'
         : 'Focus a text field or mark elements to build context.';
@@ -1308,7 +1749,7 @@ function ensureComposerActionButton() {
     composerActionButton = document.createElement('button');
     composerActionButton.id = 'sgpt-composer-action';
     composerActionButton.type = 'button';
-    composerActionButton.textContent = 'Reply with Tools';
+    composerActionButton.textContent = 'Fill in with Tools';
     composerActionButton.style.position = 'fixed';
     composerActionButton.style.zIndex = '2147483646';
     composerActionButton.style.padding = '6px 10px';
@@ -1317,35 +1758,45 @@ function ensureComposerActionButton() {
     composerActionButton.style.background = '#008CBA';
     composerActionButton.style.color = '#fff';
     composerActionButton.style.fontSize = '12px';
-    composerActionButton.style.cursor = 'pointer';
+    composerActionButton.style.cursor = 'grab';
+    composerActionButton.style.userSelect = 'none';
+    composerActionButton.style.touchAction = 'none';
     composerActionButton.style.boxShadow = '0 2px 10px rgba(0,0,0,0.18)';
     composerActionButton.style.display = 'none';
+    composerActionButton.title = 'Open Tools for the selected field. Drag to move it away. Double-click to reset its position.';
     composerActionButton.addEventListener('click', function () {
+        if (composerActionButton.dataset.dragSuppressClick === 'true') {
+            return;
+        }
         openReplyPanel();
     });
     document.body.appendChild(composerActionButton);
+    enableComposerActionButtonDragging(composerActionButton);
 
     return composerActionButton;
 }
 
 function positionComposerActionButton() {
     const button = ensureComposerActionButton();
+    if (composerActionButtonDragState && composerActionButtonDragState.dragging) {
+        return;
+    }
+
     if (!activeComposer || !document.contains(activeComposer)) {
         button.style.display = 'none';
         return;
     }
 
-    const rect = activeComposer.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) {
+    const anchor = getComposerActionButtonAnchorPosition();
+    if (!anchor) {
         button.style.display = 'none';
         return;
     }
 
     button.style.display = 'block';
-    const left = Math.max(12, Math.min(rect.right - 140, window.innerWidth - 160));
-    const top = Math.max(12, rect.top - 34);
-    button.style.left = Math.round(left) + 'px';
-    button.style.top = Math.round(top) + 'px';
+    const left = anchor.left + (composerActionButtonDragOffset ? composerActionButtonDragOffset.left : 0);
+    const top = anchor.top + (composerActionButtonDragOffset ? composerActionButtonDragOffset.top : 0);
+    setComposerActionButtonCoordinates(button, left, top);
 }
 
 function positionPanelNearComposer() {
@@ -1628,6 +2079,80 @@ function buildFacebookReplyContextFromComposer(node) {
     };
 }
 
+function buildGenericContextSnippet(node) {
+    if (!node) {
+        return '';
+    }
+
+    return normalizeWhitespace(getReadableContext(node));
+}
+
+function collectGenericVisibleThreadBlocks(targetNode) {
+    if (!targetNode || !targetNode.parentElement) {
+        return [];
+    }
+
+    const siblings = Array.from(targetNode.parentElement.children);
+    const targetIndex = siblings.indexOf(targetNode);
+    if (targetIndex === -1) {
+        return [];
+    }
+
+    const records = [];
+    const seen = new Set();
+
+    for (let index = Math.max(0, targetIndex - 6); index <= targetIndex; index += 1) {
+        const sibling = siblings[index];
+        const block = sibling === targetNode
+            ? targetNode
+            : (sibling.matches && sibling.matches('[role="article"],article,[role="listitem"]')
+                ? sibling
+                : (sibling.querySelector ? sibling.querySelector('[role="article"],article,[role="listitem"]') : sibling));
+        const text = buildGenericContextSnippet(block);
+
+        if (!text || text.length < 20 || seen.has(text)) {
+            continue;
+        }
+
+        seen.add(text);
+        records.push(clipText(text, 500));
+    }
+
+    return records;
+}
+
+function buildGenericReplyContextFromComposer(node) {
+    const targetNode = findContextNodeForComposer(node) || findFullContextNode(node);
+    if (!targetNode) {
+        return null;
+    }
+
+    const threadBlocks = collectGenericVisibleThreadBlocks(targetNode);
+    const currentBlock = buildGenericContextSnippet(targetNode);
+    if (!threadBlocks.length && !currentBlock) {
+        return null;
+    }
+
+    const lines = [];
+    const previousBlocks = threadBlocks.slice(0, Math.max(0, threadBlocks.length - 1));
+
+    if (previousBlocks.length) {
+        lines.push('Earlier visible context:');
+        previousBlocks.forEach(function (entry) {
+            lines.push('- ' + entry);
+        });
+    }
+
+    lines.push('Current target block:');
+    lines.push(threadBlocks.length ? threadBlocks[threadBlocks.length - 1] : clipText(currentBlock, 500));
+
+    return {
+        source: 'generic-thread',
+        threadSize: previousBlocks.length + 1,
+        text: lines.join('\n'),
+    };
+}
+
 function getCurrentPanelContextValue() {
     if (markedElements.length) {
         activeReplyContextMeta = {source: 'marked', markedCount: markedElements.length};
@@ -1639,6 +2164,14 @@ function getCurrentPanelContextValue() {
         if (facebookReplyContext && facebookReplyContext.text) {
             activeReplyContextMeta = facebookReplyContext;
             return facebookReplyContext.text;
+        }
+    }
+
+    if (activeComposer && document.contains(activeComposer)) {
+        const genericReplyContext = buildGenericReplyContextFromComposer(activeComposer);
+        if (genericReplyContext && genericReplyContext.text) {
+            activeReplyContextMeta = genericReplyContext;
+            return genericReplyContext.text;
         }
     }
 
@@ -2820,10 +3353,13 @@ function panelHTML() {
       #sgpt-body{flex:1;display:flex;flex-direction:column;padding:8px;overflow:hidden}
       #sgpt-body input[type=text],#sgpt-body textarea,#sgpt-body select{width:100%;margin-bottom:6px;border:1px solid #aaa;border-radius:4px;padding:4px;font-family:monospace}
       #sgpt-body textarea{resize:vertical;min-height:60px;max-height:160px}
-      #sgpt-send,#sgpt-mod{margin-right:4px;padding:4px 10px;border:none;border-radius:4px;background:#008CBA;color:#fff;cursor:pointer}
-      #sgpt-foot{display:flex;justify-content:flex-end}
+      #sgpt-send,#sgpt-mod,#sgpt-paste,#sgpt-paste-send{margin-right:4px;padding:4px 10px;border:none;border-radius:4px;background:#008CBA;color:#fff;cursor:pointer}
+      #sgpt-paste,#sgpt-paste-send{background:#0f766e}
+      #sgpt-send[disabled],#sgpt-mod[disabled],#sgpt-paste[disabled],#sgpt-paste-send[disabled]{opacity:.55;cursor:not-allowed}
+      #sgpt-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
       #sgpt-responder-label{font-size:12px;color:#666;margin-bottom:6px;text-align:right}
       #sgpt-anchor-note{font-size:11px;color:#666;margin-bottom:8px}
+      #sgpt-compose-status{font-size:11px;color:#64748b;flex:1 1 180px}
       .sgpt-quick-settings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:8px}
       .sgpt-quick-settings label{display:flex;flex-direction:column;font-size:12px;font-weight:600;color:#334155}
       .sgpt-quick-settings select,.sgpt-quick-settings input{margin-bottom:0}
@@ -2880,7 +3416,7 @@ function panelHTML() {
       </div>
       <label>Context<textarea id="sgpt-context" readonly></textarea></label>
       <label>Output<textarea id="sgpt-out"></textarea></label>
-      <div id="sgpt-foot"><button id="sgpt-send">Send</button><button id="sgpt-mod">Modify</button></div>
+      <div id="sgpt-foot"><div id="sgpt-compose-status">Select a text field to enable paste/fill actions.</div><div><button id="sgpt-send">Generate</button><button id="sgpt-mod">Modify</button><button id="sgpt-paste">Paste into field</button><button id="sgpt-paste-send">Paste + Send</button></div></div>
     </div>`;
 }
 
@@ -2906,8 +3442,18 @@ function createPanel() {
 
     panel.querySelector('#sgpt-send').addEventListener('click', () => sendGPT(false));
     panel.querySelector('#sgpt-mod').addEventListener('click', () => sendGPT(true));
+    panel.querySelector('#sgpt-paste').addEventListener('click', () => {
+        const result = pasteTextIntoActiveComposer(panel.querySelector('#sgpt-out').value, {submit: false});
+        updatePanelComposerActions(result.ok ? result.message : result.error, result.ok ? 'success' : 'error');
+    });
+    panel.querySelector('#sgpt-paste-send').addEventListener('click', () => {
+        const result = pasteTextIntoActiveComposer(panel.querySelector('#sgpt-out').value, {submit: true});
+        updatePanelComposerActions(result.ok ? result.message : result.error, result.ok ? 'success' : 'error');
+    });
+    panel.querySelector('#sgpt-out').addEventListener('input', () => updatePanelComposerActions());
 
     positionPanelNearComposer();
+    updatePanelComposerActions();
 
     return panel;
 }
@@ -2919,6 +3465,7 @@ function openReplyPanel() {
     p.querySelector('#sgpt-context').value = getCurrentPanelContextValue();
     positionPanelNearComposer();
     updatePanelAnchorNote();
+    updatePanelComposerActions();
     p.querySelector('#sgpt-prompt').focus();
 
     isClickMarkingActive = false;
@@ -3023,6 +3570,7 @@ document.addEventListener('click', e => {
     if (panel) {
         panel.querySelector('#sgpt-context').value = getCurrentPanelContextValue();
         updatePanelAnchorNote();
+        updatePanelComposerActions();
     }
     e.preventDefault();
 }, true);
@@ -3067,6 +3615,7 @@ function resetMarksAndContext() {
         }
 
         updatePanelAnchorNote();
+        updatePanelComposerActions();
     }
 }
 
@@ -3093,6 +3642,17 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
             if (outputElement) {
                 outputElement.value = req.payload;
                 resetMarksAndContext();
+                if (req.ok) {
+                    const capabilities = getComposerFillCapabilities();
+                    if (capabilities.canPaste && !capabilities.prefersManualPaste) {
+                        const fillResult = pasteTextIntoActiveComposer(req.payload, {submit: false});
+                        updatePanelComposerActions(fillResult.ok ? fillResult.message : fillResult.error, fillResult.ok ? 'success' : 'error');
+                    } else {
+                        updatePanelComposerActions();
+                    }
+                } else {
+                    updatePanelComposerActions('Tools request failed. Review the output above before pasting anything.', 'error');
+                }
                 return;
             }
         }

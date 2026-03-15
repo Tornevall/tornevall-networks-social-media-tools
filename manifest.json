@@ -1,7 +1,7 @@
 {
   "name": "Tornevall Networks Social Media Tools",
   "description": "Tornevall Networks browser tools for social media workflows, server-side AI replies, and future admin/statistics integrations.",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "manifest_version": 3,
   "permissions": [
     "activeTab",
