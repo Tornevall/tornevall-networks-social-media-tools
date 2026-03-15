@@ -1,4 +1,4 @@
-let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null, composerActionButton = null, adminActivitiesControl = null;
+let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null, composerActionButton = null, quickResponseActionButton = null, adminActivitiesControl = null;
 let panelAttachedComposer = null;
 let panelContextDirty = false;
 let verifyActionButton = null;
@@ -14,15 +14,29 @@ let verifyHoverButtonDragState = null;
 let verifyHoverButtonDragOffset = null;
 let factResultBox = null;
 let factResultAnchor = null;
+let factResultBoxDragState = null;
+let factResultBoxManualPosition = null;
 let composerActionButtonDragState = null;
 let composerActionButtonDragOffset = null;
 let composerActionButtonDragListenersBound = false;
 let frontResponserName = '';
 let defaultResponseLanguage = 'auto';
+let defaultVerifyFactLanguage = 'auto';
 let defaultQuickReplyPreset = 'default';
 let defaultQuickReplyCustomInstruction = '';
 let pendingAiRequestMode = null;
 let lastVerificationRequest = null;
+let availableToolsModels = [
+    {id: 'gpt-4o-mini', label: 'gpt-4o-mini'},
+    {id: 'gpt-4o', label: 'gpt-4o'},
+    {id: 'gpt-4.1-mini', label: 'gpt-4.1-mini'},
+    {id: 'gpt-4.1', label: 'gpt-4.1'},
+    {id: 'o4-mini', label: 'o4-mini'},
+    {id: 'o3-mini', label: 'o3-mini'},
+];
+let defaultToolsModel = 'gpt-4o-mini';
+let preferredToolsModel = '';
+let modelsCatalogLoading = false;
 
 const EDITABLE_SELECTOR = 'textarea,input[type="text"],input:not([type]),[contenteditable=""],[contenteditable="true"],[role="textbox"]';
 const TOOLS_PROD_BASE_URL = 'https://tools.tornevall.net';
@@ -256,10 +270,141 @@ function normalizeQuickReplyPresetChoice(value) {
         : 'default';
 }
 
-safeStorageSyncGet(['defaultResponseLanguage', 'defaultQuickReplyPreset', 'defaultQuickReplyCustomInstruction'], function (data) {
+function normalizeModelOption(option) {
+    const id = option && option.id ? normalizeWhitespace(option.id) : '';
+    if (!id) {
+        return null;
+    }
+
+    return {
+        id: id,
+        label: option && option.label ? normalizeWhitespace(option.label) : id,
+    };
+}
+
+function normalizeAvailableToolsModels(models) {
+    const seen = new Set();
+    const normalized = [];
+
+    (Array.isArray(models) ? models : []).forEach(function (option) {
+        const normalizedOption = normalizeModelOption(option);
+        if (!normalizedOption || seen.has(normalizedOption.id)) {
+            return;
+        }
+
+        seen.add(normalizedOption.id);
+        normalized.push(normalizedOption);
+    });
+
+    return normalized.length ? normalized : [
+        {id: 'gpt-4o-mini', label: 'gpt-4o-mini'},
+        {id: 'gpt-4o', label: 'gpt-4o'},
+        {id: 'gpt-4.1-mini', label: 'gpt-4.1-mini'},
+        {id: 'gpt-4.1', label: 'gpt-4.1'},
+        {id: 'o4-mini', label: 'o4-mini'},
+        {id: 'o3-mini', label: 'o3-mini'},
+    ];
+}
+
+function resolveDefaultToolsModel(models, candidate) {
+    const normalizedCandidate = normalizeWhitespace(candidate || '');
+    const available = normalizeAvailableToolsModels(models);
+
+    if (normalizedCandidate && available.some(function (option) {
+        return option.id === normalizedCandidate;
+    })) {
+        return normalizedCandidate;
+    }
+
+    return available[0] ? available[0].id : 'gpt-4o-mini';
+}
+
+function getAvailableModelIds() {
+    return normalizeAvailableToolsModels(availableToolsModels).map(function (option) {
+        return option.id;
+    });
+}
+
+function populatePanelModelOptions(selectedModel) {
+    if (!panel) {
+        return;
+    }
+
+    const modelField = panel.querySelector('#sgpt-model');
+    if (!modelField) {
+        return;
+    }
+
+    const available = normalizeAvailableToolsModels(availableToolsModels);
+    defaultToolsModel = resolveDefaultToolsModel(available, defaultToolsModel);
+    const resolvedSelection = resolveDefaultToolsModel(available, selectedModel || preferredToolsModel || defaultToolsModel);
+
+    modelField.innerHTML = '';
+    available.forEach(function (option) {
+        const optionElement = document.createElement('option');
+        optionElement.value = option.id;
+        optionElement.textContent = option.label || option.id;
+        modelField.appendChild(optionElement);
+    });
+    modelField.value = resolvedSelection;
+}
+
+function getPreferredDeepVerificationModel(currentModel) {
+    const availableIds = getAvailableModelIds();
+    const normalizedCurrentModel = normalizeWhitespace(currentModel || '');
+
+    if (availableIds.indexOf('o3-mini') !== -1) {
+        return 'o3-mini';
+    }
+    if (availableIds.indexOf('o4-mini') !== -1) {
+        return 'o4-mini';
+    }
+    if (normalizedCurrentModel && availableIds.indexOf(normalizedCurrentModel) !== -1) {
+        return normalizedCurrentModel;
+    }
+
+    return resolveDefaultToolsModel(availableToolsModels, defaultToolsModel);
+}
+
+async function refreshAvailableModelsForPanel(forceRefresh) {
+    if (modelsCatalogLoading) {
+        return false;
+    }
+
+    modelsCatalogLoading = true;
+
+    try {
+        const response = await safeSendRuntimeMessageWithResponse({
+            type: 'GET_AVAILABLE_MODELS',
+            forceRefresh: !!forceRefresh,
+        });
+
+        if (response && Array.isArray(response.models) && response.models.length) {
+            availableToolsModels = normalizeAvailableToolsModels(response.models);
+            defaultToolsModel = resolveDefaultToolsModel(availableToolsModels, response.defaultModel || defaultToolsModel);
+            populatePanelModelOptions(preferredToolsModel || defaultToolsModel);
+            safeStorageSyncSet({
+                availableToolsModels: availableToolsModels,
+                defaultToolsModel: defaultToolsModel,
+            });
+            return true;
+        }
+
+        populatePanelModelOptions(preferredToolsModel || defaultToolsModel);
+        return false;
+    } finally {
+        modelsCatalogLoading = false;
+    }
+}
+
+safeStorageSyncGet(['defaultResponseLanguage', 'defaultVerifyFactLanguage', 'defaultQuickReplyPreset', 'defaultQuickReplyCustomInstruction', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel'], function (data) {
     defaultResponseLanguage = normalizeResponseLanguageChoice(data.defaultResponseLanguage || 'auto');
+    defaultVerifyFactLanguage = normalizeResponseLanguageChoice(data.defaultVerifyFactLanguage || defaultResponseLanguage || 'auto');
     defaultQuickReplyPreset = normalizeQuickReplyPresetChoice(data.defaultQuickReplyPreset || 'default');
     defaultQuickReplyCustomInstruction = normalizeWhitespace(data.defaultQuickReplyCustomInstruction || '');
+    availableToolsModels = normalizeAvailableToolsModels(data.availableToolsModels || availableToolsModels);
+    defaultToolsModel = resolveDefaultToolsModel(availableToolsModels, data.defaultToolsModel || defaultToolsModel);
+    preferredToolsModel = resolveDefaultToolsModel(availableToolsModels, data.preferredToolsModel || defaultToolsModel);
 });
 
 safeAddStorageChangeListener(function (changes, areaName) {
@@ -270,11 +415,26 @@ safeAddStorageChangeListener(function (changes, areaName) {
     if (changes.defaultResponseLanguage) {
         defaultResponseLanguage = normalizeResponseLanguageChoice(changes.defaultResponseLanguage.newValue || 'auto');
     }
+    if (changes.defaultVerifyFactLanguage) {
+        defaultVerifyFactLanguage = normalizeResponseLanguageChoice(changes.defaultVerifyFactLanguage.newValue || defaultResponseLanguage || 'auto');
+    }
     if (changes.defaultQuickReplyPreset) {
         defaultQuickReplyPreset = normalizeQuickReplyPresetChoice(changes.defaultQuickReplyPreset.newValue || 'default');
     }
     if (changes.defaultQuickReplyCustomInstruction) {
         defaultQuickReplyCustomInstruction = normalizeWhitespace(changes.defaultQuickReplyCustomInstruction.newValue || '');
+    }
+    if (changes.availableToolsModels) {
+        availableToolsModels = normalizeAvailableToolsModels(changes.availableToolsModels.newValue || availableToolsModels);
+        populatePanelModelOptions(preferredToolsModel || defaultToolsModel);
+    }
+    if (changes.defaultToolsModel) {
+        defaultToolsModel = resolveDefaultToolsModel(availableToolsModels, changes.defaultToolsModel.newValue || defaultToolsModel);
+        populatePanelModelOptions(preferredToolsModel || defaultToolsModel);
+    }
+    if (changes.preferredToolsModel) {
+        preferredToolsModel = resolveDefaultToolsModel(availableToolsModels, changes.preferredToolsModel.newValue || preferredToolsModel || defaultToolsModel);
+        populatePanelModelOptions(preferredToolsModel);
     }
 });
 
@@ -1122,32 +1282,38 @@ function injectLoader() {
         const loader = document.createElement("div");
         loader.id = "socialgpt-loader";
         loader.style.position = "fixed";
-        loader.style.bottom = "10px";
-        loader.style.left = "10px";
-        loader.style.width = "30px";
-        loader.style.height = "30px";
-        loader.style.border = "4px solid transparent";
+        loader.style.bottom = "24px";
+        loader.style.right = "24px";
+        loader.style.left = "auto";
+        loader.style.width = "36px";
+        loader.style.height = "36px";
+        loader.style.border = "4px solid rgba(148, 163, 184, 0.28)";
         loader.style.borderTop = "4px solid #008CBA";
         loader.style.borderRadius = "50%";
         loader.style.animation = "spin 1s linear infinite";
         loader.style.display = "none";
         loader.style.zIndex = "999999";
+        loader.style.background = "rgba(255,255,255,0.96)";
+        loader.style.boxShadow = "0 8px 24px rgba(15,23,42,0.18)";
         document.body.appendChild(loader);
 
         const style = document.createElement("style");
         style.textContent = `
         #socialgpt-loader {
             position: fixed;
-            bottom: 10px;
-            left: 10px;
-            width: 30px;
-            height: 30px;
-            border: 4px solid transparent;
+            bottom: 24px;
+            right: 24px;
+            left: auto;
+            width: 36px;
+            height: 36px;
+            border: 4px solid rgba(148, 163, 184, 0.28);
             border-top: 4px solid #008CBA;
             border-radius: 50%;
             animation: spin 1s linear infinite;
             display: none;
             z-index: 9999;
+            background: rgba(255,255,255,0.96);
+            box-shadow: 0 8px 24px rgba(15,23,42,0.18);
         }
         @keyframes spin {
             0% { transform: rotate(0deg); }
@@ -1200,6 +1366,19 @@ function positionFactResultBox() {
     factResultBox.style.width = boxWidth + 'px';
     factResultBox.style.maxWidth = 'min(420px, calc(100vw - 24px))';
     factResultBox.style.maxHeight = '60vh';
+
+    if (factResultBoxManualPosition) {
+        const clamped = clampFixedPosition(factResultBoxManualPosition.left, factResultBoxManualPosition.top, factResultBox, 12);
+        factResultBox.style.left = Math.round(clamped.left) + 'px';
+        factResultBox.style.top = Math.round(clamped.top) + 'px';
+        factResultBox.style.right = 'auto';
+        factResultBox.style.bottom = 'auto';
+        factResultBoxManualPosition = {
+            left: Math.round(clamped.left),
+            top: Math.round(clamped.top),
+        };
+        return;
+    }
 
     if (!rect) {
         factResultBox.style.right = '20px';
@@ -1288,6 +1467,7 @@ function buildFactBoxActions() {
                     responseLanguage: lastVerificationRequest.responseLanguage,
                     sourceLabel: lastVerificationRequest.sourceLabel || 'Fact verification',
                     keepMarks: true,
+                    keepPosition: true,
                 });
             },
         },
@@ -1299,15 +1479,121 @@ function buildFactBoxActions() {
             onClick: function () {
                 startFactVerification(lastVerificationRequest.context, {
                     anchor: lastVerificationRequest.anchor,
-                    model: lastVerificationRequest.model === 'o3-mini' ? lastVerificationRequest.model : 'o3-mini',
+                    model: getPreferredDeepVerificationModel(lastVerificationRequest.model),
                     responseLanguage: lastVerificationRequest.responseLanguage,
                     sourceLabel: 'Dig deeper',
                     keepMarks: true,
+                    keepPosition: true,
                     verificationInstruction: 'Dig deeper before answering. Look for broader context, more relevant source angles, chronology, counts, names, places, and whether there are related facts or caveats that materially change the interpretation. Be extra strict and say clearly when evidence is incomplete or uncertain.',
                 });
             },
         },
     ];
+}
+
+function enableFactResultBoxDragging(handle, box) {
+    if (!handle || !box || handle.dataset.dragReady === 'true') {
+        return;
+    }
+
+    handle.dataset.dragReady = 'true';
+
+    handle.addEventListener('pointerdown', function (event) {
+        if (event.button !== 0 || !box.isConnected) {
+            return;
+        }
+
+        const rect = box.getBoundingClientRect();
+        factResultBoxDragState = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+            dragging: false,
+        };
+
+        if (typeof handle.setPointerCapture === 'function') {
+            try {
+                handle.setPointerCapture(event.pointerId);
+            } catch (error) {
+            }
+        }
+    });
+
+    handle.addEventListener('dblclick', function (event) {
+        factResultBoxManualPosition = null;
+        positionFactResultBox();
+        event.preventDefault();
+    });
+
+    handle.addEventListener('keydown', function (event) {
+        if (event.key !== 'Escape') {
+            return;
+        }
+
+        factResultBoxManualPosition = null;
+        positionFactResultBox();
+        event.preventDefault();
+    });
+
+    handle.addEventListener('pointermove', function (event) {
+        if (!factResultBoxDragState || factResultBoxDragState.pointerId !== event.pointerId || !factResultBox || !factResultBox.isConnected) {
+            return;
+        }
+
+        const distance = Math.max(Math.abs(event.clientX - factResultBoxDragState.startX), Math.abs(event.clientY - factResultBoxDragState.startY));
+        if (!factResultBoxDragState.dragging && distance < 4) {
+            return;
+        }
+
+        factResultBoxDragState.dragging = true;
+        handle.style.cursor = 'grabbing';
+        const clamped = clampFixedPosition(
+            event.clientX - factResultBoxDragState.offsetX,
+            event.clientY - factResultBoxDragState.offsetY,
+            factResultBox,
+            12
+        );
+        factResultBox.style.left = Math.round(clamped.left) + 'px';
+        factResultBox.style.top = Math.round(clamped.top) + 'px';
+        factResultBox.style.right = 'auto';
+        factResultBox.style.bottom = 'auto';
+    });
+
+    function finishFactResultBoxDrag(event) {
+        if (!factResultBoxDragState) {
+            return;
+        }
+
+        if (event && factResultBoxDragState.pointerId != null && factResultBoxDragState.pointerId !== event.pointerId) {
+            return;
+        }
+
+        if (factResultBoxDragState.dragging && factResultBox && factResultBox.isConnected) {
+            const rect = factResultBox.getBoundingClientRect();
+            factResultBoxManualPosition = {
+                left: Math.round(rect.left),
+                top: Math.round(rect.top),
+            };
+        }
+
+        if (event && typeof handle.releasePointerCapture === 'function') {
+            try {
+                if (handle.hasPointerCapture && handle.hasPointerCapture(event.pointerId)) {
+                    handle.releasePointerCapture(event.pointerId);
+                }
+            } catch (error) {
+            }
+        }
+
+        handle.style.cursor = 'grab';
+        factResultBoxDragState = null;
+        positionFactResultBox();
+    }
+
+    handle.addEventListener('pointerup', finishFactResultBoxDrag);
+    handle.addEventListener('pointercancel', finishFactResultBoxDrag);
 }
 
 function showFactResultBox(content, anchor, options) {
@@ -1350,21 +1636,58 @@ function showFactResultBox(content, anchor, options) {
         if (factResultBox === box) {
             factResultBox = null;
             factResultAnchor = null;
+            factResultBoxManualPosition = null;
+            factResultBoxDragState = null;
         }
     });
+
+    const header = document.createElement('div');
+    header.style.display = 'flex';
+    header.style.flexDirection = 'column';
+    header.style.gap = '4px';
+    header.style.paddingRight = '24px';
+    header.style.marginBottom = '6px';
+    header.style.cursor = 'grab';
+    header.style.userSelect = 'none';
+    header.tabIndex = 0;
+    header.title = 'Drag to move. Double-click or press Escape to reset position.';
 
     const title = document.createElement('div');
     title.textContent = config.title || '✅ Fact checking via OpenAI';
     title.style.fontWeight = '700';
-    title.style.marginBottom = '4px';
     title.style.color = config.titleColor || '#0284c7';
 
     const subtitle = document.createElement('div');
     subtitle.textContent = config.subtitle || (anchor ? 'Anchored to the selected content.' : 'Verification result');
-    subtitle.style.marginBottom = '10px';
     subtitle.style.color = config.subtitleColor || '#7c3aed';
     subtitle.style.fontSize = '12px';
     subtitle.style.fontWeight = '600';
+
+    header.appendChild(title);
+    header.appendChild(subtitle);
+
+    const loadingRow = document.createElement('div');
+    loadingRow.style.display = config.isLoading ? 'flex' : 'none';
+    loadingRow.style.alignItems = 'center';
+    loadingRow.style.gap = '8px';
+    loadingRow.style.marginBottom = '10px';
+    loadingRow.style.color = '#6d28d9';
+    loadingRow.style.fontSize = '12px';
+    loadingRow.style.fontWeight = '600';
+
+    const loadingSpinner = document.createElement('span');
+    loadingSpinner.style.width = '14px';
+    loadingSpinner.style.height = '14px';
+    loadingSpinner.style.borderRadius = '50%';
+    loadingSpinner.style.border = '2px solid rgba(124,58,237,0.22)';
+    loadingSpinner.style.borderTopColor = '#7c3aed';
+    loadingSpinner.style.animation = 'sgpt-inline-spin .8s linear infinite';
+
+    const loadingText = document.createElement('span');
+    loadingText.textContent = 'Checking now…';
+
+    loadingRow.appendChild(loadingSpinner);
+    loadingRow.appendChild(loadingText);
 
     const text = document.createElement('div');
     text.textContent = content;
@@ -1400,12 +1723,13 @@ function showFactResultBox(content, anchor, options) {
     });
 
     box.appendChild(closeBtn);
-    box.appendChild(title);
-    box.appendChild(subtitle);
+    box.appendChild(header);
+    box.appendChild(loadingRow);
     box.appendChild(text);
     box.appendChild(actionsRow);
     document.body.appendChild(box);
     factResultBox = box;
+    enableFactResultBoxDragging(header, box);
     positionFactResultBox();
 }
 
@@ -1429,14 +1753,52 @@ function showFactVerificationPending(context, anchor, sourceLabel) {
     );
 }
 
-function showLoader() {
+function updatePanelBusyState(isBusy, label) {
+    if (!panel) {
+        return;
+    }
+
+    const loader = panel.querySelector('#sgpt-inline-loader');
+    const loaderLabel = panel.querySelector('#sgpt-inline-loader-label');
+    const buttons = ['#sgpt-send', '#sgpt-mod', '#sgpt-verify', '#sgpt-paste']
+        .map(function (selector) {
+            return panel.querySelector(selector);
+        })
+        .filter(Boolean);
+
+    buttons.forEach(function (button) {
+        button.disabled = !!isBusy;
+        button.setAttribute('aria-busy', isBusy ? 'true' : 'false');
+    });
+
+    if (!loader) {
+        return;
+    }
+
+    loader.dataset.visible = isBusy ? 'true' : 'false';
+    loader.setAttribute('aria-hidden', isBusy ? 'false' : 'true');
+    if (loaderLabel) {
+        loaderLabel.textContent = label || 'Working…';
+    }
+}
+
+function showLoader(label, options) {
+    const settings = options || {};
+    updatePanelBusyState(true, label || 'Working…');
+
     const loader = document.getElementById("socialgpt-loader");
-    if (loader) loader.style.display = "block";
+    if (loader) {
+        loader.style.display = (panel || settings.skipFloating) ? "none" : "block";
+    }
 }
 
 function hideLoader() {
+    updatePanelBusyState(false);
+
     const loader = document.getElementById("socialgpt-loader");
-    if (loader) loader.style.display = "none";
+    if (loader) {
+        loader.style.display = "none";
+    }
 }
 
 injectLoader();
@@ -1615,6 +1977,7 @@ function enableComposerActionButtonDragging(button) {
             }
         }, 120);
         positionComposerActionButton();
+        positionQuickResponseActionButton();
         event.preventDefault();
     });
 
@@ -1631,6 +1994,7 @@ function enableComposerActionButtonDragging(button) {
             }
         }, 120);
         positionComposerActionButton();
+        positionQuickResponseActionButton();
         event.preventDefault();
     });
 
@@ -1651,6 +2015,7 @@ function enableComposerActionButtonDragging(button) {
             event.clientX - composerActionButtonDragState.offsetX,
             event.clientY - composerActionButtonDragState.offsetY
         );
+        positionQuickResponseActionButton();
     });
 
     function finishComposerActionButtonDrag(event) {
@@ -1690,6 +2055,7 @@ function enableComposerActionButtonDragging(button) {
         composerActionButton.style.cursor = 'grab';
         composerActionButtonDragState = null;
         positionComposerActionButton();
+        positionQuickResponseActionButton();
     }
 
     button.addEventListener('pointerup', finishComposerActionButtonDrag);
@@ -2184,12 +2550,15 @@ function updatePanelComposerActions(statusOverride, tone) {
     const contextField = panel.querySelector('#sgpt-context');
     const outputField = panel.querySelector('#sgpt-out');
     const verifyButton = panel.querySelector('#sgpt-verify');
+    const refreshButton = panel.querySelector('#sgpt-mod');
     const quickButton = panel.querySelector('#sgpt-quick');
     const pasteButton = panel.querySelector('#sgpt-paste');
     const status = panel.querySelector('#sgpt-compose-status');
+    const modifierField = panel.querySelector('#sgpt-modifier');
     const capabilities = getComposerFillCapabilities();
     const contextText = contextField ? contextField.value.trim() : '';
     const outputText = outputField ? outputField.value.trim() : '';
+    const modifierText = modifierField ? modifierField.value.trim() : '';
 
     if (verifyButton) {
         verifyButton.disabled = !contextText;
@@ -2197,6 +2566,15 @@ function updatePanelComposerActions(statusOverride, tone) {
 
     if (pasteButton) {
         pasteButton.disabled = !outputText || !capabilities.canPaste;
+    }
+
+    if (refreshButton) {
+        const isRevision = !!outputText && !!modifierText;
+        refreshButton.textContent = isRevision ? 'Apply change' : 'Refresh';
+        refreshButton.title = isRevision
+            ? 'Revise the current output using the change request.'
+            : 'Generate a fresh answer from the same prompt and context.';
+        refreshButton.disabled = !outputText;
     }
 
     if (quickButton) {
@@ -2414,6 +2792,30 @@ function getReadablePanelErrorText(value) {
     return text && text.trim() ? text : 'Unknown error';
 }
 
+function getRefreshRequestMeta() {
+    if (!panel) {
+        return {
+            modifier: '',
+            previousReply: '',
+            requestMode: 'refresh',
+            loaderLabel: 'Refreshing…',
+        };
+    }
+
+    const outputField = panel.querySelector('#sgpt-out');
+    const modifierField = panel.querySelector('#sgpt-modifier');
+    const previousReply = outputField ? outputField.value.trim() : '';
+    const modifier = modifierField ? modifierField.value.trim() : '';
+    const isRevision = previousReply !== '' && modifier !== '';
+
+    return {
+        modifier: isRevision ? modifier : '',
+        previousReply: isRevision ? previousReply : '',
+        requestMode: isRevision ? 'revise' : 'refresh',
+        loaderLabel: isRevision ? 'Applying change…' : 'Refreshing…',
+    };
+}
+
 function setActiveComposer(node) {
     const nextComposer = node && document.contains(node) ? node : null;
     const composerChanged = nextComposer !== activeComposer;
@@ -2540,6 +2942,39 @@ function ensureComposerActionButton() {
     enableComposerActionButtonDragging(composerActionButton);
 
     return composerActionButton;
+}
+
+function ensureQuickResponseActionButton() {
+    if (quickResponseActionButton) {
+        return quickResponseActionButton;
+    }
+
+    quickResponseActionButton = document.createElement('button');
+    quickResponseActionButton.id = 'sgpt-quick-response-action';
+    quickResponseActionButton.type = 'button';
+    quickResponseActionButton.textContent = 'Quick response';
+    quickResponseActionButton.style.position = 'fixed';
+    quickResponseActionButton.style.zIndex = '2147483645';
+    quickResponseActionButton.style.padding = '6px 10px';
+    quickResponseActionButton.style.border = 'none';
+    quickResponseActionButton.style.borderRadius = '999px';
+    quickResponseActionButton.style.background = '#ea580c';
+    quickResponseActionButton.style.color = '#fff';
+    quickResponseActionButton.style.fontSize = '12px';
+    quickResponseActionButton.style.cursor = 'pointer';
+    quickResponseActionButton.style.userSelect = 'none';
+    quickResponseActionButton.style.boxShadow = '0 2px 10px rgba(0,0,0,0.16)';
+    quickResponseActionButton.style.display = 'none';
+    quickResponseActionButton.title = 'Generate a quick reply using the preset saved in the extension popup.';
+    quickResponseActionButton.addEventListener('mousedown', function (event) {
+        event.preventDefault();
+    });
+    quickResponseActionButton.addEventListener('click', function () {
+        sendQuickReply();
+    });
+    document.body.appendChild(quickResponseActionButton);
+
+    return quickResponseActionButton;
 }
 
 function ensureVerifyActionButton() {
@@ -2819,8 +3254,17 @@ function positionComposerActionButton() {
         return;
     }
 
+     if (panel) {
+        button.style.display = 'none';
+        const quickButton = ensureQuickResponseActionButton();
+        quickButton.style.display = 'none';
+        return;
+    }
+
     if (!activeComposer || !document.contains(activeComposer)) {
         button.style.display = 'none';
+        const quickButton = ensureQuickResponseActionButton();
+        quickButton.style.display = 'none';
         return;
     }
 
@@ -2833,6 +3277,33 @@ function positionComposerActionButton() {
     button.style.display = 'block';
     const left = anchor.left + (composerActionButtonDragOffset ? composerActionButtonDragOffset.left : 0);
     const top = anchor.top + (composerActionButtonDragOffset ? composerActionButtonDragOffset.top : 0);
+    setComposerActionButtonCoordinates(button, left, top);
+    positionQuickResponseActionButton();
+}
+
+function positionQuickResponseActionButton() {
+    const button = ensureQuickResponseActionButton();
+    if (panel || !activeComposer || !document.contains(activeComposer)) {
+        button.style.display = 'none';
+        return;
+    }
+
+    const composerButton = ensureComposerActionButton();
+    if (!composerButton || composerButton.style.display === 'none') {
+        button.style.display = 'none';
+        return;
+    }
+
+    const composerRect = composerButton.getBoundingClientRect();
+    const buttonRect = getButtonRectForPlacement(button, 116, 32);
+    let left = composerRect.left;
+    let top = composerRect.bottom + 6;
+
+    if (top + buttonRect.height > window.innerHeight - 12) {
+        top = composerRect.top - buttonRect.height - 6;
+    }
+
+    button.style.display = 'block';
     setComposerActionButtonCoordinates(button, left, top);
 }
 
@@ -4395,19 +4866,21 @@ function panelHTML() {
       #sgpt-body input[type=text]:focus,#sgpt-body textarea:focus,#sgpt-body select:focus{outline:none;border-color:#1999c6 !important;box-shadow:0 0 0 2px rgba(25,153,198,.15)}
       #sgpt-body textarea{resize:vertical;min-height:60px;max-height:160px}
       #sgpt-context{background:#f8fafc !important}
-      #sgpt-send,#sgpt-mod,#sgpt-verify,#sgpt-paste,#sgpt-quick{margin-right:4px;padding:4px 10px;border:none;border-radius:4px;background:#008CBA;color:#fff;cursor:pointer;font:13px/1.35 Arial,sans-serif !important}
+      #sgpt-send,#sgpt-mod,#sgpt-verify,#sgpt-paste{margin-right:4px;padding:4px 10px;border:none;border-radius:4px;background:#008CBA;color:#fff;cursor:pointer;font:13px/1.35 Arial,sans-serif !important}
       #sgpt-verify{background:#7c3aed}
       #sgpt-paste{background:#0f766e}
-      #sgpt-quick{background:#ea580c}
-      #sgpt-send[disabled],#sgpt-mod[disabled],#sgpt-verify[disabled],#sgpt-paste[disabled],#sgpt-quick[disabled]{opacity:.55;cursor:not-allowed}
+      #sgpt-send[disabled],#sgpt-mod[disabled],#sgpt-verify[disabled],#sgpt-paste[disabled]{opacity:.55;cursor:not-allowed}
       #sgpt-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+      #sgpt-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+      #sgpt-inline-loader{display:none;align-items:center;gap:7px;padding:4px 10px;border-radius:999px;background:#eff6ff;color:#1d4ed8;font-size:12px;font-weight:600;white-space:nowrap}
+      #sgpt-inline-loader[data-visible="true"]{display:inline-flex}
+      .sgpt-inline-loader-spinner{width:14px;height:14px;border-radius:50%;border:2px solid rgba(29,78,216,.22);border-top-color:#2563eb;animation:sgpt-inline-spin .8s linear infinite}
+      @keyframes sgpt-inline-spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
       #sgpt-responder-label{font-size:12px;color:#666;margin-bottom:6px;text-align:right}
       #sgpt-anchor-note{font-size:11px;color:#666;margin-bottom:8px}
       #sgpt-compose-status{font-size:11px;color:#64748b;flex:1 1 180px}
       .sgpt-quick-settings{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-bottom:8px}
       .sgpt-quick-settings select,.sgpt-quick-settings input{margin-bottom:0}
-      .sgpt-quick-reply-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end;margin-bottom:8px}
-      .sgpt-quick-reply-row label{margin-bottom:0}
       .sgpt-inline-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
       .sgpt-inline-tools > span{font-size:12px;font-weight:600;color:#334155 !important}
       .sgpt-inline-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
@@ -4444,11 +4917,7 @@ function panelHTML() {
               <option value="Conversational and soft">Conversational and soft</option>
             </optgroup>
           </select></label>
-        <label>Model<select id="sgpt-model">
-          <option value="gpt-4o">gpt-4o</option>
-          <option value="gpt-4">gpt-4</option>
-          <option value="o3-mini">o3-mini</option>
-        </select></label>
+        <label>Model<select id="sgpt-model"></select></label>
         <label>Length<select id="sgpt-length">
             <option value="auto">Let GPT decide</option>
             <option value="as-short-as-possible">As short as possible</option>
@@ -4462,7 +4931,7 @@ function panelHTML() {
       </div>
       <div class="sgpt-quick-settings" style="grid-template-columns:repeat(3,minmax(0,1fr));">
         <label>Custom mood<input type="text" id="sgpt-custom"></label>
-        <label>Modifier<input type="text" id="sgpt-modifier"></label>
+        <label>Change request<input type="text" id="sgpt-modifier" placeholder="Optional: what should change?"></label>
         <label>Language<select id="sgpt-language">
             <option value="auto">Same as context</option>
             <option value="sv">Swedish</option>
@@ -4474,19 +4943,10 @@ function panelHTML() {
             <option value="es">Spanish</option>
         </select></label>
       </div>
-      <div class="sgpt-quick-reply-row">
-        <label>Quick preset<select id="sgpt-quick-preset">
-            <option value="default">Balanced default</option>
-            <option value="empathetic">Empathetic and human</option>
-            <option value="factual">Calm and factual</option>
-            <option value="deescalate">De-escalate tension</option>
-        </select></label>
-        <button id="sgpt-quick" type="button">Quick response</button>
-      </div>
       <div class="sgpt-inline-tools"><span>Context</span><div class="sgpt-inline-actions"><button type="button" id="sgpt-context-mark" aria-pressed="false">Mark context</button><button type="button" id="sgpt-context-import">Import</button><button type="button" id="sgpt-context-clear">Clear</button></div></div>
       <textarea id="sgpt-context" placeholder="Optional context: import visible page context or write your own notes here."></textarea>
       <label>Output<textarea id="sgpt-out"></textarea></label>
-      <div id="sgpt-foot"><div id="sgpt-compose-status">Select a text field to enable paste/fill actions.</div><div><button id="sgpt-send">Generate</button><button id="sgpt-mod">Modify</button><button id="sgpt-verify">Verify fact</button><button id="sgpt-paste">Paste into field</button></div></div>
+      <div id="sgpt-foot"><div id="sgpt-compose-status">Select a text field to enable paste/fill actions.</div><div id="sgpt-actions"><div id="sgpt-inline-loader" aria-live="polite" aria-hidden="true"><span class="sgpt-inline-loader-spinner"></span><span id="sgpt-inline-loader-label">Generating…</span></div><button id="sgpt-send">Generate</button><button id="sgpt-mod">Refresh</button><button id="sgpt-verify">Verify fact</button><button id="sgpt-paste">Paste into field</button></div></div>
     </div>`;
 }
 
@@ -4512,7 +4972,10 @@ function createPanel() {
     panel.querySelector('#sgpt-send').addEventListener('click', () => sendGPT(false));
     panel.querySelector('#sgpt-mod').addEventListener('click', () => sendGPT(true));
     panel.querySelector('#sgpt-verify').addEventListener('click', () => startFactVerification());
-    panel.querySelector('#sgpt-quick').addEventListener('click', () => sendQuickReply());
+    panel.querySelector('#sgpt-model').addEventListener('change', function () {
+        preferredToolsModel = normalizeWhitespace(this.value || '');
+        safeStorageSyncSet({preferredToolsModel: preferredToolsModel});
+    });
     panel.querySelector('#sgpt-paste').addEventListener('click', () => {
         const result = pasteTextIntoActiveComposer(panel.querySelector('#sgpt-out').value, {submit: false});
         updatePanelComposerActions(result.ok ? result.message : result.error, result.ok ? 'success' : 'error');
@@ -4562,11 +5025,13 @@ function resetReplyTransientFieldsButKeepContext() {
         }
     });
     panel.querySelector('#sgpt-out').addEventListener('input', () => updatePanelComposerActions());
+    panel.querySelector('#sgpt-modifier').addEventListener('input', () => updatePanelComposerActions());
 
     positionPanelNearComposer();
     updatePanelComposerActions();
     syncPanelMarkModeState();
     positionVerifyActionButton();
+    populatePanelModelOptions(preferredToolsModel || defaultToolsModel);
 
     return panel;
 }
@@ -4581,6 +5046,7 @@ function closeReplyPanel() {
     panel = null;
     panelAttachedComposer = null;
     panelContextDirty = false;
+    positionComposerActionButton();
     positionVerifyActionButton();
     if (verifyHoverTarget) {
         showVerifyHoverButtonForTarget(verifyHoverTarget);
@@ -4604,13 +5070,21 @@ function openReplyPanel() {
     isClickMarkingActive = false;
     safeSendRuntimeMessage({type: 'TOGGLE_MARK_MODE', enabled: false});
 
-    safeStorageSyncGet(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood', 'defaultResponseLanguage', 'defaultQuickReplyPreset', 'lastResponseLength'], (data) => {
+    safeStorageSyncGet(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood', 'defaultResponseLanguage', 'lastResponseLength', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel'], (data) => {
         const label = p.querySelector('#sgpt-responder-name');
         const moodField = p.querySelector('#sgpt-mood');
         const customMoodField = p.querySelector('#sgpt-custom');
         const languageField = p.querySelector('#sgpt-language');
-        const quickPresetField = p.querySelector('#sgpt-quick-preset');
         const lengthField = p.querySelector('#sgpt-length');
+        const modelField = p.querySelector('#sgpt-model');
+
+        availableToolsModels = normalizeAvailableToolsModels(data.availableToolsModels || availableToolsModels);
+        defaultToolsModel = resolveDefaultToolsModel(availableToolsModels, data.defaultToolsModel || defaultToolsModel);
+        preferredToolsModel = resolveDefaultToolsModel(availableToolsModels, data.preferredToolsModel || preferredToolsModel || defaultToolsModel);
+
+        if (modelField) {
+            populatePanelModelOptions(preferredToolsModel || defaultToolsModel);
+        }
 
         if (moodField && data.defaultMood) {
             moodField.value = data.defaultMood;
@@ -4628,9 +5102,6 @@ function openReplyPanel() {
             languageField.value = normalizeResponseLanguageChoice(data.defaultResponseLanguage || defaultResponseLanguage);
         }
 
-        if (quickPresetField) {
-            quickPresetField.value = normalizeQuickReplyPresetChoice(data.defaultQuickReplyPreset || defaultQuickReplyPreset);
-        }
 
         if (data.autoDetectResponder) {
             detectFacebookUserNameViaObserver((name) => {
@@ -4648,6 +5119,8 @@ function openReplyPanel() {
             }
         }
     });
+
+    refreshAvailableModelsForPanel(false);
 }
 
 // ---------------------------------------------
@@ -4658,11 +5131,10 @@ function sendGPT(mod, mode) {
     const promptField = panel.querySelector('#sgpt-prompt');
     const prompt = promptField ? promptField.value.trim() : '';
     const effectivePrompt = prompt || DEFAULT_REPLY_PROMPT;
-    const modifierField = panel.querySelector('#sgpt-modifier');
-    const modifier = mod && modifierField ? modifierField.value.trim() : '';
     const modelField = panel.querySelector('#sgpt-model');
-    const model = modelField ? modelField.value : '';
-    showLoader();
+    const model = modelField && modelField.value ? modelField.value : getPreferredFactCheckModel();
+    const refreshMeta = mod ? getRefreshRequestMeta() : null;
+    showLoader(refreshMeta ? refreshMeta.loaderLabel : 'Generating…');
 
     const selectedLength = panel.querySelector('#sgpt-length').value;
     safeStorageSyncSet({ lastResponseLength: selectedLength });
@@ -4676,21 +5148,21 @@ function sendGPT(mod, mode) {
         ? ((responderField.dataset.name || '').trim() || frontResponserName || 'Anonymous')
         : (frontResponserName || 'Anonymous');
 
-    pendingAiRequestMode = mode || 'reply';
+    pendingAiRequestMode = mode || (refreshMeta ? refreshMeta.requestMode : 'reply');
 
     safeSendRuntimeMessage({
         type: 'GPT_REQUEST',
         context: ctx,
         userPrompt: effectivePrompt,
-        modifier,
+        modifier: refreshMeta ? refreshMeta.modifier : '',
         mood: moodField ? moodField.value : '',
         responseLength: selectedLength,
         customMood: customMoodField ? customMoodField.value.trim() : '',
         responseLanguage: languageField ? languageField.value : defaultResponseLanguage,
-        previousReply: outputField ? outputField.value : '',
+        previousReply: refreshMeta ? refreshMeta.previousReply : '',
         model,
         responderName,
-        requestMode: mode || 'reply'
+        requestMode: mode || (refreshMeta ? refreshMeta.requestMode : 'reply')
     });
 }
 
@@ -4829,7 +5301,7 @@ function resetMarksAndContext() {
 function getPreferredFactCheckModel() {
     const modelField = panel ? panel.querySelector('#sgpt-model') : null;
     const selected = modelField ? normalizeWhitespace(modelField.value || '') : '';
-    return selected || 'gpt-4o';
+    return selected || preferredToolsModel || defaultToolsModel || 'gpt-4o-mini';
 }
 
 function getPreferredResponseLanguage() {
@@ -4837,9 +5309,12 @@ function getPreferredResponseLanguage() {
     return normalizeResponseLanguageChoice(languageField ? languageField.value : defaultResponseLanguage);
 }
 
+function getPreferredVerificationLanguage() {
+    return normalizeResponseLanguageChoice(defaultVerifyFactLanguage || defaultResponseLanguage);
+}
+
 function getSelectedQuickReplyPreset() {
-    const presetField = panel ? panel.querySelector('#sgpt-quick-preset') : null;
-    return normalizeQuickReplyPresetChoice(presetField ? presetField.value : defaultQuickReplyPreset);
+    return normalizeQuickReplyPresetChoice(defaultQuickReplyPreset);
 }
 
 function sanitizeContextForAi(value) {
@@ -4885,6 +5360,10 @@ function buildQuickReplyPrompt(options) {
 
 function sendQuickReply() {
     if (!panel) {
+        openReplyPanel();
+    }
+
+    if (!panel) {
         return;
     }
 
@@ -4901,7 +5380,7 @@ function sendQuickReply() {
     const promptHint = promptField ? normalizeWhitespace(promptField.value || '') : '';
     const context = getContextForAiRequest({includeCurrentTarget: true});
 
-    showLoader();
+    showLoader('Generating quick reply…');
     pendingAiRequestMode = 'quick-reply';
     updatePanelComposerActions('Building a quick response from the current comment context…', 'success');
 
@@ -4934,7 +5413,11 @@ function startFactVerification(contextOverride, options) {
         return;
     }
 
-    showLoader();
+    if (!settings.keepPosition) {
+        factResultBoxManualPosition = null;
+    }
+
+    showLoader('Verifying facts…', {skipFloating: true});
     clearCurrentSelection();
     if (panel) {
         updatePanelComposerActions('Verify started. Collecting context and checking facts now…', 'success');
@@ -4946,7 +5429,7 @@ function startFactVerification(contextOverride, options) {
         context: context,
         anchor: factResultAnchor,
         model: settings.model || getPreferredFactCheckModel(),
-        responseLanguage: settings.responseLanguage || getPreferredResponseLanguage(),
+        responseLanguage: settings.responseLanguage || getPreferredVerificationLanguage(),
         sourceLabel: settings.sourceLabel || 'Fact verification',
     };
     showFactVerificationPending(context, factResultAnchor, settings.sourceLabel || 'Fact verification');

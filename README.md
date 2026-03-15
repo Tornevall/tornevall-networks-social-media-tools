@@ -43,6 +43,10 @@ The popup is used for:
 - quick responder profile editing
 - testing the Tools → OpenAI connection
 
+The reply panel model selector is fetched automatically from Tools.
+It does **not** call OpenAI directly from the extension.
+Instead, Tools queries the provider model catalog server-side, filters it to chat-usable models, and returns the effective list for the current bearer token/config.
+
 For more advanced settings, use the dashboard link in the popup.
 
 ## Facebook admin activities
