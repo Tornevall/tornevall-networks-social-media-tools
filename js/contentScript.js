@@ -3,6 +3,9 @@ let panelAttachedComposer = null;
 let panelContextDirty = false;
 let verifyActionButton = null;
 let verifyActionContext = '';
+let verifyActionAnchor = null;
+let factResultBox = null;
+let factResultAnchor = null;
 let composerActionButtonDragState = null;
 let composerActionButtonDragOffset = null;
 let composerActionButtonDragListenersBound = false;
@@ -1087,28 +1090,105 @@ function injectLoader() {
     }
 }
 
-function showFactResultBox(content) {
-    const existing = document.getElementById('sgpt-factbox');
-    if (existing) existing.remove();
+function cloneAnchorRect(rect) {
+    if (!rect) {
+        return null;
+    }
+
+    return {
+        left: Math.round(rect.left),
+        top: Math.round(rect.top),
+        right: Math.round(rect.right),
+        bottom: Math.round(rect.bottom),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+    };
+}
+
+function resolveFactAnchorRect(anchor) {
+    if (!anchor) {
+        return null;
+    }
+
+    if (anchor.targetNode && document.contains(anchor.targetNode) && anchor.targetNode.getBoundingClientRect) {
+        const liveRect = anchor.targetNode.getBoundingClientRect();
+        if (liveRect && liveRect.width >= 0 && liveRect.height >= 0) {
+            return cloneAnchorRect(liveRect);
+        }
+    }
+
+    return anchor.rect ? cloneAnchorRect(anchor.rect) : null;
+}
+
+function positionFactResultBox() {
+    if (!factResultBox || !document.contains(factResultBox)) {
+        factResultBox = null;
+        factResultAnchor = null;
+        return;
+    }
+
+    const rect = resolveFactAnchorRect(factResultAnchor);
+    const minMargin = 12;
+    const boxWidth = Math.min(420, Math.max(320, Math.round(window.innerWidth * 0.32)));
+    factResultBox.style.width = boxWidth + 'px';
+    factResultBox.style.maxWidth = 'min(420px, calc(100vw - 24px))';
+    factResultBox.style.maxHeight = '60vh';
+
+    if (!rect) {
+        factResultBox.style.right = '20px';
+        factResultBox.style.bottom = '20px';
+        factResultBox.style.left = 'auto';
+        factResultBox.style.top = 'auto';
+        return;
+    }
+
+    const measuredHeight = Math.min(factResultBox.offsetHeight || 280, Math.max(180, window.innerHeight - (minMargin * 2)));
+    let left = rect.right + 12;
+    if (left + boxWidth > window.innerWidth - minMargin) {
+        left = rect.left - boxWidth - 12;
+    }
+    if (left < minMargin) {
+        left = Math.max(minMargin, Math.min(rect.left, window.innerWidth - boxWidth - minMargin));
+    }
+
+    let top = rect.top;
+    const maxTop = Math.max(minMargin, window.innerHeight - measuredHeight - minMargin);
+    if (top > maxTop) {
+        top = maxTop;
+    }
+    if (top < minMargin) {
+        top = minMargin;
+    }
+
+    factResultBox.style.left = Math.round(left) + 'px';
+    factResultBox.style.top = Math.round(top) + 'px';
+    factResultBox.style.right = 'auto';
+    factResultBox.style.bottom = 'auto';
+}
+
+function showFactResultBox(content, anchor) {
+    if (factResultBox && document.contains(factResultBox)) {
+        factResultBox.remove();
+    }
+
+    factResultAnchor = anchor || null;
 
     const box = document.createElement('div');
     box.id = 'sgpt-factbox';
     box.style.position = 'fixed';
-    box.style.bottom = '20px';
-    box.style.right = '20px';
     box.style.width = '400px';
     box.style.maxHeight = '60vh';
     box.style.overflow = 'auto';
     box.style.background = '#fff';
-    box.style.border = '1px solid #ccc';
-    box.style.borderRadius = '8px';
-    box.style.boxShadow = '0 4px 14px rgba(0,0,0,0.2)';
+    box.style.border = '1px solid #d8b4fe';
+    box.style.borderRadius = '10px';
+    box.style.boxShadow = '0 10px 28px rgba(0,0,0,0.18)';
     box.style.padding = '12px';
     box.style.zIndex = 2147483647;
     box.style.fontFamily = 'system-ui, sans-serif';
     box.style.fontSize = '14px';
     box.style.whiteSpace = 'pre-wrap';
-    box.style.lineHeight = '1.4';
+    box.style.lineHeight = '1.45';
 
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '×';
@@ -1119,21 +1199,37 @@ function showFactResultBox(content) {
     closeBtn.style.background = 'transparent';
     closeBtn.style.fontSize = '18px';
     closeBtn.style.cursor = 'pointer';
-    closeBtn.addEventListener('click', () => box.remove());
+    closeBtn.addEventListener('click', () => {
+        box.remove();
+        if (factResultBox === box) {
+            factResultBox = null;
+            factResultAnchor = null;
+        }
+    });
 
     const title = document.createElement('div');
     title.textContent = '✅ Fact checking via OpenAI';
-    title.style.fontWeight = 'bold';
-    title.style.marginBottom = '8px';
-    title.style.color = '#008CBA';
+    title.style.fontWeight = '700';
+    title.style.marginBottom = '4px';
+    title.style.color = '#0284c7';
+
+    const subtitle = document.createElement('div');
+    subtitle.textContent = anchor ? 'Anchored to the selected content.' : 'Verification result';
+    subtitle.style.marginBottom = '10px';
+    subtitle.style.color = '#7c3aed';
+    subtitle.style.fontSize = '12px';
+    subtitle.style.fontWeight = '600';
 
     const text = document.createElement('div');
     text.textContent = content;
 
     box.appendChild(closeBtn);
     box.appendChild(title);
+    box.appendChild(subtitle);
     box.appendChild(text);
     document.body.appendChild(box);
+    factResultBox = box;
+    positionFactResultBox();
 }
 
 function showLoader() {
@@ -2093,13 +2189,38 @@ function ensureVerifyActionButton() {
             return;
         }
         const context = verifyActionContext;
+        const anchor = verifyActionAnchor;
         verifyActionContext = '';
+        verifyActionAnchor = null;
         verifyActionButton.style.display = 'none';
-        startFactVerification(context, {preferPanel: false});
+        startFactVerification(context, {preferPanel: false, anchor: anchor});
     });
     document.body.appendChild(verifyActionButton);
 
     return verifyActionButton;
+}
+
+function buildSelectionVerificationContext(selectedText, node) {
+    const claim = normalizeWhitespace(selectedText || '');
+    if (!claim) {
+        return '';
+    }
+
+    const contextNode = node ? findFullContextNode(node) : null;
+    const nearbyContext = contextNode ? normalizeWhitespace(getReadableContext(contextNode)) : '';
+    const lines = ['Selected claim:', claim];
+
+    if (nearbyContext) {
+        const normalizedClaim = claim.toLowerCase();
+        const normalizedContext = nearbyContext.toLowerCase();
+        if (normalizedContext !== normalizedClaim && normalizedContext.indexOf(normalizedClaim) === -1) {
+            lines.push('Nearby page context (including visible links/media references when available):', clipText(nearbyContext, 2200));
+        } else if (/\[(IMG|LINK|VIDEO):/i.test(nearbyContext)) {
+            lines.push('Nearby page context (including visible links/media references when available):', clipText(nearbyContext, 2200));
+        }
+    }
+
+    return lines.join('\n\n');
 }
 
 function getSelectionVerificationSource() {
@@ -2127,7 +2248,11 @@ function getSelectionVerificationSource() {
     }
 
     return {
-        context: text,
+        context: buildSelectionVerificationContext(text, commonNode),
+        anchor: {
+            targetNode: findFullContextNode(commonNode),
+            rect: cloneAnchorRect(rect),
+        },
         left: Math.round(rect.right - 92),
         top: Math.round(rect.top - 36),
     };
@@ -2149,6 +2274,7 @@ function positionVerifyActionButton() {
     }
 
     verifyActionContext = source.context;
+    verifyActionAnchor = source.anchor || null;
     button.style.display = 'block';
     setComposerActionButtonCoordinates(button, source.left, source.top);
 }
@@ -4033,12 +4159,14 @@ window.addEventListener('resize', () => {
     positionPanelNearComposer();
     positionComposerActionButton();
     positionVerifyActionButton();
+    positionFactResultBox();
 }, true);
 
 window.addEventListener('scroll', () => {
     positionPanelNearComposer();
     positionComposerActionButton();
     positionVerifyActionButton();
+    positionFactResultBox();
 }, true);
 
 function resetMarksAndContext() {
@@ -4064,6 +4192,12 @@ function resetMarksAndContext() {
     }
 }
 
+function getPreferredFactCheckModel() {
+    const modelField = panel ? panel.querySelector('#sgpt-model') : null;
+    const selected = modelField ? normalizeWhitespace(modelField.value || '') : '';
+    return selected || 'gpt-4o';
+}
+
 function startFactVerification(contextOverride, options) {
     const settings = options || {};
     const contextField = panel ? panel.querySelector('#sgpt-context') : null;
@@ -4079,12 +4213,15 @@ function startFactVerification(contextOverride, options) {
         updatePanelComposerActions('Verifying the current context…', 'success');
     }
 
+    factResultAnchor = settings.anchor || null;
+
     safeSendRuntimeMessage({
         type: 'GPT_REQUEST',
         context,
         userPrompt: 'Search facts and verify the following statements. If you find any false or misleading information, provide a detailed explanation of why it is incorrect. Use plain text, no format and no markdown.',
         requestMode: 'verify',
-        responderName: frontResponserName || 'VerifierBot'
+        responderName: frontResponserName || 'VerifierBot',
+        model: settings.model || getPreferredFactCheckModel()
     });
 
     if (!settings.keepMarks && markedElements.length) {
@@ -4128,7 +4265,7 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
             }
         }
 
-        showFactResultBox(req.ok ? getReadablePanelText(req.payload) : getReadablePanelErrorText(req.error || req.payload));
+        showFactResultBox(req.ok ? getReadablePanelText(req.payload) : getReadablePanelErrorText(req.error || req.payload), factResultAnchor);
 
     } else if (req.type === 'START_FACT_VERIFICATION') {
         startFactVerification();
