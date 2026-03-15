@@ -1,6 +1,8 @@
 let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null, composerActionButton = null, adminActivitiesControl = null;
 let panelAttachedComposer = null;
 let panelContextDirty = false;
+let verifyActionButton = null;
+let verifyActionContext = '';
 let composerActionButtonDragState = null;
 let composerActionButtonDragOffset = null;
 let composerActionButtonDragListenersBound = false;
@@ -1397,9 +1399,23 @@ function isComposerContentEditable(node) {
     return !!(node && (node.isContentEditable || (node.getAttribute && /^(|true)$/i.test(node.getAttribute('contenteditable') || ''))));
 }
 
-function dispatchComposerInputEvents(node, insertedText) {
+function dispatchComposerInputEvents(node, insertedText, inputType) {
     if (!node || !node.dispatchEvent) {
         return;
+    }
+
+    const eventInputType = inputType || 'insertText';
+
+    try {
+        if (typeof InputEvent === 'function') {
+            node.dispatchEvent(new InputEvent('beforeinput', {
+                bubbles: true,
+                cancelable: true,
+                data: insertedText,
+                inputType: eventInputType,
+            }));
+        }
+    } catch (error) {
     }
 
     try {
@@ -1408,7 +1424,7 @@ function dispatchComposerInputEvents(node, insertedText) {
                 bubbles: true,
                 cancelable: true,
                 data: insertedText,
-                inputType: 'insertText',
+                inputType: eventInputType,
             }));
         } else {
             node.dispatchEvent(new Event('input', {bubbles: true, cancelable: true}));
@@ -1433,51 +1449,131 @@ function setNativeTextInputValue(node, value) {
     }
 }
 
-function replaceComposerText(node, text) {
+function resolveComposerEditingHost(node) {
     if (!node || !document.contains(node)) {
-        return {ok: false, error: 'No selected field is available anymore.'};
+        return null;
     }
 
-    const value = String(text || '');
+    if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement || isComposerContentEditable(node)) {
+        return node;
+    }
+
+    if (!node.querySelector) {
+        return node;
+    }
+
+    const preferred = node.querySelector('textarea,input[type="text"],input:not([type]),[contenteditable=""],[contenteditable="true"],[contenteditable]:not([contenteditable="false"])');
+    return preferred || node;
+}
+
+function moveComposerCaretToEnd(node) {
+    if (!node || !document.contains(node)) {
+        return;
+    }
+
+    if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
+        if (typeof node.setSelectionRange === 'function') {
+            node.setSelectionRange(node.value.length, node.value.length);
+        }
+        return;
+    }
+
+    if (!isComposerContentEditable(node)) {
+        return;
+    }
+
+    try {
+        const selection = window.getSelection();
+        if (!selection) {
+            return;
+        }
+
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        range.collapse(false);
+        selection.removeAllRanges();
+        selection.addRange(range);
+    } catch (error) {
+    }
+}
+
+function buildContentEditableFragment(value) {
+    const fragment = document.createDocumentFragment();
+    const lines = String(value || '').split('\n');
+    lines.forEach(function (line, index) {
+        if (index > 0) {
+            fragment.appendChild(document.createElement('br'));
+        }
+        fragment.appendChild(document.createTextNode(line));
+    });
+    return fragment;
+}
+
+function replaceContentEditableText(node, value) {
+    let inserted = false;
 
     try {
         node.focus();
     } catch (error) {
     }
 
-    if (node instanceof HTMLTextAreaElement || node instanceof HTMLInputElement) {
-        setNativeTextInputValue(node, value);
-        if (typeof node.setSelectionRange === 'function') {
-            node.setSelectionRange(value.length, value.length);
+    try {
+        const selection = window.getSelection();
+        if (selection) {
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            selection.removeAllRanges();
+            selection.addRange(range);
         }
-        dispatchComposerInputEvents(node, value);
+
+        if (typeof document.execCommand === 'function') {
+            inserted = document.execCommand('insertText', false, value);
+        }
+    } catch (error) {
+    }
+
+    if (!inserted) {
+        try {
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            range.deleteContents();
+            range.insertNode(buildContentEditableFragment(value));
+            if (selection) {
+                selection.removeAllRanges();
+            }
+        } catch (error) {
+            node.textContent = value;
+        }
+    }
+
+    moveComposerCaretToEnd(node);
+    dispatchComposerInputEvents(node, value, 'insertFromPaste');
+    return {ok: true};
+}
+
+function replaceComposerText(node, text) {
+    const editorHost = resolveComposerEditingHost(node);
+    if (!editorHost || !document.contains(editorHost)) {
+        return {ok: false, error: 'No selected field is available anymore.'};
+    }
+
+    const value = String(text || '');
+
+    try {
+        editorHost.focus();
+    } catch (error) {
+    }
+
+    if (editorHost instanceof HTMLTextAreaElement || editorHost instanceof HTMLInputElement) {
+        setNativeTextInputValue(editorHost, value);
+        moveComposerCaretToEnd(editorHost);
+        dispatchComposerInputEvents(editorHost, value, 'insertFromPaste');
         return {ok: true};
     }
 
-    if (isComposerContentEditable(node)) {
-        let inserted = false;
-
-        try {
-            const selection = window.getSelection();
-            if (selection) {
-                const range = document.createRange();
-                range.selectNodeContents(node);
-                selection.removeAllRanges();
-                selection.addRange(range);
-            }
-
-            if (typeof document.execCommand === 'function') {
-                inserted = document.execCommand('insertText', false, value);
-            }
-        } catch (error) {
-        }
-
-        if (!inserted) {
-            node.textContent = value;
-        }
-
-        dispatchComposerInputEvents(node, value);
-        return {ok: true};
+    if (isComposerContentEditable(editorHost)) {
+        return replaceContentEditableText(editorHost, value);
     }
 
     return {ok: false, error: 'The selected field could not be filled automatically.'};
@@ -1598,18 +1694,12 @@ function buildComposeStatusMessage(outputText, capabilities) {
     }
 
     if (!outputText) {
-        return capabilities.prefersManualPaste
-            ? 'Generate text, then paste it into the selected field. Submit manually after reviewing it.'
-            : 'Generate text, then paste it into the selected field or paste and send it.';
+        return 'Generate text, then paste it into the selected field.';
     }
 
-    if (capabilities.prefersManualPaste) {
-        return 'Output is ready. Paste it into the selected field and send manually after reviewing it.';
-    }
-
-    return capabilities.canSubmit
-        ? 'Output is ready. Paste it into the selected field, or use Paste + Send.'
-        : 'Output is ready. Paste is available, but no send button was detected nearby yet.';
+    return capabilities.canPaste
+        ? 'Output is ready. Paste it into the selected field and review it before sending.'
+        : 'Output is ready, but no selected field is available for paste right now.';
 }
 
 function updatePanelComposerActions(statusOverride, tone) {
@@ -1621,7 +1711,6 @@ function updatePanelComposerActions(statusOverride, tone) {
     const outputField = panel.querySelector('#sgpt-out');
     const verifyButton = panel.querySelector('#sgpt-verify');
     const pasteButton = panel.querySelector('#sgpt-paste');
-    const pasteSendButton = panel.querySelector('#sgpt-paste-send');
     const status = panel.querySelector('#sgpt-compose-status');
     const capabilities = getComposerFillCapabilities();
     const contextText = contextField ? contextField.value.trim() : '';
@@ -1633,11 +1722,6 @@ function updatePanelComposerActions(statusOverride, tone) {
 
     if (pasteButton) {
         pasteButton.disabled = !outputText || !capabilities.canPaste;
-    }
-
-    if (pasteSendButton) {
-        pasteSendButton.disabled = !outputText || !capabilities.canPaste || !capabilities.canSubmit;
-        pasteSendButton.style.display = capabilities.prefersManualPaste ? 'none' : 'inline-block';
     }
 
     if (status) {
@@ -1664,38 +1748,10 @@ function pasteTextIntoActiveComposer(text, options) {
         return fillResult;
     }
 
-    if (options && options.submit) {
-        if (capabilities.prefersManualPaste) {
-            return {
-                ok: true,
-                submitted: false,
-                message: 'Text pasted into the selected field. Submit it manually after reviewing it.',
-            };
-        }
-
-        const sendButton = findSendButtonForComposer(activeComposer, capabilities.platform) || (capabilities.sendButton && !isDisabledSubmitButton(capabilities.sendButton) ? capabilities.sendButton : null);
-        if (!sendButton) {
-            return {
-                ok: true,
-                submitted: false,
-                message: 'Text pasted into the selected field, but no send button was detected nearby.',
-            };
-        }
-
-        clickComposerSendButton(sendButton);
-        return {
-            ok: true,
-            submitted: true,
-            message: 'Text pasted into the selected field and the nearby send button was triggered.',
-        };
-    }
-
     return {
         ok: true,
         submitted: false,
-        message: capabilities.prefersManualPaste
-            ? 'Text pasted into the selected field. Submit it manually after reviewing it.'
-            : 'Text pasted into the selected field.',
+        message: 'Text pasted into the selected field. Review it before sending.',
     };
 }
 
@@ -2005,6 +2061,96 @@ function ensureComposerActionButton() {
     enableComposerActionButtonDragging(composerActionButton);
 
     return composerActionButton;
+}
+
+function ensureVerifyActionButton() {
+    if (verifyActionButton) {
+        return verifyActionButton;
+    }
+
+    verifyActionButton = document.createElement('button');
+    verifyActionButton.id = 'sgpt-verify-action';
+    verifyActionButton.type = 'button';
+    verifyActionButton.textContent = 'Verify fact';
+    verifyActionButton.style.position = 'fixed';
+    verifyActionButton.style.zIndex = '2147483646';
+    verifyActionButton.style.padding = '5px 10px';
+    verifyActionButton.style.border = 'none';
+    verifyActionButton.style.borderRadius = '999px';
+    verifyActionButton.style.background = '#7c3aed';
+    verifyActionButton.style.color = '#fff';
+    verifyActionButton.style.fontSize = '12px';
+    verifyActionButton.style.cursor = 'pointer';
+    verifyActionButton.style.userSelect = 'none';
+    verifyActionButton.style.boxShadow = '0 2px 10px rgba(0,0,0,0.18)';
+    verifyActionButton.style.display = 'none';
+    verifyActionButton.title = 'Fact-check the selected text.';
+    verifyActionButton.addEventListener('mousedown', function (event) {
+        event.preventDefault();
+    });
+    verifyActionButton.addEventListener('click', function () {
+        if (!verifyActionContext) {
+            return;
+        }
+        const context = verifyActionContext;
+        verifyActionContext = '';
+        verifyActionButton.style.display = 'none';
+        startFactVerification(context, {preferPanel: false});
+    });
+    document.body.appendChild(verifyActionButton);
+
+    return verifyActionButton;
+}
+
+function getSelectionVerificationSource() {
+    const selection = window.getSelection ? window.getSelection() : null;
+    if (!selection || selection.rangeCount < 1 || selection.isCollapsed) {
+        return null;
+    }
+
+    const range = selection.getRangeAt(0);
+    const commonNode = range.commonAncestorContainer && range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+        ? range.commonAncestorContainer
+        : (range.commonAncestorContainer ? range.commonAncestorContainer.parentElement : null);
+    if (!commonNode || (commonNode.closest && commonNode.closest('#sgpt-panel'))) {
+        return null;
+    }
+
+    const text = normalizeWhitespace(selection.toString() || '');
+    if (!text || text.length < 12) {
+        return null;
+    }
+
+    const rect = range.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) {
+        return null;
+    }
+
+    return {
+        context: text,
+        left: Math.round(rect.right - 92),
+        top: Math.round(rect.top - 36),
+    };
+}
+
+function positionVerifyActionButton() {
+    const button = ensureVerifyActionButton();
+    if (panel) {
+        button.style.display = 'none';
+        verifyActionContext = '';
+        return;
+    }
+
+    const source = getSelectionVerificationSource();
+    if (!source) {
+        button.style.display = 'none';
+        verifyActionContext = '';
+        return;
+    }
+
+    verifyActionContext = source.context;
+    button.style.display = 'block';
+    setComposerActionButtonCoordinates(button, source.left, source.top);
 }
 
 function positionComposerActionButton() {
@@ -3589,10 +3735,10 @@ function panelHTML() {
       #sgpt-body input[type=text]:focus,#sgpt-body textarea:focus,#sgpt-body select:focus{outline:none;border-color:#1999c6 !important;box-shadow:0 0 0 2px rgba(25,153,198,.15)}
       #sgpt-body textarea{resize:vertical;min-height:60px;max-height:160px}
       #sgpt-context{background:#f8fafc !important}
-      #sgpt-send,#sgpt-mod,#sgpt-verify,#sgpt-paste,#sgpt-paste-send{margin-right:4px;padding:4px 10px;border:none;border-radius:4px;background:#008CBA;color:#fff;cursor:pointer;font:13px/1.35 Arial,sans-serif !important}
+      #sgpt-send,#sgpt-mod,#sgpt-verify,#sgpt-paste{margin-right:4px;padding:4px 10px;border:none;border-radius:4px;background:#008CBA;color:#fff;cursor:pointer;font:13px/1.35 Arial,sans-serif !important}
       #sgpt-verify{background:#7c3aed}
-      #sgpt-paste,#sgpt-paste-send{background:#0f766e}
-      #sgpt-send[disabled],#sgpt-mod[disabled],#sgpt-verify[disabled],#sgpt-paste[disabled],#sgpt-paste-send[disabled]{opacity:.55;cursor:not-allowed}
+      #sgpt-paste{background:#0f766e}
+      #sgpt-send[disabled],#sgpt-mod[disabled],#sgpt-verify[disabled],#sgpt-paste[disabled]{opacity:.55;cursor:not-allowed}
       #sgpt-foot{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
       #sgpt-responder-label{font-size:12px;color:#666;margin-bottom:6px;text-align:right}
       #sgpt-anchor-note{font-size:11px;color:#666;margin-bottom:8px}
@@ -3658,7 +3804,7 @@ function panelHTML() {
       <div class="sgpt-inline-tools"><span>Context</span><div class="sgpt-inline-actions"><button type="button" id="sgpt-context-mark" aria-pressed="false">Mark context</button><button type="button" id="sgpt-context-import">Import</button><button type="button" id="sgpt-context-clear">Clear</button></div></div>
       <textarea id="sgpt-context" placeholder="Import visible page context or write your own context here."></textarea>
       <label>Output<textarea id="sgpt-out"></textarea></label>
-      <div id="sgpt-foot"><div id="sgpt-compose-status">Select a text field to enable paste/fill actions.</div><div><button id="sgpt-send">Generate</button><button id="sgpt-mod">Modify</button><button id="sgpt-verify">Verify fact</button><button id="sgpt-paste">Paste into field</button><button id="sgpt-paste-send">Paste + Send</button></div></div>
+      <div id="sgpt-foot"><div id="sgpt-compose-status">Select a text field to enable paste/fill actions.</div><div><button id="sgpt-send">Generate</button><button id="sgpt-mod">Modify</button><button id="sgpt-verify">Verify fact</button><button id="sgpt-paste">Paste into field</button></div></div>
     </div>`;
 }
 
@@ -3678,11 +3824,7 @@ function createPanel() {
     });
 
     panel.querySelector('#sgpt-close').addEventListener('click', () => {
-        clearMarkedContextSelection();
-        panel.remove();
-        panel = null;
-        panelAttachedComposer = null;
-        panelContextDirty = false;
+        closeReplyPanel();
     });
 
     panel.querySelector('#sgpt-send').addEventListener('click', () => sendGPT(false));
@@ -3690,14 +3832,6 @@ function createPanel() {
     panel.querySelector('#sgpt-verify').addEventListener('click', () => startFactVerification());
     panel.querySelector('#sgpt-paste').addEventListener('click', () => {
         const result = pasteTextIntoActiveComposer(panel.querySelector('#sgpt-out').value, {submit: false});
-        updatePanelComposerActions(result.ok ? result.message : result.error, result.ok ? 'success' : 'error');
-    });
-    panel.querySelector('#sgpt-paste-send').addEventListener('click', () => {
-        const result = pasteTextIntoActiveComposer(panel.querySelector('#sgpt-out').value, {submit: true});
-        if (result.ok && result.submitted) {
-            resetReplyPanelTransientFields({clearContext: true, clearMarks: true, statusMessage: result.message, statusTone: 'success'});
-            return;
-        }
         updatePanelComposerActions(result.ok ? result.message : result.error, result.ok ? 'success' : 'error');
     });
     panel.querySelector('#sgpt-context').addEventListener('input', () => {
@@ -3749,8 +3883,22 @@ function resetReplyTransientFieldsButKeepContext() {
     positionPanelNearComposer();
     updatePanelComposerActions();
     syncPanelMarkModeState();
+    positionVerifyActionButton();
 
     return panel;
+}
+
+function closeReplyPanel() {
+    if (!panel) {
+        return;
+    }
+
+    clearMarkedContextSelection();
+    panel.remove();
+    panel = null;
+    panelAttachedComposer = null;
+    panelContextDirty = false;
+    positionVerifyActionButton();
 }
 
 function openReplyPanel() {
@@ -3763,6 +3911,7 @@ function openReplyPanel() {
     updatePanelAnchorNote();
     updatePanelComposerActions();
     syncPanelMarkModeState();
+    positionVerifyActionButton();
     p.querySelector('#sgpt-prompt').focus();
 
     isClickMarkingActive = false;
@@ -3876,14 +4025,20 @@ document.addEventListener('focusin', e => {
     }
 }, true);
 
+document.addEventListener('selectionchange', () => {
+    positionVerifyActionButton();
+}, true);
+
 window.addEventListener('resize', () => {
     positionPanelNearComposer();
     positionComposerActionButton();
+    positionVerifyActionButton();
 }, true);
 
 window.addEventListener('scroll', () => {
     positionPanelNearComposer();
     positionComposerActionButton();
+    positionVerifyActionButton();
 }, true);
 
 function resetMarksAndContext() {
@@ -3909,9 +4064,10 @@ function resetMarksAndContext() {
     }
 }
 
-function startFactVerification() {
+function startFactVerification(contextOverride, options) {
+    const settings = options || {};
     const contextField = panel ? panel.querySelector('#sgpt-context') : null;
-    const context = contextField ? contextField.value.trim() : '';
+    const context = normalizeWhitespace(contextOverride || (contextField ? contextField.value : ''));
 
     if (!context) {
         alert('There is no context to verify yet. Import, mark, or write context first.');
@@ -3919,7 +4075,9 @@ function startFactVerification() {
     }
 
     showLoader();
-    updatePanelComposerActions('Verifying the current context…', 'success');
+    if (panel) {
+        updatePanelComposerActions('Verifying the current context…', 'success');
+    }
 
     safeSendRuntimeMessage({
         type: 'GPT_REQUEST',
@@ -3929,7 +4087,7 @@ function startFactVerification() {
         responderName: frontResponserName || 'VerifierBot'
     });
 
-    if (markedElements.length) {
+    if (!settings.keepMarks && markedElements.length) {
         clearMarkedContextSelection();
     }
 }
@@ -4080,6 +4238,7 @@ window.addEventListener('message', function (event) {
 
 injectNetworkMonitor();
 ensureComposerActionButton();
+ensureVerifyActionButton();
 ensureAdminActivitiesControl();
 syncAdminDebugPreference();
 safeAddStorageChangeListener(function (changes, areaName) {
