@@ -332,6 +332,7 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
                 model: req.model || 'gpt-4o',
                 responder_name_override: req.responderName || '',
                 request_mode: req.requestMode || 'reply',
+                response_language: req.responseLanguage || 'auto',
             };
 
             var toolsResponse = await callToolsSocialGpt(data.toolsApiToken, baseUrl, payload);
