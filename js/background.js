@@ -1,9 +1,18 @@
 const PROD_BASE_URL = 'https://tools.tornevall.net';
 const DEV_BASE_URL = 'https://tools.tornevall.com';
 const SOCIALGPT_PATH = '/api/ai/socialgpt/respond';
+const MODELS_PATH = '/api/social-media-tools/extension/models';
 const FACEBOOK_INGEST_PATH = '/api/social-media-tools/facebook/ingest';
 const DEBUG_LOG_KEY = 'tn_networks_debug_logs';
 const MAX_DEBUG_LOGS = 200;
+const FALLBACK_AVAILABLE_MODELS = [
+    {id: 'gpt-4o-mini', label: 'gpt-4o-mini'},
+    {id: 'gpt-4o', label: 'gpt-4o'},
+    {id: 'gpt-4.1-mini', label: 'gpt-4.1-mini'},
+    {id: 'gpt-4.1', label: 'gpt-4.1'},
+    {id: 'o4-mini', label: 'o4-mini'},
+    {id: 'o3-mini', label: 'o3-mini'},
+];
 
 function getToolsBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
@@ -64,20 +73,205 @@ function clearAuthFailureIndicator() {
     chrome.action.setTitle({title: 'Tornevall Networks Social Media Tools'});
 }
 
-function normalizeToolsApiError(status, data) {
+function extractToolsApiMessage(data) {
+    if (data && typeof data.error === 'string' && data.error.trim()) {
+        return data.error.trim();
+    }
+
+    if (data && typeof data.message === 'string' && data.message.trim()) {
+        return data.message.trim();
+    }
+
+    return '';
+}
+
+function isAuthFailureStatus(status, data) {
     if (status === 401) {
-        return 'Authentication failed. Check your personal Tools bearer token.';
+        return true;
+    }
+
+    if (status !== 403) {
+        return false;
+    }
+
+    var message = extractToolsApiMessage(data).toLowerCase();
+
+    return message.indexOf('authentication') !== -1
+        || message.indexOf('unauthenticated') !== -1
+        || message.indexOf('unauthorized') !== -1
+        || message.indexOf('bearer token') !== -1
+        || message.indexOf('forbidden') !== -1
+        || message.indexOf('missing permission') !== -1
+        || message.indexOf('not allowed to use the requested tools feature') !== -1;
+}
+
+function normalizeToolsApiError(status, data) {
+    var apiMessage = extractToolsApiMessage(data);
+
+    if (status === 401) {
+        return apiMessage || 'Authentication failed. Check your personal Tools bearer token.';
     }
 
     if (status === 403) {
-        return 'Authenticated, but this account is not allowed to use the requested Tools feature.';
+        if (apiMessage.toLowerCase() === 'model not allowed') {
+            return 'Requested model is not allowed for this Tools flow.';
+        }
+
+        return apiMessage || 'Access denied for this Tools request.';
     }
 
     if (status === 503) {
-        return 'Tools is reachable, but the global provider_openai key is not configured.';
+        return apiMessage || 'Tools is reachable, but the global provider_openai key is not configured.';
     }
 
-    return (data && (data.error || data.message)) || 'Tools API request failed (' + status + ')';
+    return apiMessage || 'Tools API request failed (' + status + ')';
+}
+
+function normalizeModelOption(option) {
+    var id = option && option.id ? String(option.id).trim() : '';
+    if (!id) {
+        return null;
+    }
+
+    return {
+        id: id,
+        label: option && option.label ? String(option.label).trim() : id,
+        providerVisible: option ? option.provider_visible !== false : true,
+        selectedByDefault: !!(option && option.selected_by_default),
+    };
+}
+
+function normalizeModelCatalog(models, defaultModel) {
+    var seen = {};
+    var normalized = [];
+
+    (Array.isArray(models) ? models : []).forEach(function (option) {
+        var normalizedOption = normalizeModelOption(option);
+        if (!normalizedOption || seen[normalizedOption.id]) {
+            return;
+        }
+
+        seen[normalizedOption.id] = true;
+        normalized.push(normalizedOption);
+    });
+
+    if (!normalized.length) {
+        normalized = FALLBACK_AVAILABLE_MODELS.slice();
+    }
+
+    var resolvedDefaultModel = String(defaultModel || '').trim();
+    if (!resolvedDefaultModel || !seen[resolvedDefaultModel]) {
+        resolvedDefaultModel = normalized[0] ? normalized[0].id : 'gpt-4o-mini';
+    }
+
+    normalized.sort(function (left, right) {
+        if (left.id === resolvedDefaultModel) {
+            return -1;
+        }
+        if (right.id === resolvedDefaultModel) {
+            return 1;
+        }
+
+        return left.id.localeCompare(right.id, undefined, {numeric: true, sensitivity: 'base'});
+    });
+
+    return {
+        models: normalized,
+        defaultModel: resolvedDefaultModel,
+    };
+}
+
+function cacheAvailableModels(catalog) {
+    return new Promise(function (resolve) {
+        chrome.storage.sync.set({
+            availableToolsModels: catalog.models,
+            defaultToolsModel: catalog.defaultModel,
+            availableToolsModelsSource: catalog.source || 'fallback',
+            availableToolsModelsFetchedAt: catalog.fetchedAt || new Date().toISOString(),
+            availableToolsModelsWarning: catalog.warning || '',
+        }, function () {
+            resolve();
+        });
+    });
+}
+
+function readCachedAvailableModels() {
+    return new Promise(function (resolve) {
+        chrome.storage.sync.get([
+            'availableToolsModels',
+            'defaultToolsModel',
+            'availableToolsModelsSource',
+            'availableToolsModelsFetchedAt',
+            'availableToolsModelsWarning'
+        ], function (data) {
+            var normalized = normalizeModelCatalog(data.availableToolsModels || [], data.defaultToolsModel || '');
+            resolve({
+                models: normalized.models,
+                defaultModel: normalized.defaultModel,
+                source: data.availableToolsModelsSource || (Array.isArray(data.availableToolsModels) && data.availableToolsModels.length ? 'cache' : 'fallback'),
+                fetchedAt: data.availableToolsModelsFetchedAt || null,
+                warning: data.availableToolsModelsWarning || '',
+            });
+        });
+    });
+}
+
+async function fetchAvailableModels(apiToken, baseUrl, forceRefresh) {
+    var url = baseUrl + MODELS_PATH + (forceRefresh ? '?refresh=1' : '');
+
+    try {
+        var res = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json',
+                'Authorization': 'Bearer ' + apiToken,
+            },
+        });
+
+        var data = await res.json().catch(function () {
+            return {};
+        });
+
+        if (!res.ok || !data.ok) {
+            var cachedCatalog = await readCachedAvailableModels();
+            return {
+                ok: false,
+                error: normalizeToolsApiError(res.status, data),
+                status: res.status,
+                models: cachedCatalog.models,
+                defaultModel: cachedCatalog.defaultModel,
+                source: cachedCatalog.source,
+                fetchedAt: cachedCatalog.fetchedAt,
+                warning: cachedCatalog.warning || 'Using cached/fallback model list.',
+            };
+        }
+
+        var normalized = normalizeModelCatalog(data.models || [], data.default_model || '');
+        var catalog = {
+            ok: true,
+            models: normalized.models,
+            defaultModel: normalized.defaultModel,
+            source: data.source || 'provider',
+            fetchedAt: data.fetched_at || new Date().toISOString(),
+            warning: data.warning || '',
+        };
+
+        await cacheAvailableModels(catalog);
+
+        return catalog;
+    } catch (e) {
+        var cachedOnError = await readCachedAvailableModels();
+        return {
+            ok: false,
+            error: e && e.message ? e.message : 'Could not fetch available models from Tools.',
+            status: 0,
+            models: cachedOnError.models,
+            defaultModel: cachedOnError.defaultModel,
+            source: cachedOnError.source,
+            fetchedAt: cachedOnError.fetchedAt,
+            warning: cachedOnError.warning || 'Using cached/fallback model list.',
+        };
+    }
 }
 
 chrome.runtime.onInstalled.addListener(function () {
@@ -130,7 +324,7 @@ async function callToolsSocialGpt(apiToken, baseUrl, payload) {
                 }
             });
 
-            if (res.status === 401 || res.status === 403) {
+            if (isAuthFailureStatus(res.status, data)) {
                 setAuthFailureIndicator(errorMessage);
             }
 
@@ -209,7 +403,7 @@ async function callFacebookAdminIngest(apiToken, baseUrl, payload) {
                 }
             });
 
-            if (res.status === 401 || res.status === 403) {
+            if (isAuthFailureStatus(res.status, data)) {
                 setAuthFailureIndicator(errorMessage);
             }
 
@@ -304,9 +498,32 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
         return true;
     }
 
+    if (req.type === 'GET_AVAILABLE_MODELS') {
+        chrome.storage.sync.get(['toolsApiToken', 'devMode'], async function (data) {
+            if (!data.toolsApiToken) {
+                var fallbackCatalog = await readCachedAvailableModels();
+                sendResponse({
+                    ok: false,
+                    error: 'Missing Tools API token. Save it in the extension popup first.',
+                    models: fallbackCatalog.models,
+                    defaultModel: fallbackCatalog.defaultModel,
+                    source: fallbackCatalog.source,
+                    fetchedAt: fallbackCatalog.fetchedAt,
+                    warning: fallbackCatalog.warning || 'Using cached/fallback model list.',
+                });
+                return;
+            }
+
+            var baseUrl = getToolsBaseUrl(!!data.devMode);
+            var catalog = await fetchAvailableModels(data.toolsApiToken, baseUrl, !!req.forceRefresh);
+            sendResponse(catalog);
+        });
+        return true;
+    }
+
     if (req.type === 'GPT_REQUEST') {
         var requestTabId = sender.tab.id;
-        chrome.storage.sync.get(['toolsApiToken', 'devMode'], async function (data) {
+        chrome.storage.sync.get(['toolsApiToken', 'devMode', 'defaultToolsModel'], async function (data) {
             if (!data.toolsApiToken) {
                 var missingTokenMessage = 'Missing Tools API token. Register at tools.tornevall.net, generate a personal bearer token there, and save it in the extension popup.';
                 setAuthFailureIndicator(missingTokenMessage);
@@ -329,7 +546,7 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
                 custom_mood: req.customMood ? req.customMood.trim() : '',
                 response_length: req.responseLength || 'auto',
                 previous_reply: req.previousReply || '',
-                model: req.model || 'gpt-4o',
+                model: req.model || data.defaultToolsModel || 'gpt-4o-mini',
                 responder_name_override: req.responderName || '',
                 request_mode: req.requestMode || 'reply',
                 response_language: req.responseLanguage || 'auto',

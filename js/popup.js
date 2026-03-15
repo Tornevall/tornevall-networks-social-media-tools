@@ -1,6 +1,7 @@
 const PROD_BASE_URL = 'https://tools.tornevall.net';
 const DEV_BASE_URL = 'https://tools.tornevall.com';
 const SETTINGS_PATH = '/api/social-media-tools/extension/settings';
+const MODELS_PATH = '/api/social-media-tools/extension/models';
 const FACEBOOK_OUTCOME_CONFIG_PATH = '/api/social-media-tools/facebook/outcome-config';
 const TEST_PATH = '/api/social-media-tools/extension/test';
 const AI_PATH = '/api/ai/socialgpt/respond';
@@ -10,6 +11,7 @@ const DEFAULT_MOOD = 'Neutral and formal';
 const DEFAULT_PERSONA_PROFILE = 'You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.';
 const DEFAULT_TEST_QUESTION = 'A Facebook user writes: "Hi, what does this tool help you with?" Reply in one short sentence in your configured tone and style.';
 const DEFAULT_RESPONSE_LANGUAGE = 'auto';
+const DEFAULT_VERIFY_FACT_LANGUAGE = 'auto';
 const DEFAULT_QUICK_REPLY_PRESET = 'default';
 const DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION = '';
 
@@ -230,6 +232,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const responderNameInput = document.getElementById('responderName');
     const autoDetectCheckbox = document.getElementById('autoDetectName');
     const responseLanguageSelect = document.getElementById('responseLanguage');
+    const verifyFactLanguageSelect = document.getElementById('verifyFactLanguage');
     const quickReplyPresetSelect = document.getElementById('quickReplyPreset');
     const quickReplyInstructionInput = document.getElementById('quickReplyInstruction');
     const systemPromptInput = document.getElementById('systemPrompt');
@@ -405,9 +408,53 @@ document.addEventListener('DOMContentLoaded', function () {
             defaultMood: values.defaultMood,
             defaultCustomMood: values.defaultCustomMood,
             defaultResponseLanguage: values.defaultResponseLanguage,
+            defaultVerifyFactLanguage: values.defaultVerifyFactLanguage,
             defaultQuickReplyPreset: values.defaultQuickReplyPreset,
             defaultQuickReplyCustomInstruction: values.defaultQuickReplyCustomInstruction,
         });
+    }
+
+    function cacheAvailableModelCatalog(models, defaultModel, source, fetchedAt, warning) {
+        const seen = {};
+        const normalizedModels = (Array.isArray(models) ? models : []).map(function (model) {
+            const id = model && model.id ? String(model.id).trim() : '';
+            if (!id || seen[id]) {
+                return null;
+            }
+
+            seen[id] = true;
+            return {
+                id: id,
+                label: model && model.label ? String(model.label).trim() : id,
+                provider_visible: model ? model.provider_visible !== false : true,
+                selected_by_default: !!(model && model.selected_by_default),
+            };
+        }).filter(Boolean);
+
+        chrome.storage.sync.set({
+            availableToolsModels: normalizedModels,
+            defaultToolsModel: String(defaultModel || '').trim() || (normalizedModels[0] ? normalizedModels[0].id : 'gpt-4o-mini'),
+            availableToolsModelsSource: source || 'provider',
+            availableToolsModelsFetchedAt: fetchedAt || new Date().toISOString(),
+            availableToolsModelsWarning: warning || '',
+        });
+    }
+
+    async function refreshAvailableModelsCache(token, baseUrl) {
+        const result = await apiRequest(baseUrl, token, MODELS_PATH);
+        if (!result.ok || !result.data) {
+            return false;
+        }
+
+        cacheAvailableModelCatalog(
+            result.data.models || [],
+            result.data.default_model || '',
+            result.data.source || 'provider',
+            result.data.fetched_at || null,
+            result.data.warning || ''
+        );
+
+        return true;
     }
 
     async function syncRemoteFacebookOutcomeConfig(token, baseUrl) {
@@ -451,6 +498,7 @@ document.addEventListener('DOMContentLoaded', function () {
         systemPromptInput.value = settings.persona_profile || systemPromptInput.value.trim() || DEFAULT_PERSONA_PROFILE;
         autoDetectCheckbox.checked = settings.auto_detect_responder !== false;
         responseLanguageSelect.value = settings.response_language || DEFAULT_RESPONSE_LANGUAGE;
+        verifyFactLanguageSelect.value = settings.verify_fact_language || DEFAULT_VERIFY_FACT_LANGUAGE;
         if (!testQuestionInput.value.trim()) {
             testQuestionInput.value = DEFAULT_TEST_QUESTION;
         }
@@ -462,9 +510,17 @@ document.addEventListener('DOMContentLoaded', function () {
             defaultMood: settings.mood || DEFAULT_MOOD,
             defaultCustomMood: settings.custom_mood || '',
             defaultResponseLanguage: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
+            defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
             defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
             defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
         });
+        cacheAvailableModelCatalog(
+            result.data.available_models || [],
+            result.data.default_model || '',
+            result.data.models_source || 'provider',
+            new Date().toISOString(),
+            result.data.models_warning || ''
+        );
         await syncRemoteFacebookOutcomeConfig(token, baseUrl);
 
         setStatus(status, 'Settings loaded from ' + baseUrl + '.', false);
@@ -486,6 +542,7 @@ document.addEventListener('DOMContentLoaded', function () {
         'defaultMood',
         'defaultCustomMood',
         'defaultResponseLanguage',
+        'defaultVerifyFactLanguage',
         'defaultQuickReplyPreset',
         'defaultQuickReplyCustomInstruction'
     ], async function (data) {
@@ -495,6 +552,7 @@ document.addEventListener('DOMContentLoaded', function () {
         testQuestionInput.value = DEFAULT_TEST_QUESTION;
         autoDetectCheckbox.checked = data.autoDetectResponder !== false;
         responseLanguageSelect.value = data.defaultResponseLanguage || DEFAULT_RESPONSE_LANGUAGE;
+        verifyFactLanguageSelect.value = data.defaultVerifyFactLanguage || DEFAULT_VERIFY_FACT_LANGUAGE;
         quickReplyPresetSelect.value = data.defaultQuickReplyPreset || DEFAULT_QUICK_REPLY_PRESET;
         quickReplyInstructionInput.value = data.defaultQuickReplyCustomInstruction || DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
         devModeCheckbox.checked = !!data.devMode;
@@ -560,6 +618,7 @@ document.addEventListener('DOMContentLoaded', function () {
             facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
             pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
             enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
+            defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
             defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
             defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
         });
@@ -576,6 +635,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 persona_profile: systemPromptInput.value.trim(),
                 auto_detect_responder: autoDetectCheckbox.checked,
                 response_language: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
+                verify_fact_language: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
             },
         });
 
@@ -591,9 +651,11 @@ document.addEventListener('DOMContentLoaded', function () {
             defaultMood: DEFAULT_MOOD,
             defaultCustomMood: '',
             defaultResponseLanguage: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
+            defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
             defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
             defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
         });
+        await refreshAvailableModelsCache(token, baseUrl);
         await syncRemoteFacebookOutcomeConfig(token, baseUrl);
 
         setStatus(status, 'Settings saved to ' + baseUrl + '.', false);
@@ -607,7 +669,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const token = apiKeyInput.value.trim();
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
         const question = testQuestionInput.value.trim() || DEFAULT_TEST_QUESTION;
-        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, responseLanguageSelect, quickReplyPresetSelect, quickReplyInstructionInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, pageNetworkDebugCheckbox, enableUnsupportedComposeCheckbox, autoDetectCheckbox];
+        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, responseLanguageSelect, verifyFactLanguageSelect, quickReplyPresetSelect, quickReplyInstructionInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, pageNetworkDebugCheckbox, enableUnsupportedComposeCheckbox, autoDetectCheckbox];
 
         if (!token) {
             setStatus(status, 'Paste a personal bearer token first, then test the connection.', true);
@@ -623,6 +685,7 @@ document.addEventListener('DOMContentLoaded', function () {
             facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
             pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
             enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
+            defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
             defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
             defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
         });
@@ -634,6 +697,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 persona_profile: systemPromptInput.value.trim(),
                 auto_detect_responder: autoDetectCheckbox.checked,
                 response_language: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
+                verify_fact_language: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
             },
         });
 
@@ -689,6 +753,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
         setBusyState(false, busyElements);
 
+        await refreshAvailableModelsCache(token, baseUrl);
+
         if (devModeCheckbox.checked) {
             await refreshDebugConsole();
         }
@@ -697,6 +763,7 @@ document.addEventListener('DOMContentLoaded', function () {
     resetBtn.addEventListener('click', function () {
         systemPromptInput.value = DEFAULT_PERSONA_PROFILE;
         responseLanguageSelect.value = DEFAULT_RESPONSE_LANGUAGE;
+        verifyFactLanguageSelect.value = DEFAULT_VERIFY_FACT_LANGUAGE;
         quickReplyPresetSelect.value = DEFAULT_QUICK_REPLY_PRESET;
         quickReplyInstructionInput.value = DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
         testQuestionInput.value = DEFAULT_TEST_QUESTION;
