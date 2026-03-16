@@ -13,6 +13,7 @@ const DEFAULT_PERSONA_PROFILE = 'You are a friendly over intelligent human being
 const DEFAULT_TEST_QUESTION = 'A Facebook user writes: "Hi, what does this tool help you with?" Reply in one short sentence in your configured tone and style.';
 const DEFAULT_RESPONSE_LANGUAGE = 'auto';
 const DEFAULT_VERIFY_FACT_LANGUAGE = 'auto';
+const DEFAULT_FACT_CHECK_MODEL = 'gpt-4o';
 const DEFAULT_QUICK_REPLY_PRESET = 'default';
 const DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION = '';
 
@@ -280,6 +281,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const autoDetectCheckbox = document.getElementById('autoDetectName');
     const responseLanguageSelect = document.getElementById('responseLanguage');
     const verifyFactLanguageSelect = document.getElementById('verifyFactLanguage');
+    const factCheckModelSelect = document.getElementById('factCheckModel');
     const quickReplyPresetSelect = document.getElementById('quickReplyPreset');
     const quickReplyInstructionInput = document.getElementById('quickReplyInstruction');
     const systemPromptInput = document.getElementById('systemPrompt');
@@ -456,9 +458,76 @@ document.addEventListener('DOMContentLoaded', function () {
             defaultCustomMood: values.defaultCustomMood,
             defaultResponseLanguage: values.defaultResponseLanguage,
             defaultVerifyFactLanguage: values.defaultVerifyFactLanguage,
+            preferredFactCheckModel: values.preferredFactCheckModel,
             defaultQuickReplyPreset: values.defaultQuickReplyPreset,
             defaultQuickReplyCustomInstruction: values.defaultQuickReplyCustomInstruction,
         });
+    }
+
+    function normalizeModelId(value) {
+        return String(value || '').trim();
+    }
+
+    function resolveFactCheckModelSelection(models, preferredModel, fallbackModel) {
+        const available = (Array.isArray(models) ? models : []).map(function (model) {
+            return normalizeModelId(model && model.id ? model.id : model);
+        }).filter(Boolean);
+        const preferred = normalizeModelId(preferredModel);
+        const fallback = normalizeModelId(fallbackModel) || DEFAULT_FACT_CHECK_MODEL;
+
+        if (preferred && available.indexOf(preferred) !== -1) {
+            return preferred;
+        }
+        if (available.indexOf(DEFAULT_FACT_CHECK_MODEL) !== -1) {
+            return DEFAULT_FACT_CHECK_MODEL;
+        }
+        if (fallback && available.indexOf(fallback) !== -1) {
+            return fallback;
+        }
+
+        return available[0] || DEFAULT_FACT_CHECK_MODEL;
+    }
+
+    function populateFactCheckModelOptions(models, defaultModel, preferredModel) {
+        if (!factCheckModelSelect) {
+            return;
+        }
+
+        const normalizedModels = (Array.isArray(models) ? models : []).map(function (model) {
+            const id = normalizeModelId(model && model.id ? model.id : model);
+            if (!id) {
+                return null;
+            }
+
+            return {
+                id: id,
+                label: normalizeModelId(model && model.label ? model.label : id) || id,
+            };
+        }).filter(Boolean);
+
+        const seen = {};
+        factCheckModelSelect.innerHTML = '';
+        normalizedModels.forEach(function (model) {
+            if (seen[model.id]) {
+                return;
+            }
+            seen[model.id] = true;
+            const option = document.createElement('option');
+            option.value = model.id;
+            option.textContent = model.label;
+            factCheckModelSelect.appendChild(option);
+        });
+
+        const fallbackOptionNeeded = !seen[DEFAULT_FACT_CHECK_MODEL];
+        if (fallbackOptionNeeded) {
+            const option = document.createElement('option');
+            option.value = DEFAULT_FACT_CHECK_MODEL;
+            option.textContent = DEFAULT_FACT_CHECK_MODEL + ' (fallback default)';
+            factCheckModelSelect.appendChild(option);
+            seen[DEFAULT_FACT_CHECK_MODEL] = true;
+        }
+
+        factCheckModelSelect.value = resolveFactCheckModelSelection(normalizedModels, preferredModel, defaultModel);
     }
 
     function cacheAvailableModelCatalog(models, defaultModel, source, fetchedAt, warning) {
@@ -500,6 +569,8 @@ document.addEventListener('DOMContentLoaded', function () {
             result.data.fetched_at || null,
             result.data.warning || ''
         );
+
+        populateFactCheckModelOptions(result.data.models || [], result.data.default_model || '', factCheckModelSelect ? factCheckModelSelect.value : DEFAULT_FACT_CHECK_MODEL);
 
         return true;
     }
@@ -546,6 +617,11 @@ document.addEventListener('DOMContentLoaded', function () {
         autoDetectCheckbox.checked = settings.auto_detect_responder !== false;
         responseLanguageSelect.value = settings.response_language || DEFAULT_RESPONSE_LANGUAGE;
         verifyFactLanguageSelect.value = settings.verify_fact_language || DEFAULT_VERIFY_FACT_LANGUAGE;
+        populateFactCheckModelOptions(
+            result.data.available_models || [],
+            result.data.default_model || DEFAULT_FACT_CHECK_MODEL,
+            factCheckModelSelect ? factCheckModelSelect.value : DEFAULT_FACT_CHECK_MODEL
+        );
         if (!testQuestionInput.value.trim()) {
             testQuestionInput.value = DEFAULT_TEST_QUESTION;
         }
@@ -558,6 +634,7 @@ document.addEventListener('DOMContentLoaded', function () {
             defaultCustomMood: settings.custom_mood || '',
             defaultResponseLanguage: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
             defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
+            preferredFactCheckModel: factCheckModelSelect ? factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL : DEFAULT_FACT_CHECK_MODEL,
             defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
             defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
         });
@@ -590,6 +667,9 @@ document.addEventListener('DOMContentLoaded', function () {
         'defaultCustomMood',
         'defaultResponseLanguage',
         'defaultVerifyFactLanguage',
+        'availableToolsModels',
+        'defaultToolsModel',
+        'preferredFactCheckModel',
         'defaultQuickReplyPreset',
         'defaultQuickReplyCustomInstruction'
     ], async function (data) {
@@ -600,6 +680,7 @@ document.addEventListener('DOMContentLoaded', function () {
         autoDetectCheckbox.checked = data.autoDetectResponder !== false;
         responseLanguageSelect.value = data.defaultResponseLanguage || DEFAULT_RESPONSE_LANGUAGE;
         verifyFactLanguageSelect.value = data.defaultVerifyFactLanguage || DEFAULT_VERIFY_FACT_LANGUAGE;
+        populateFactCheckModelOptions(data.availableToolsModels || [], data.defaultToolsModel || DEFAULT_FACT_CHECK_MODEL, data.preferredFactCheckModel || DEFAULT_FACT_CHECK_MODEL);
         quickReplyPresetSelect.value = data.defaultQuickReplyPreset || DEFAULT_QUICK_REPLY_PRESET;
         quickReplyInstructionInput.value = data.defaultQuickReplyCustomInstruction || DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
         devModeCheckbox.checked = !!data.devMode;
@@ -666,6 +747,7 @@ document.addEventListener('DOMContentLoaded', function () {
             pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
             enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
             defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
+            preferredFactCheckModel: factCheckModelSelect ? (factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL) : DEFAULT_FACT_CHECK_MODEL,
             defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
             defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
         });
@@ -699,6 +781,7 @@ document.addEventListener('DOMContentLoaded', function () {
             defaultCustomMood: '',
             defaultResponseLanguage: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
             defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
+            preferredFactCheckModel: factCheckModelSelect ? (factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL) : DEFAULT_FACT_CHECK_MODEL,
             defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
             defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
         });
@@ -716,7 +799,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const token = apiKeyInput.value.trim();
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
         const question = testQuestionInput.value.trim() || DEFAULT_TEST_QUESTION;
-        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, responseLanguageSelect, verifyFactLanguageSelect, quickReplyPresetSelect, quickReplyInstructionInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, pageNetworkDebugCheckbox, enableUnsupportedComposeCheckbox, autoDetectCheckbox];
+        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, responseLanguageSelect, verifyFactLanguageSelect, factCheckModelSelect, quickReplyPresetSelect, quickReplyInstructionInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, pageNetworkDebugCheckbox, enableUnsupportedComposeCheckbox, autoDetectCheckbox];
 
         if (!token) {
             setStatus(status, 'Paste a personal bearer token first, then test the connection.', true);
@@ -733,6 +816,7 @@ document.addEventListener('DOMContentLoaded', function () {
             pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
             enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
             defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
+            preferredFactCheckModel: factCheckModelSelect ? (factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL) : DEFAULT_FACT_CHECK_MODEL,
             defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
             defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
         });
@@ -811,6 +895,7 @@ document.addEventListener('DOMContentLoaded', function () {
         systemPromptInput.value = DEFAULT_PERSONA_PROFILE;
         responseLanguageSelect.value = DEFAULT_RESPONSE_LANGUAGE;
         verifyFactLanguageSelect.value = DEFAULT_VERIFY_FACT_LANGUAGE;
+        populateFactCheckModelOptions([], DEFAULT_FACT_CHECK_MODEL, DEFAULT_FACT_CHECK_MODEL);
         quickReplyPresetSelect.value = DEFAULT_QUICK_REPLY_PRESET;
         quickReplyInstructionInput.value = DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
         testQuestionInput.value = DEFAULT_TEST_QUESTION;

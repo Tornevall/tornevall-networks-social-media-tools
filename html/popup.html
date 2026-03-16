@@ -248,6 +248,12 @@
     <option value="es">Spanish</option>
 </select>
 
+<label for="factCheckModel">Fact-check model:</label>
+<select id="factCheckModel"></select>
+<p class="helper-note" style="margin-top:-6px;">
+    Used by <strong>Verify fact</strong>. If the chosen model returns an empty/failed fact-check, the extension will retry once with <code>gpt-4o</code>. <strong>Dig deeper</strong> will still prefer a reasoning/thinking-capable model.
+</p>
+
 <label for="quickReplyPreset">Default quick-reply style:</label>
 <select id="quickReplyPreset">
     <option value="default">Balanced default</option>

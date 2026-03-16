@@ -24,6 +24,7 @@ let composerActionButtonDragListenersBound = false;
 let frontResponserName = '';
 let defaultResponseLanguage = 'auto';
 let defaultVerifyFactLanguage = 'auto';
+let preferredFactCheckModel = 'gpt-4o';
 let defaultQuickReplyPreset = 'default';
 let defaultQuickReplyCustomInstruction = '';
 let pendingAiRequestMode = null;
@@ -355,6 +356,12 @@ function getPreferredDeepVerificationModel(currentModel) {
     const availableIds = getAvailableModelIds();
     const normalizedCurrentModel = normalizeWhitespace(currentModel || '');
 
+    const preferredThinkingModels = ['o3', 'o4-mini', 'o3-mini', 'o1', 'o1-mini'];
+    for (let index = 0; index < preferredThinkingModels.length; index += 1) {
+        if (availableIds.indexOf(preferredThinkingModels[index]) !== -1) {
+            return preferredThinkingModels[index];
+        }
+    }
     if (availableIds.indexOf('o3-mini') !== -1) {
         return 'o3-mini';
     }
@@ -366,6 +373,20 @@ function getPreferredDeepVerificationModel(currentModel) {
     }
 
     return resolveDefaultToolsModel(availableToolsModels, defaultToolsModel);
+}
+
+function resolvePreferredFactCheckModel(value) {
+    const candidate = normalizeWhitespace(value || '');
+    const availableIds = getAvailableModelIds();
+
+    if (candidate && availableIds.indexOf(candidate) !== -1) {
+        return candidate;
+    }
+    if (availableIds.indexOf('gpt-4o') !== -1) {
+        return 'gpt-4o';
+    }
+
+    return resolveDefaultToolsModel(availableToolsModels, preferredToolsModel || defaultToolsModel || 'gpt-4o');
 }
 
 async function refreshAvailableModelsForPanel(forceRefresh) {
@@ -399,14 +420,16 @@ async function refreshAvailableModelsForPanel(forceRefresh) {
     }
 }
 
-safeStorageSyncGet(['defaultResponseLanguage', 'defaultVerifyFactLanguage', 'defaultQuickReplyPreset', 'defaultQuickReplyCustomInstruction', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel'], function (data) {
+safeStorageSyncGet(['defaultResponseLanguage', 'defaultVerifyFactLanguage', 'preferredFactCheckModel', 'defaultQuickReplyPreset', 'defaultQuickReplyCustomInstruction', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel'], function (data) {
     defaultResponseLanguage = normalizeResponseLanguageChoice(data.defaultResponseLanguage || 'auto');
     defaultVerifyFactLanguage = normalizeResponseLanguageChoice(data.defaultVerifyFactLanguage || defaultResponseLanguage || 'auto');
+    preferredFactCheckModel = resolvePreferredFactCheckModel(data.preferredFactCheckModel || 'gpt-4o');
     defaultQuickReplyPreset = normalizeQuickReplyPresetChoice(data.defaultQuickReplyPreset || 'default');
     defaultQuickReplyCustomInstruction = normalizeWhitespace(data.defaultQuickReplyCustomInstruction || '');
     availableToolsModels = normalizeAvailableToolsModels(data.availableToolsModels || availableToolsModels);
     defaultToolsModel = resolveDefaultToolsModel(availableToolsModels, data.defaultToolsModel || defaultToolsModel);
     preferredToolsModel = resolveDefaultToolsModel(availableToolsModels, data.preferredToolsModel || defaultToolsModel);
+    preferredFactCheckModel = resolvePreferredFactCheckModel(data.preferredFactCheckModel || preferredFactCheckModel);
 });
 
 safeAddStorageChangeListener(function (changes, areaName) {
@@ -420,6 +443,9 @@ safeAddStorageChangeListener(function (changes, areaName) {
     if (changes.defaultVerifyFactLanguage) {
         defaultVerifyFactLanguage = normalizeResponseLanguageChoice(changes.defaultVerifyFactLanguage.newValue || defaultResponseLanguage || 'auto');
     }
+    if (changes.preferredFactCheckModel) {
+        preferredFactCheckModel = resolvePreferredFactCheckModel(changes.preferredFactCheckModel.newValue || 'gpt-4o');
+    }
     if (changes.defaultQuickReplyPreset) {
         defaultQuickReplyPreset = normalizeQuickReplyPresetChoice(changes.defaultQuickReplyPreset.newValue || 'default');
     }
@@ -428,10 +454,12 @@ safeAddStorageChangeListener(function (changes, areaName) {
     }
     if (changes.availableToolsModels) {
         availableToolsModels = normalizeAvailableToolsModels(changes.availableToolsModels.newValue || availableToolsModels);
+        preferredFactCheckModel = resolvePreferredFactCheckModel(preferredFactCheckModel);
         populatePanelModelOptions(preferredToolsModel || defaultToolsModel);
     }
     if (changes.defaultToolsModel) {
         defaultToolsModel = resolveDefaultToolsModel(availableToolsModels, changes.defaultToolsModel.newValue || defaultToolsModel);
+        preferredFactCheckModel = resolvePreferredFactCheckModel(preferredFactCheckModel);
         populatePanelModelOptions(preferredToolsModel || defaultToolsModel);
     }
     if (changes.preferredToolsModel) {
@@ -1897,7 +1925,7 @@ function getActivePlatformDefinition() {
     }
 }
 
-function getComposerActionButtonAnchorPosition() {
+function getComposerActionButtonAnchorPosition(button, preferredPlacement) {
     if (!activeComposer || !document.contains(activeComposer)) {
         return null;
     }
@@ -1907,10 +1935,81 @@ function getComposerActionButtonAnchorPosition() {
         return null;
     }
 
+    const gap = 8;
+    const buttonRect = getButtonRectForPlacement(button, 124, 32);
+    const preferred = String(preferredPlacement || 'above').toLowerCase();
+    const alignedRightLeft = Math.max(12, Math.min(rect.right - buttonRect.width, window.innerWidth - buttonRect.width - 12));
+    const alignedLeftLeft = Math.max(12, Math.min(rect.left, window.innerWidth - buttonRect.width - 12));
+    const aboveTop = rect.top - buttonRect.height - gap;
+    const belowTop = rect.bottom + gap;
+
+    const candidates = [];
+    if (preferred === 'below') {
+        candidates.push({ left: alignedRightLeft, top: belowTop });
+        candidates.push({ left: alignedLeftLeft, top: belowTop });
+        candidates.push({ left: alignedRightLeft, top: aboveTop });
+        candidates.push({ left: alignedLeftLeft, top: aboveTop });
+    } else {
+        candidates.push({ left: alignedRightLeft, top: aboveTop });
+        candidates.push({ left: alignedLeftLeft, top: aboveTop });
+        candidates.push({ left: alignedRightLeft, top: belowTop });
+        candidates.push({ left: alignedLeftLeft, top: belowTop });
+    }
+
+    for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = clampFixedPosition(candidates[index].left, candidates[index].top, button, 12);
+        const avoidsVerticalOverlap = candidate.top + buttonRect.height <= rect.top - gap || candidate.top >= rect.bottom + gap;
+        const avoidsHorizontalOverlap = candidate.left + buttonRect.width <= rect.left - gap || candidate.left >= rect.right + gap;
+        if (avoidsVerticalOverlap || avoidsHorizontalOverlap) {
+            return candidate;
+        }
+    }
+
     return {
-        left: Math.max(12, Math.min(rect.right - 124, window.innerWidth - 160)),
-        top: Math.max(12, rect.top - 12),
+        left: alignedRightLeft,
+        top: Math.max(12, aboveTop),
     };
+}
+
+function getQuickResponseActionButtonAnchorPosition() {
+    const composerButton = ensureComposerActionButton();
+    const quickButton = ensureQuickResponseActionButton();
+    const primaryAnchor = getComposerActionButtonAnchorPosition(composerButton, 'above');
+    if (!primaryAnchor) {
+        return null;
+    }
+
+    const composerRect = activeComposer && activeComposer.getBoundingClientRect ? activeComposer.getBoundingClientRect() : null;
+    const primaryRect = getButtonRectForPlacement(composerButton, 124, 32);
+    const quickRect = getButtonRectForPlacement(quickButton, 116, 32);
+    const gap = 8;
+    const candidates = [
+        { left: primaryAnchor.left - quickRect.width - gap, top: primaryAnchor.top },
+        { left: primaryAnchor.left + primaryRect.width + gap, top: primaryAnchor.top },
+        { left: primaryAnchor.left, top: primaryAnchor.top + primaryRect.height + gap },
+        { left: primaryAnchor.left, top: primaryAnchor.top - quickRect.height - gap },
+        getComposerActionButtonAnchorPosition(quickButton, 'below'),
+    ].filter(Boolean);
+
+    for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = clampFixedPosition(candidates[index].left, candidates[index].top, quickButton, 12);
+        if (!composerRect) {
+            return candidate;
+        }
+
+        const avoidsVerticalOverlap = candidate.top + quickRect.height <= composerRect.top - gap || candidate.top >= composerRect.bottom + gap;
+        const avoidsHorizontalOverlap = candidate.left + quickRect.width <= composerRect.left - gap || candidate.left >= composerRect.right + gap;
+        const avoidsPrimaryOverlap = candidate.left + quickRect.width <= primaryAnchor.left - gap
+            || candidate.left >= primaryAnchor.left + primaryRect.width + gap
+            || candidate.top + quickRect.height <= primaryAnchor.top - gap
+            || candidate.top >= primaryAnchor.top + primaryRect.height + gap;
+
+        if ((avoidsVerticalOverlap || avoidsHorizontalOverlap) && avoidsPrimaryOverlap) {
+            return candidate;
+        }
+    }
+
+    return clampFixedPosition(primaryAnchor.left + primaryRect.width + gap, primaryAnchor.top, quickButton, 12);
 }
 
 function clampFixedPosition(left, top, element, minMargin) {
@@ -1959,7 +2058,7 @@ function enableComposerActionButtonDragging(button) {
             offsetX: event.clientX - rect.left,
             offsetY: event.clientY - rect.top,
             dragging: false,
-            anchorPosition: getComposerActionButtonAnchorPosition() || {left: rect.left, top: rect.top},
+            anchorPosition: getComposerActionButtonAnchorPosition(button, 'above') || {left: rect.left, top: rect.top},
         };
 
         if (typeof button.setPointerCapture === 'function') {
@@ -2031,7 +2130,7 @@ function enableComposerActionButtonDragging(button) {
 
         if (composerActionButtonDragState.dragging) {
             const rect = composerActionButton.getBoundingClientRect();
-            const anchorPosition = getComposerActionButtonAnchorPosition() || composerActionButtonDragState.anchorPosition || {left: rect.left, top: rect.top};
+            const anchorPosition = getComposerActionButtonAnchorPosition(composerActionButton, 'above') || composerActionButtonDragState.anchorPosition || {left: rect.left, top: rect.top};
             composerActionButtonDragOffset = {
                 left: Math.round(rect.left - anchorPosition.left),
                 top: Math.round(rect.top - anchorPosition.top),
@@ -2082,7 +2181,7 @@ function enableQuickResponseActionButtonDragging(button) {
             offsetX: event.clientX - rect.left,
             offsetY: event.clientY - rect.top,
             dragging: false,
-            anchorPosition: getComposerActionButtonAnchorPosition() || {left: rect.left, top: rect.top},
+            anchorPosition: getQuickResponseActionButtonAnchorPosition() || {left: rect.left, top: rect.top},
         };
 
         if (typeof button.setPointerCapture === 'function') {
@@ -2152,7 +2251,7 @@ function enableQuickResponseActionButtonDragging(button) {
 
         if (quickResponseActionButtonDragState.dragging) {
             const rect = quickResponseActionButton.getBoundingClientRect();
-            const anchorPosition = getComposerActionButtonAnchorPosition() || quickResponseActionButtonDragState.anchorPosition || {left: rect.left, top: rect.top};
+            const anchorPosition = getQuickResponseActionButtonAnchorPosition() || quickResponseActionButtonDragState.anchorPosition || {left: rect.left, top: rect.top};
             quickResponseActionButtonDragOffset = {
                 left: Math.round(rect.left - anchorPosition.left),
                 top: Math.round(rect.top - anchorPosition.top),
@@ -3400,7 +3499,7 @@ function positionComposerActionButton() {
         return;
     }
 
-    const anchor = getComposerActionButtonAnchorPosition();
+    const anchor = getComposerActionButtonAnchorPosition(button, 'above');
     if (!anchor) {
         button.style.display = 'none';
         return;
@@ -3424,23 +3523,18 @@ function positionQuickResponseActionButton() {
         return;
     }
 
-    const anchor = getComposerActionButtonAnchorPosition();
+    const anchor = getQuickResponseActionButtonAnchorPosition();
     if (!anchor) {
         button.style.display = 'none';
         return;
     }
 
-    const composerButton = ensureComposerActionButton();
-    const composerButtonRect = getButtonRectForPlacement(composerButton, 124, 32);
-    const buttonRect = getButtonRectForPlacement(button, 116, 32);
     let left = anchor.left;
-    let top = anchor.top + composerButtonRect.height + 6;
+    let top = anchor.top;
 
     if (quickResponseActionButtonDragOffset) {
         left = anchor.left + quickResponseActionButtonDragOffset.left;
         top = anchor.top + quickResponseActionButtonDragOffset.top;
-    } else if (top + buttonRect.height > window.innerHeight - 12) {
-        top = anchor.top - buttonRect.height - 6;
     }
 
     button.style.display = 'block';
@@ -5439,9 +5533,7 @@ function resetMarksAndContext() {
 }
 
 function getPreferredFactCheckModel() {
-    const modelField = panel ? panel.querySelector('#sgpt-model') : null;
-    const selected = modelField ? normalizeWhitespace(modelField.value || '') : '';
-    return selected || preferredToolsModel || defaultToolsModel || 'gpt-4o-mini';
+    return resolvePreferredFactCheckModel(preferredFactCheckModel || 'gpt-4o');
 }
 
 function getPreferredResponseLanguage() {

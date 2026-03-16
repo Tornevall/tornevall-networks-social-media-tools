@@ -14,6 +14,7 @@ const FALLBACK_AVAILABLE_MODELS = [
     {id: 'o4-mini', label: 'o4-mini'},
     {id: 'o3-mini', label: 'o3-mini'},
 ];
+const DEFAULT_FACT_CHECK_MODEL = 'gpt-4o';
 
 function getToolsBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
@@ -417,6 +418,51 @@ async function callToolsSocialGpt(apiToken, baseUrl, payload) {
     };
 }
 
+function hasMeaningfulAiResponse(result) {
+    if (!result || !result.ok) {
+        return false;
+    }
+
+    var response = result.response ? String(result.response).trim() : '';
+    return !!response && response !== 'No response from Tools API.';
+}
+
+async function executeToolsRequestWithFactFallback(apiToken, baseUrl, payload) {
+    var primaryResult = await callToolsSocialGpt(apiToken, baseUrl, payload);
+    var requestedModel = payload && payload.model ? String(payload.model).trim() : '';
+    var shouldRetry = payload
+        && payload.request_mode === 'verify'
+        && requestedModel
+        && requestedModel !== DEFAULT_FACT_CHECK_MODEL
+        && !hasMeaningfulAiResponse(primaryResult);
+
+    if (!shouldRetry) {
+        return primaryResult;
+    }
+
+    await appendDebugLog({
+        level: 'warning',
+        category: 'ai-request',
+        message: 'Fact-check returned an empty or failed response. Retrying once with gpt-4o fallback.',
+        meta: {
+            previous_model: requestedModel,
+            fallback_model: DEFAULT_FACT_CHECK_MODEL,
+            request_mode: payload.request_mode,
+        }
+    });
+
+    var retryPayload = Object.assign({}, payload, {
+        model: DEFAULT_FACT_CHECK_MODEL,
+    });
+    var retryResult = await callToolsSocialGpt(apiToken, baseUrl, retryPayload);
+
+    if (retryResult && retryResult.ok) {
+        retryResult.response = String(retryResult.response || '').trim();
+    }
+
+    return retryResult;
+}
+
 async function callFacebookAdminIngest(apiToken, baseUrl, payload) {
     var entries = payload && Array.isArray(payload.entries) ? payload.entries : [];
     await appendDebugLog({
@@ -579,7 +625,7 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
 
     if (req.type === 'GPT_REQUEST') {
         var requestTabId = sender.tab.id;
-        chrome.storage.sync.get(['toolsApiToken', 'devMode', 'defaultToolsModel'], async function (data) {
+        chrome.storage.sync.get(['toolsApiToken', 'devMode', 'defaultToolsModel', 'preferredFactCheckModel'], async function (data) {
             if (!data.toolsApiToken) {
                 var missingTokenMessage = 'Missing Tools API token. Register at tools.tornevall.net, generate a personal bearer token there, and save it in the extension popup.';
                 setAuthFailureIndicator(missingTokenMessage);
@@ -602,13 +648,13 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
                 custom_mood: req.customMood ? req.customMood.trim() : '',
                 response_length: req.responseLength || 'auto',
                 previous_reply: req.previousReply || '',
-                model: req.model || data.defaultToolsModel || 'gpt-4o-mini',
+                model: req.model || (req.requestMode === 'verify' ? (data.preferredFactCheckModel || DEFAULT_FACT_CHECK_MODEL) : '') || data.defaultToolsModel || 'gpt-4o-mini',
                 responder_name_override: req.responderName || '',
                 request_mode: req.requestMode || 'reply',
                 response_language: req.responseLanguage || 'auto',
             };
 
-            var toolsResponse = await callToolsSocialGpt(data.toolsApiToken, baseUrl, payload);
+            var toolsResponse = await executeToolsRequestWithFactFallback(data.toolsApiToken, baseUrl, payload);
             var output = toolsResponse.ok ? toolsResponse.response : toolsResponse.error;
 
             chrome.tabs.sendMessage(requestTabId, {type: 'GPT_RESPONSE', payload: output, ok: toolsResponse.ok});
