@@ -1,0 +1,57 @@
+name: Release Extension
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build extension ZIP
+        run: |
+          zip -r tornevall-networks-social-media-tools.zip . \
+            --exclude "*.git*" \
+            --exclude ".github/*" \
+            --exclude ".idea/*" \
+            --exclude "*.DS_Store"
+
+      - name: Update updates.xml
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          CODEBASE="https://github.com/Tornevall/tornevall-networks-social-media-tools/releases/download/${GITHUB_REF_NAME}/tornevall-networks-social-media-tools.zip"
+          sed -i \
+            -e "s|codebase='[^']*'|codebase='${CODEBASE}'|" \
+            -e "s|version='[^']*'|version='${VERSION}'|" \
+            updates.xml
+
+      - name: Commit updated updates.xml
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add updates.xml
+          git diff --cached --quiet || git commit -m "chore: bump updates.xml to ${{ steps.version.outputs.VERSION }}"
+          git push origin HEAD:main
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "v${{ steps.version.outputs.VERSION }}"
+          generate_release_notes: true
+          files: tornevall-networks-social-media-tools.zip
+
