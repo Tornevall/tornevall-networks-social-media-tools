@@ -37,21 +37,18 @@ jobs:
             VERSION="${TAG#v}"
           fi
           echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "TAG=${TAG}"         >> "$GITHUB_OUTPUT"
+          echo "TAG=${TAG}" >> "$GITHUB_OUTPUT"
 
-      - name: Build extension ZIP
+      - name: Build Store + Direct ZIPs
         run: |
-          zip -r tornevall-networks-social-media-tools.zip . \
-            --exclude "*.git*" \
-            --exclude ".github/*" \
-            --exclude ".idea/*" \
-            --exclude "*.DS_Store"
+          chmod +x scripts/deploy.sh
+          scripts/deploy.sh
 
       - name: Update updates.xml
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           TAG="${{ steps.version.outputs.TAG }}"
-          CODEBASE="https://github.com/Tornevall/tornevall-networks-social-media-tools/releases/download/${TAG}/tornevall-networks-social-media-tools.zip"
+          CODEBASE="https://github.com/Tornevall/tornevall-networks-social-media-tools/releases/download/${TAG}/tornevall-networks-social-media-tools-direct.zip"
           sed -i \
             -e "s|codebase='[^']*'|codebase='${CODEBASE}'|" \
             -e "s|version='[^']*'|version='${VERSION}'|" \
@@ -59,7 +56,7 @@ jobs:
 
       - name: Commit updated updates.xml
         run: |
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add updates.xml
           git diff --cached --quiet || git commit -m "chore: bump updates.xml to ${{ steps.version.outputs.VERSION }}"
@@ -71,4 +68,6 @@ jobs:
           tag_name: ${{ steps.version.outputs.TAG }}
           name: "${{ steps.version.outputs.TAG }}"
           generate_release_notes: true
-          files: tornevall-networks-social-media-tools.zip
+          files: |
+            dist/tornevall-networks-social-media-tools-store.zip
+            dist/tornevall-networks-social-media-tools-direct.zip
