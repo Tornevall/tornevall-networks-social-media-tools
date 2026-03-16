@@ -18,6 +18,8 @@ let factResultBoxDragState = null;
 let factResultBoxManualPosition = null;
 let composerActionButtonDragState = null;
 let composerActionButtonDragOffset = null;
+let quickResponseActionButtonDragState = null;
+let quickResponseActionButtonDragOffset = null;
 let composerActionButtonDragListenersBound = false;
 let frontResponserName = '';
 let defaultResponseLanguage = 'auto';
@@ -2015,7 +2017,6 @@ function enableComposerActionButtonDragging(button) {
             event.clientX - composerActionButtonDragState.offsetX,
             event.clientY - composerActionButtonDragState.offsetY
         );
-        positionQuickResponseActionButton();
     });
 
     function finishComposerActionButtonDrag(event) {
@@ -2055,11 +2056,131 @@ function enableComposerActionButtonDragging(button) {
         composerActionButton.style.cursor = 'grab';
         composerActionButtonDragState = null;
         positionComposerActionButton();
-        positionQuickResponseActionButton();
     }
 
     button.addEventListener('pointerup', finishComposerActionButtonDrag);
     button.addEventListener('pointercancel', finishComposerActionButtonDrag);
+}
+
+function enableQuickResponseActionButtonDragging(button) {
+    if (!button || button.dataset.dragReady === 'true') {
+        return;
+    }
+
+    button.dataset.dragReady = 'true';
+
+    button.addEventListener('pointerdown', function (event) {
+        if (event.button !== 0 || !button.isConnected) {
+            return;
+        }
+
+        const rect = button.getBoundingClientRect();
+        quickResponseActionButtonDragState = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+            dragging: false,
+            anchorPosition: getComposerActionButtonAnchorPosition() || {left: rect.left, top: rect.top},
+        };
+
+        if (typeof button.setPointerCapture === 'function') {
+            try {
+                button.setPointerCapture(event.pointerId);
+            } catch (error) {
+            }
+        }
+    });
+
+    button.addEventListener('dblclick', function (event) {
+        quickResponseActionButtonDragOffset = null;
+        button.dataset.dragSuppressClick = 'true';
+        window.setTimeout(function () {
+            if (button) {
+                button.dataset.dragSuppressClick = 'false';
+            }
+        }, 120);
+        positionQuickResponseActionButton();
+        event.preventDefault();
+    });
+
+    button.addEventListener('keydown', function (event) {
+        if (event.key !== 'Escape') {
+            return;
+        }
+
+        quickResponseActionButtonDragOffset = null;
+        button.dataset.dragSuppressClick = 'true';
+        window.setTimeout(function () {
+            if (button) {
+                button.dataset.dragSuppressClick = 'false';
+            }
+        }, 120);
+        positionQuickResponseActionButton();
+        event.preventDefault();
+    });
+
+    button.addEventListener('pointermove', function (event) {
+        if (!quickResponseActionButtonDragState || !quickResponseActionButton || quickResponseActionButtonDragState.pointerId !== event.pointerId) {
+            return;
+        }
+
+        const distance = Math.max(Math.abs(event.clientX - quickResponseActionButtonDragState.startX), Math.abs(event.clientY - quickResponseActionButtonDragState.startY));
+        if (!quickResponseActionButtonDragState.dragging && distance < 4) {
+            return;
+        }
+
+        quickResponseActionButtonDragState.dragging = true;
+        quickResponseActionButton.style.cursor = 'grabbing';
+        setComposerActionButtonCoordinates(
+            quickResponseActionButton,
+            event.clientX - quickResponseActionButtonDragState.offsetX,
+            event.clientY - quickResponseActionButtonDragState.offsetY
+        );
+    });
+
+    function finishQuickResponseActionButtonDrag(event) {
+        if (!quickResponseActionButtonDragState || !quickResponseActionButton) {
+            quickResponseActionButtonDragState = null;
+            return;
+        }
+
+        if (event && quickResponseActionButtonDragState.pointerId != null && quickResponseActionButtonDragState.pointerId !== event.pointerId) {
+            return;
+        }
+
+        if (quickResponseActionButtonDragState.dragging) {
+            const rect = quickResponseActionButton.getBoundingClientRect();
+            const anchorPosition = getComposerActionButtonAnchorPosition() || quickResponseActionButtonDragState.anchorPosition || {left: rect.left, top: rect.top};
+            quickResponseActionButtonDragOffset = {
+                left: Math.round(rect.left - anchorPosition.left),
+                top: Math.round(rect.top - anchorPosition.top),
+            };
+            quickResponseActionButton.dataset.dragSuppressClick = 'true';
+            window.setTimeout(function () {
+                if (quickResponseActionButton) {
+                    quickResponseActionButton.dataset.dragSuppressClick = 'false';
+                }
+            }, 120);
+        }
+
+        if (event && typeof quickResponseActionButton.releasePointerCapture === 'function') {
+            try {
+                if (quickResponseActionButton.hasPointerCapture && quickResponseActionButton.hasPointerCapture(event.pointerId)) {
+                    quickResponseActionButton.releasePointerCapture(event.pointerId);
+                }
+            } catch (error) {
+            }
+        }
+
+        quickResponseActionButton.style.cursor = 'grab';
+        quickResponseActionButtonDragState = null;
+        positionQuickResponseActionButton();
+    }
+
+    button.addEventListener('pointerup', finishQuickResponseActionButtonDrag);
+    button.addEventListener('pointercancel', finishQuickResponseActionButtonDrag);
 }
 
 function getVerifyHoverButtonAnchorPosition(target, button) {
@@ -2239,23 +2360,26 @@ function isComposerContentEditable(node) {
     return !!(node && (node.isContentEditable || (node.getAttribute && /^(|true)$/i.test(node.getAttribute('contenteditable') || ''))));
 }
 
-function dispatchComposerInputEvents(node, insertedText, inputType) {
+function dispatchComposerInputEvents(node, insertedText, inputType, options) {
     if (!node || !node.dispatchEvent) {
         return;
     }
 
+    const settings = options || {};
     const eventInputType = inputType || 'insertText';
 
-    try {
-        if (typeof InputEvent === 'function') {
-            node.dispatchEvent(new InputEvent('beforeinput', {
-                bubbles: true,
-                cancelable: true,
-                data: insertedText,
-                inputType: eventInputType,
-            }));
+    if (settings.emitBeforeInput) {
+        try {
+            if (typeof InputEvent === 'function') {
+                node.dispatchEvent(new InputEvent('beforeinput', {
+                    bubbles: true,
+                    cancelable: true,
+                    data: insertedText,
+                    inputType: eventInputType,
+                }));
+            }
+        } catch (error) {
         }
-    } catch (error) {
     }
 
     try {
@@ -2273,7 +2397,9 @@ function dispatchComposerInputEvents(node, insertedText, inputType) {
         node.dispatchEvent(new Event('input', {bubbles: true, cancelable: true}));
     }
 
-    node.dispatchEvent(new Event('change', {bubbles: true}));
+    if (settings.emitChange) {
+        node.dispatchEvent(new Event('change', {bubbles: true}));
+    }
 }
 
 function setNativeTextInputValue(node, value) {
@@ -2388,7 +2514,9 @@ function replaceContentEditableText(node, value) {
     }
 
     moveComposerCaretToEnd(node);
-    dispatchComposerInputEvents(node, value, 'insertFromPaste');
+    if (!inserted) {
+        dispatchComposerInputEvents(node, value, 'insertFromPaste');
+    }
     return {ok: true};
 }
 
@@ -2970,9 +3098,13 @@ function ensureQuickResponseActionButton() {
         event.preventDefault();
     });
     quickResponseActionButton.addEventListener('click', function () {
+        if (quickResponseActionButton.dataset.dragSuppressClick === 'true') {
+            return;
+        }
         sendQuickReply();
     });
     document.body.appendChild(quickResponseActionButton);
+    enableQuickResponseActionButtonDragging(quickResponseActionButton);
 
     return quickResponseActionButton;
 }
@@ -3283,24 +3415,32 @@ function positionComposerActionButton() {
 
 function positionQuickResponseActionButton() {
     const button = ensureQuickResponseActionButton();
+    if (quickResponseActionButtonDragState && quickResponseActionButtonDragState.dragging) {
+        return;
+    }
+
     if (panel || !activeComposer || !document.contains(activeComposer)) {
         button.style.display = 'none';
         return;
     }
 
-    const composerButton = ensureComposerActionButton();
-    if (!composerButton || composerButton.style.display === 'none') {
+    const anchor = getComposerActionButtonAnchorPosition();
+    if (!anchor) {
         button.style.display = 'none';
         return;
     }
 
-    const composerRect = composerButton.getBoundingClientRect();
+    const composerButton = ensureComposerActionButton();
+    const composerButtonRect = getButtonRectForPlacement(composerButton, 124, 32);
     const buttonRect = getButtonRectForPlacement(button, 116, 32);
-    let left = composerRect.left;
-    let top = composerRect.bottom + 6;
+    let left = anchor.left;
+    let top = anchor.top + composerButtonRect.height + 6;
 
-    if (top + buttonRect.height > window.innerHeight - 12) {
-        top = composerRect.top - buttonRect.height - 6;
+    if (quickResponseActionButtonDragOffset) {
+        left = anchor.left + quickResponseActionButtonDragOffset.left;
+        top = anchor.top + quickResponseActionButtonDragOffset.top;
+    } else if (top + buttonRect.height > window.innerHeight - 12) {
+        top = anchor.top - buttonRect.height - 6;
     }
 
     button.style.display = 'block';

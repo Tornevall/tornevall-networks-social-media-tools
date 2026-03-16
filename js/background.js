@@ -5,6 +5,7 @@ const MODELS_PATH = '/api/social-media-tools/extension/models';
 const FACEBOOK_INGEST_PATH = '/api/social-media-tools/facebook/ingest';
 const DEBUG_LOG_KEY = 'tn_networks_debug_logs';
 const MAX_DEBUG_LOGS = 200;
+const RETRYABLE_REDIRECT_STATUSES = [301, 302, 303, 307, 308];
 const FALLBACK_AVAILABLE_MODELS = [
     {id: 'gpt-4o-mini', label: 'gpt-4o-mini'},
     {id: 'gpt-4o', label: 'gpt-4o'},
@@ -16,6 +17,21 @@ const FALLBACK_AVAILABLE_MODELS = [
 
 function getToolsBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
+}
+
+function getRetryBaseUrls(baseUrl) {
+    var normalized = String(baseUrl || '').trim();
+    var candidates = normalized ? [normalized] : [];
+
+    if (normalized === PROD_BASE_URL && candidates.indexOf(DEV_BASE_URL) === -1) {
+        candidates.push(DEV_BASE_URL);
+    }
+
+    return candidates;
+}
+
+function isRetryableRedirectStatus(status) {
+    return RETRYABLE_REDIRECT_STATUSES.indexOf(status) !== -1;
 }
 
 function setTabMarking(tabId, val) {
@@ -217,61 +233,74 @@ function readCachedAvailableModels() {
 }
 
 async function fetchAvailableModels(apiToken, baseUrl, forceRefresh) {
-    var url = baseUrl + MODELS_PATH + (forceRefresh ? '?refresh=1' : '');
+    var baseUrls = getRetryBaseUrls(baseUrl);
+    var lastFailure = null;
 
-    try {
-        var res = await fetch(url, {
-            method: 'GET',
-            headers: {
-                'Accept': 'application/json',
-                'Authorization': 'Bearer ' + apiToken,
-            },
-        });
+    for (var i = 0; i < baseUrls.length; i += 1) {
+        var currentBaseUrl = baseUrls[i];
+        var url = currentBaseUrl + MODELS_PATH + (forceRefresh ? '?refresh=1' : '');
 
-        var data = await res.json().catch(function () {
-            return {};
-        });
+        try {
+            var res = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Accept': 'application/json',
+                    'Authorization': 'Bearer ' + apiToken,
+                },
+            });
 
-        if (!res.ok || !data.ok) {
-            var cachedCatalog = await readCachedAvailableModels();
-            return {
-                ok: false,
-                error: normalizeToolsApiError(res.status, data),
-                status: res.status,
-                models: cachedCatalog.models,
-                defaultModel: cachedCatalog.defaultModel,
-                source: cachedCatalog.source,
-                fetchedAt: cachedCatalog.fetchedAt,
-                warning: cachedCatalog.warning || 'Using cached/fallback model list.',
+            var data = await res.json().catch(function () {
+                return {};
+            });
+
+            if ((!res.ok || !data.ok) && isRetryableRedirectStatus(res.status) && i < baseUrls.length - 1) {
+                lastFailure = {status: res.status, data: data};
+                continue;
+            }
+
+            if (!res.ok || !data.ok) {
+                var cachedCatalog = await readCachedAvailableModels();
+                return {
+                    ok: false,
+                    error: normalizeToolsApiError(res.status, data),
+                    status: res.status,
+                    models: cachedCatalog.models,
+                    defaultModel: cachedCatalog.defaultModel,
+                    source: cachedCatalog.source,
+                    fetchedAt: cachedCatalog.fetchedAt,
+                    warning: cachedCatalog.warning || 'Using cached/fallback model list.',
+                };
+            }
+
+            var normalized = normalizeModelCatalog(data.models || [], data.default_model || '');
+            var catalog = {
+                ok: true,
+                models: normalized.models,
+                defaultModel: normalized.defaultModel,
+                source: data.source || 'provider',
+                fetchedAt: data.fetched_at || new Date().toISOString(),
+                warning: data.warning || '',
             };
+
+            await cacheAvailableModels(catalog);
+
+            return catalog;
+        } catch (e) {
+            lastFailure = {status: 0, data: {message: e && e.message ? e.message : 'Could not fetch available models from Tools.'}};
         }
-
-        var normalized = normalizeModelCatalog(data.models || [], data.default_model || '');
-        var catalog = {
-            ok: true,
-            models: normalized.models,
-            defaultModel: normalized.defaultModel,
-            source: data.source || 'provider',
-            fetchedAt: data.fetched_at || new Date().toISOString(),
-            warning: data.warning || '',
-        };
-
-        await cacheAvailableModels(catalog);
-
-        return catalog;
-    } catch (e) {
-        var cachedOnError = await readCachedAvailableModels();
-        return {
-            ok: false,
-            error: e && e.message ? e.message : 'Could not fetch available models from Tools.',
-            status: 0,
-            models: cachedOnError.models,
-            defaultModel: cachedOnError.defaultModel,
-            source: cachedOnError.source,
-            fetchedAt: cachedOnError.fetchedAt,
-            warning: cachedOnError.warning || 'Using cached/fallback model list.',
-        };
     }
+
+    var cachedOnError = await readCachedAvailableModels();
+    return {
+        ok: false,
+        error: normalizeToolsApiError(lastFailure && typeof lastFailure.status === 'number' ? lastFailure.status : 0, lastFailure ? lastFailure.data : {}),
+        status: lastFailure && typeof lastFailure.status === 'number' ? lastFailure.status : 0,
+        models: cachedOnError.models,
+        defaultModel: cachedOnError.defaultModel,
+        source: cachedOnError.source,
+        fetchedAt: cachedOnError.fetchedAt,
+        warning: cachedOnError.warning || 'Using cached/fallback model list.',
+    };
 }
 
 chrome.runtime.onInstalled.addListener(function () {
@@ -297,57 +326,79 @@ async function callToolsSocialGpt(apiToken, baseUrl, payload) {
         }
     });
 
+    var baseUrls = getRetryBaseUrls(baseUrl);
+    var lastFailure = null;
+
     try {
-        var res = await fetch(baseUrl + SOCIALGPT_PATH, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + apiToken,
-            },
-            body: JSON.stringify(payload)
-        });
+        for (var i = 0; i < baseUrls.length; i += 1) {
+            var currentBaseUrl = baseUrls[i];
+            var res = await fetch(currentBaseUrl + SOCIALGPT_PATH, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + apiToken,
+                },
+                body: JSON.stringify(payload)
+            });
 
-        var data = await res.json().catch(function () {
-            return {};
-        });
+            var data = await res.json().catch(function () {
+                return {};
+            });
 
-        if (!res.ok || !data.ok) {
-            var errorMessage = normalizeToolsApiError(res.status, data);
+            if ((!res.ok || !data.ok) && isRetryableRedirectStatus(res.status) && i < baseUrls.length - 1) {
+                lastFailure = {status: res.status, data: data, baseUrl: currentBaseUrl};
+                await appendDebugLog({
+                    level: 'warning',
+                    category: 'ai-request',
+                    message: 'Tools AI request was redirected. Retrying on fallback host.',
+                    meta: {
+                        baseUrl: currentBaseUrl,
+                        fallbackBaseUrl: baseUrls[i + 1],
+                        status: res.status,
+                    }
+                });
+                continue;
+            }
+
+            if (!res.ok || !data.ok) {
+                var errorMessage = normalizeToolsApiError(res.status, data);
+                await appendDebugLog({
+                    level: 'error',
+                    category: 'ai-request',
+                    message: errorMessage,
+                    meta: {
+                        baseUrl: currentBaseUrl,
+                        status: res.status,
+                        data: data,
+                    }
+                });
+
+                if (isAuthFailureStatus(res.status, data)) {
+                    setAuthFailureIndicator(errorMessage);
+                }
+
+                return {ok: false, error: errorMessage, status: res.status};
+            }
+
+            clearAuthFailureIndicator();
             await appendDebugLog({
-                level: 'error',
-                category: 'ai-request',
-                message: errorMessage,
+                level: 'info',
+                category: 'ai-response',
+                message: 'Tools AI request succeeded.',
                 meta: {
-                    baseUrl: baseUrl,
-                    status: res.status,
-                    data: data,
+                    baseUrl: currentBaseUrl,
+                    model: data.model || payload.model,
+                    usage: data.usage || null,
                 }
             });
 
-            if (isAuthFailureStatus(res.status, data)) {
-                setAuthFailureIndicator(errorMessage);
-            }
-
-            return {ok: false, error: errorMessage, status: res.status};
+            return {
+                ok: true,
+                response: (data && data.response ? String(data.response).trim() : '') || 'No response from Tools API.',
+            };
         }
-
-        clearAuthFailureIndicator();
-        await appendDebugLog({
-            level: 'info',
-            category: 'ai-response',
-            message: 'Tools AI request succeeded.',
-            meta: {
-                baseUrl: baseUrl,
-                model: data.model || payload.model,
-                usage: data.usage || null,
-            }
-        });
-
-        return {
-            ok: true,
-            response: (data && data.response ? String(data.response).trim() : '') || 'No response from Tools API.',
-        };
     } catch (e) {
+        lastFailure = {status: 0, data: {message: e && e.message ? e.message : 'Error calling Tools API.'}, baseUrl: baseUrl};
         await appendDebugLog({
             level: 'error',
             category: 'ai-request',
@@ -357,8 +408,13 @@ async function callToolsSocialGpt(apiToken, baseUrl, payload) {
                 error: e && e.message ? e.message : String(e),
             }
         });
-        return {ok: false, error: 'Error calling Tools API.'};
     }
+
+    return {
+        ok: false,
+        error: normalizeToolsApiError(lastFailure && typeof lastFailure.status === 'number' ? lastFailure.status : 0, lastFailure ? lastFailure.data : {}),
+        status: lastFailure && typeof lastFailure.status === 'number' ? lastFailure.status : 0,
+    };
 }
 
 async function callFacebookAdminIngest(apiToken, baseUrl, payload) {
