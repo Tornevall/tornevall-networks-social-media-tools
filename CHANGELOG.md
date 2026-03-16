@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.6 - 2026-03-16
+
+### Added
+- Popup settings now autosave locally as you type/change values, and Tools-backed responder settings autosync automatically when a personal bearer token is present
+- A dedicated shared SoundCloud page bridge now owns SoundCloud status/capture forwarding, reducing some SoundCloud-specific weight inside the main content script
+
+### Changed
+- SoundCloud auto-ingest is now opt-in by default and must be enabled explicitly from the popup before supported insights captures are pushed into Tools
+- Several internal extension file names now use a more consistent kebab-case convention for shared helpers, the injected monitor, and the main content script entry
+
 ## 1.2.5 - 2026-03-15
 
 ### Added

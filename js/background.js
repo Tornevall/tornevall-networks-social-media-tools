@@ -1026,7 +1026,7 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
             var ingestResult = {attempted: false, ok: false, reason: 'unsupported_operation'};
 
             if (normalizedPayload) {
-                if (data.soundcloudAutoIngestEnabled === false) {
+                if (data.soundcloudAutoIngestEnabled !== true) {
                     ingestResult = {attempted: false, ok: false, reason: 'auto_ingest_disabled'};
                 } else if (!data.toolsApiToken) {
                     ingestResult = {attempted: false, ok: false, reason: 'missing_tools_token'};

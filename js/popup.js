@@ -16,6 +16,7 @@ const DEFAULT_VERIFY_FACT_LANGUAGE = 'auto';
 const DEFAULT_FACT_CHECK_MODEL = 'gpt-4o';
 const DEFAULT_QUICK_REPLY_PRESET = 'default';
 const DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION = '';
+const REMOTE_AUTOSAVE_DELAY_MS = 700;
 
 function getBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
@@ -311,7 +312,6 @@ document.addEventListener('DOMContentLoaded', function () {
     const openToolsDashboardLink = document.getElementById('openToolsDashboardLink');
     const openToolsDashboardLinkInline = document.getElementById('openToolsDashboardLinkInline');
     const status = document.getElementById('status');
-    const saveBtn = document.getElementById('saveKeyBtn');
     const testBtn = document.getElementById('testConnectionBtn');
     const resetBtn = document.getElementById('resetPromptBtn');
     const testQuestionInput = document.getElementById('testQuestion');
@@ -327,6 +327,11 @@ document.addEventListener('DOMContentLoaded', function () {
     const soundCloudStatusState = document.getElementById('soundCloudStatusState');
     const soundCloudStatusCounters = document.getElementById('soundCloudStatusCounters');
     const soundCloudRecentCaptureList = document.getElementById('soundCloudRecentCaptureList');
+    let popupReady = false;
+    let remoteAutosaveTimer = null;
+    let remoteSaveInFlight = false;
+    let remoteSaveQueued = false;
+    let queuedRemoteAutosaveOptions = null;
 
     function renderFacebookAdminStatus(result) {
         if (!facebookAdminStatusState || !facebookAdminStatusCounters || !facebookAdminReportableList || !facebookAdminLastSubmission) {
@@ -531,6 +536,156 @@ document.addEventListener('DOMContentLoaded', function () {
             preferredFactCheckModel: values.preferredFactCheckModel,
             defaultQuickReplyPreset: values.defaultQuickReplyPreset,
             defaultQuickReplyCustomInstruction: values.defaultQuickReplyCustomInstruction,
+        });
+    }
+
+    function buildLocalSyncPayload() {
+        return {
+            toolsApiToken: apiKeyInput.value.trim(),
+            devMode: devModeCheckbox.checked,
+            facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
+            pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
+            soundcloudAutoIngestEnabled: soundcloudAutoIngestCheckbox.checked,
+            enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
+            responderName: responderNameInput.value.trim(),
+            chatGptSystemPrompt: systemPromptInput.value.trim(),
+            autoDetectResponder: autoDetectCheckbox.checked,
+            defaultMood: DEFAULT_MOOD,
+            defaultCustomMood: '',
+            defaultResponseLanguage: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
+            defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
+            preferredFactCheckModel: factCheckModelSelect ? (factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL) : DEFAULT_FACT_CHECK_MODEL,
+            defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
+            defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
+        };
+    }
+
+    function persistLocalSettings(callback) {
+        chrome.storage.sync.set(buildLocalSyncPayload(), function () {
+            if (typeof callback === 'function') {
+                callback();
+            }
+        });
+    }
+
+    function buildRemoteSettingsPayload() {
+        return {
+            responder_name: responderNameInput.value.trim(),
+            persona_profile: systemPromptInput.value.trim(),
+            auto_detect_responder: autoDetectCheckbox.checked,
+            response_language: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
+            verify_fact_language: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
+        };
+    }
+
+    async function saveRemoteSettings(options) {
+        const config = options || {};
+        const token = apiKeyInput.value.trim();
+        const baseUrl = getBaseUrl(devModeCheckbox.checked);
+
+        persistLocalSettings();
+
+        if (!token) {
+            if (config.requireToken) {
+                setStatus(status, config.missingTokenMessage || 'Register at tools.tornevall.net and generate a personal bearer token there before syncing settings.', true);
+                return {ok: false, skipped: true, reason: 'missing_token'};
+            }
+
+            if (config.localOnlyMessage) {
+                setStatus(status, config.localOnlyMessage, false);
+            }
+
+            return {ok: true, skipped: true, reason: 'missing_token'};
+        }
+
+        if (remoteSaveInFlight) {
+            remoteSaveQueued = true;
+            queuedRemoteAutosaveOptions = config;
+            return {ok: true, queued: true};
+        }
+
+        remoteSaveInFlight = true;
+
+        const result = await apiRequest(baseUrl, token, SETTINGS_PATH, {
+            method: 'PUT',
+            body: buildRemoteSettingsPayload(),
+        });
+
+        if (!result.ok) {
+            remoteSaveInFlight = false;
+            setStatus(status, extractApiMessage(result.data, config.errorMessage || 'Could not save settings to Tools.'), true);
+            return {ok: false, data: result.data};
+        }
+
+        syncLocalCache({
+            responderName: responderNameInput.value.trim(),
+            systemPrompt: systemPromptInput.value.trim(),
+            autoDetectResponder: autoDetectCheckbox.checked,
+            defaultMood: DEFAULT_MOOD,
+            defaultCustomMood: '',
+            defaultResponseLanguage: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
+            defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
+            preferredFactCheckModel: factCheckModelSelect ? (factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL) : DEFAULT_FACT_CHECK_MODEL,
+            defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
+            defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
+        });
+
+        if (!config.suppressSuccessStatus) {
+            setStatus(status, config.successMessage || ('Settings autosaved to ' + baseUrl + '.'), false);
+        }
+
+        if (config.refreshDebugConsole && devModeCheckbox.checked) {
+            await refreshDebugConsole();
+        }
+
+        remoteSaveInFlight = false;
+
+        if (remoteSaveQueued) {
+            const queuedOptions = queuedRemoteAutosaveOptions || {};
+            remoteSaveQueued = false;
+            queuedRemoteAutosaveOptions = null;
+            return saveRemoteSettings(queuedOptions);
+        }
+
+        return {ok: true, data: result.data};
+    }
+
+    function scheduleRemoteAutosave(options) {
+        const config = Object.assign({
+            successMessage: 'Settings autosaved to ' + getBaseUrl(devModeCheckbox.checked) + '.',
+            localOnlyMessage: 'Saved locally. Add your personal bearer token to sync these settings to Tools.',
+        }, options || {});
+
+        persistLocalSettings();
+
+        if (!popupReady) {
+            return;
+        }
+
+        if (remoteAutosaveTimer) {
+            window.clearTimeout(remoteAutosaveTimer);
+        }
+
+        remoteAutosaveTimer = window.setTimeout(function () {
+            remoteAutosaveTimer = null;
+            saveRemoteSettings(config);
+        }, REMOTE_AUTOSAVE_DELAY_MS);
+    }
+
+    async function flushScheduledRemoteAutosave(options) {
+        if (remoteAutosaveTimer) {
+            window.clearTimeout(remoteAutosaveTimer);
+            remoteAutosaveTimer = null;
+        }
+
+        return saveRemoteSettings(options || {});
+    }
+
+    function scheduleLocalAutosave(message) {
+        persistLocalSettings(function () {
+            if (popupReady && message) {
+                setStatus(status, message, false);
+            }
         });
     }
 
@@ -757,7 +912,7 @@ document.addEventListener('DOMContentLoaded', function () {
         devModeCheckbox.checked = !!data.devMode;
         facebookAdminDebugCheckbox.checked = !!data.facebookAdminDebugEnabled;
         pageNetworkDebugCheckbox.checked = !!data.pageNetworkDebugEnabled;
-        soundcloudAutoIngestCheckbox.checked = data.soundcloudAutoIngestEnabled !== false;
+        soundcloudAutoIngestCheckbox.checked = data.soundcloudAutoIngestEnabled === true;
         enableUnsupportedComposeCheckbox.checked = !!data.enableUnsupportedCompose;
         renderEndpointNote();
         renderDebugConsoleVisibility();
@@ -770,12 +925,13 @@ document.addEventListener('DOMContentLoaded', function () {
 
         await refreshFacebookAdminStatus();
         await refreshSoundCloudStatus();
+        popupReady = true;
     });
 
     devModeCheckbox.addEventListener('change', function () {
         renderEndpointNote();
         renderDebugConsoleVisibility();
-        chrome.storage.sync.set({devMode: devModeCheckbox.checked}, async function () {
+        persistLocalSettings(async function () {
             setStatus(status, 'Environment changed to ' + getBaseUrl(devModeCheckbox.checked) + '.', false);
             if (apiKeyInput.value.trim()) {
                 await loadRemoteSettings();
@@ -786,102 +942,65 @@ document.addEventListener('DOMContentLoaded', function () {
     });
 
     facebookAdminDebugCheckbox.addEventListener('change', function () {
-        chrome.storage.sync.set({facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked}, function () {
-            setStatus(status, facebookAdminDebugCheckbox.checked
-                ? 'Facebook admin debug diagnostics enabled.'
-                : 'Facebook admin debug diagnostics disabled.', false);
-        });
+        scheduleLocalAutosave(facebookAdminDebugCheckbox.checked
+            ? 'Facebook admin debug diagnostics enabled.'
+            : 'Facebook admin debug diagnostics disabled.');
     });
 
     pageNetworkDebugCheckbox.addEventListener('change', function () {
-        chrome.storage.sync.set({pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked}, function () {
-            setStatus(status, pageNetworkDebugCheckbox.checked
-                ? 'In-page XHR debug overlay enabled on supported pages.'
-                : 'In-page XHR debug overlay disabled.', false);
-        });
+        scheduleLocalAutosave(pageNetworkDebugCheckbox.checked
+            ? 'In-page XHR debug overlay enabled on supported pages.'
+            : 'In-page XHR debug overlay disabled.');
     });
 
     soundcloudAutoIngestCheckbox.addEventListener('change', function () {
-        chrome.storage.sync.set({soundcloudAutoIngestEnabled: soundcloudAutoIngestCheckbox.checked}, function () {
-            setStatus(status, soundcloudAutoIngestCheckbox.checked
-                ? 'SoundCloud auto-ingest enabled.'
-                : 'SoundCloud auto-ingest disabled.', false);
-        });
+        scheduleLocalAutosave(soundcloudAutoIngestCheckbox.checked
+            ? 'SoundCloud auto-ingest enabled.'
+            : 'SoundCloud auto-ingest disabled.');
+        refreshSoundCloudStatus();
     });
 
     enableUnsupportedComposeCheckbox.addEventListener('change', function () {
-        chrome.storage.sync.set({enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked}, function () {
-            setStatus(status, enableUnsupportedComposeCheckbox.checked
-                ? 'Experimental compose button enabled on unsupported sites.'
-                : 'Compose button limited to supported sites again.', false);
+        scheduleLocalAutosave(enableUnsupportedComposeCheckbox.checked
+            ? 'Experimental compose button enabled on unsupported sites.'
+            : 'Compose button limited to supported sites again.');
+    });
+
+    [apiKeyInput, quickReplyInstructionInput].forEach(function (field) {
+        field.addEventListener('input', function () {
+            scheduleLocalAutosave('Local extension preferences autosaved.');
+        });
+        field.addEventListener('change', function () {
+            scheduleLocalAutosave('Local extension preferences autosaved.');
         });
     });
 
-    saveBtn.addEventListener('click', async function () {
-        const token = apiKeyInput.value.trim();
-        const baseUrl = getBaseUrl(devModeCheckbox.checked);
-
-        chrome.storage.sync.set({
-            toolsApiToken: token,
-            devMode: devModeCheckbox.checked,
-            facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
-            pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
-            soundcloudAutoIngestEnabled: soundcloudAutoIngestCheckbox.checked,
-            enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
-            defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
-            preferredFactCheckModel: factCheckModelSelect ? (factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL) : DEFAULT_FACT_CHECK_MODEL,
-            defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
-            defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
+    [factCheckModelSelect, quickReplyPresetSelect].forEach(function (field) {
+        field.addEventListener('change', function () {
+            scheduleLocalAutosave('Local extension preferences autosaved.');
         });
+    });
 
-        if (!token) {
-            setStatus(status, 'Register at tools.tornevall.net and generate a personal bearer token there before saving.', true);
-            return;
-        }
-
-        const result = await apiRequest(baseUrl, token, SETTINGS_PATH, {
-            method: 'PUT',
-            body: {
-                responder_name: responderNameInput.value.trim(),
-                persona_profile: systemPromptInput.value.trim(),
-                auto_detect_responder: autoDetectCheckbox.checked,
-                response_language: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
-                verify_fact_language: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
-            },
+    [responderNameInput, systemPromptInput].forEach(function (field) {
+        field.addEventListener('input', function () {
+            scheduleRemoteAutosave();
         });
-
-        if (!result.ok) {
-            setStatus(status, extractApiMessage(result.data, 'Could not save settings to Tools.'), true);
-            return;
-        }
-
-        syncLocalCache({
-            responderName: responderNameInput.value.trim(),
-            systemPrompt: systemPromptInput.value.trim(),
-            autoDetectResponder: autoDetectCheckbox.checked,
-            defaultMood: DEFAULT_MOOD,
-            defaultCustomMood: '',
-            defaultResponseLanguage: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
-            defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
-            preferredFactCheckModel: factCheckModelSelect ? (factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL) : DEFAULT_FACT_CHECK_MODEL,
-            defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
-            defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
+        field.addEventListener('change', function () {
+            flushScheduledRemoteAutosave();
         });
-        await refreshAvailableModelsCache(token, baseUrl);
-        await syncRemoteFacebookOutcomeConfig(token, baseUrl);
+    });
 
-        setStatus(status, 'Settings saved to ' + baseUrl + '.', false);
-
-        if (devModeCheckbox.checked) {
-            await refreshDebugConsole();
-        }
+    [autoDetectCheckbox, responseLanguageSelect, verifyFactLanguageSelect].forEach(function (field) {
+        field.addEventListener('change', function () {
+            flushScheduledRemoteAutosave();
+        });
     });
 
     testBtn.addEventListener('click', async function () {
         const token = apiKeyInput.value.trim();
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
         const question = testQuestionInput.value.trim() || DEFAULT_TEST_QUESTION;
-        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, responseLanguageSelect, verifyFactLanguageSelect, factCheckModelSelect, quickReplyPresetSelect, quickReplyInstructionInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, pageNetworkDebugCheckbox, soundcloudAutoIngestCheckbox, enableUnsupportedComposeCheckbox, autoDetectCheckbox];
+        const busyElements = [testBtn, resetBtn, apiKeyInput, responderNameInput, responseLanguageSelect, verifyFactLanguageSelect, factCheckModelSelect, quickReplyPresetSelect, quickReplyInstructionInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, pageNetworkDebugCheckbox, soundcloudAutoIngestCheckbox, enableUnsupportedComposeCheckbox, autoDetectCheckbox];
 
         if (!token) {
             setStatus(status, 'Paste a personal bearer token first, then test the connection.', true);
@@ -891,32 +1010,16 @@ document.addEventListener('DOMContentLoaded', function () {
         setBusyState(true, busyElements);
         setStatus(status, '⏳ Testing via Tools → OpenAI, please wait...', false);
 
-        chrome.storage.sync.set({
-            toolsApiToken: token,
-            devMode: devModeCheckbox.checked,
-            facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
-            pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
-            soundcloudAutoIngestEnabled: soundcloudAutoIngestCheckbox.checked,
-            enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
-            defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
-            preferredFactCheckModel: factCheckModelSelect ? (factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL) : DEFAULT_FACT_CHECK_MODEL,
-            defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
-            defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
-        });
+        persistLocalSettings();
 
-        const saveResult = await apiRequest(baseUrl, token, SETTINGS_PATH, {
-            method: 'PUT',
-            body: {
-                responder_name: responderNameInput.value.trim(),
-                persona_profile: systemPromptInput.value.trim(),
-                auto_detect_responder: autoDetectCheckbox.checked,
-                response_language: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
-                verify_fact_language: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
-            },
+        const saveResult = await flushScheduledRemoteAutosave({
+            requireToken: true,
+            missingTokenMessage: 'Paste a personal bearer token first, then test the connection.',
+            errorMessage: 'Could not save settings to Tools before testing.',
+            suppressSuccessStatus: true,
         });
 
         if (!saveResult.ok) {
-            setStatus(status, extractApiMessage(saveResult.data, 'Could not save settings to Tools before testing.'), true);
             setBusyState(false, busyElements);
             return;
         }
@@ -982,7 +1085,11 @@ document.addEventListener('DOMContentLoaded', function () {
         quickReplyPresetSelect.value = DEFAULT_QUICK_REPLY_PRESET;
         quickReplyInstructionInput.value = DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
         testQuestionInput.value = DEFAULT_TEST_QUESTION;
-        setStatus(status, 'Responder profile reset to the default local fallback. Save to push it to Tools.', false);
+        scheduleLocalAutosave('Local extension preferences reset to defaults.');
+        flushScheduledRemoteAutosave({
+            successMessage: 'Responder profile reset and autosaved to ' + getBaseUrl(devModeCheckbox.checked) + '.',
+            localOnlyMessage: 'Responder profile reset locally. Add your personal bearer token to sync it to Tools.',
+        });
     });
 
     refreshDebugBtn.addEventListener('click', async function () {

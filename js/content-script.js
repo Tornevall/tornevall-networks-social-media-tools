@@ -478,9 +478,7 @@ let adminFlushRequestedWhileBusy = false;
 let adminActiveSendBatch = null;
 let networkMonitorInjected = false;
 let adminLastStatusText = 'Passive activity detection is ready. Statistics are off.';
-let soundCloudLastStatusText = 'SoundCloud insights capture is idle.';
-let soundCloudCaptureCount = 0;
-let soundCloudLastCapture = null;
+let soundCloudPageBridge = null;
 let adminNetworkEventsSeen = 0;
 let adminInterestingNetworkEventsSeen = 0;
 let adminLastNetworkEventAt = 0;
@@ -985,8 +983,42 @@ function isSupportedSoundCloudInsightsPage() {
     return !!(platform && typeof platform.isSupportedPage === 'function' && platform.isSupportedPage(location));
 }
 
+function getSoundCloudPageBridge() {
+    if (!soundCloudPageBridge
+        && window.TNNetworksSoundCloudPageBridge
+        && typeof window.TNNetworksSoundCloudPageBridge.create === 'function') {
+        soundCloudPageBridge = window.TNNetworksSoundCloudPageBridge.create({
+            isSoundCloudPage: isSoundCloudPage,
+            isSupportedInsightsPage: isSupportedSoundCloudInsightsPage,
+            getLocationHref: function () {
+                return location.href;
+            },
+            getDocumentTitle: function () {
+                return document.title || '';
+            },
+            getNetworkMonitorInjected: function () {
+                return !!(networkMonitorInjected && isSupportedSoundCloudInsightsPage());
+            },
+            sendRuntimeMessage: safeSendRuntimeMessage,
+            sendRuntimeMessageWithResponse: safeSendRuntimeMessageWithResponse,
+        });
+    }
+
+    return soundCloudPageBridge;
+}
+
+function setSoundCloudStatusText(text) {
+    const bridge = getSoundCloudPageBridge();
+    if (!bridge) {
+        return 'SoundCloud insights capture is unavailable.';
+    }
+
+    return bridge.setStatusText(text);
+}
+
 function buildSoundCloudPageStatusPayload() {
-    return {
+    const bridge = getSoundCloudPageBridge();
+    return bridge ? bridge.buildPageStatusPayload() : {
         ok: true,
         status: {
             pageUrl: location.href,
@@ -994,22 +1026,18 @@ function buildSoundCloudPageStatusPayload() {
             isSoundCloudPage: isSoundCloudPage(),
             isRelevantInsightsPage: isSupportedSoundCloudInsightsPage(),
             networkMonitorInjected: !!(networkMonitorInjected && isSupportedSoundCloudInsightsPage()),
-            stateText: soundCloudLastStatusText,
-            captureCount: soundCloudCaptureCount,
-            lastCapture: soundCloudLastCapture,
+            stateText: 'SoundCloud insights capture is unavailable.',
+            captureCount: 0,
+            lastCapture: null,
         }
     };
 }
 
 function reportSoundCloudPageStatus() {
-    if (!isSoundCloudPage()) {
-        return;
+    const bridge = getSoundCloudPageBridge();
+    if (bridge) {
+        bridge.reportPageStatus();
     }
-
-    safeSendRuntimeMessage({
-        type: 'SOUNDCLOUD_STATUS_UPDATE',
-        payload: buildSoundCloudPageStatusPayload().status,
-    });
 }
 
 function clipText(value, limit) {
@@ -4271,13 +4299,13 @@ function injectNetworkMonitor() {
     }
 
     if (platform.id === 'soundcloud' && typeof platform.isSupportedPage === 'function' && !platform.isSupportedPage(location)) {
-        soundCloudLastStatusText = 'Current SoundCloud page is not a supported insights / for-artists view.';
+        setSoundCloudStatusText('Current SoundCloud page is not a supported insights / for-artists view.');
         reportSoundCloudPageStatus();
         return;
     }
 
     const script = document.createElement('script');
-    script.src = safeRuntimeGetURL('js/injected/networkMonitor.js');
+    script.src = safeRuntimeGetURL('js/injected/network-monitor.js');
     if (!script.src) {
         return;
     }
@@ -4291,7 +4319,7 @@ function injectNetworkMonitor() {
     });
 
     if (isSoundCloudPage()) {
-        soundCloudLastStatusText = 'Supported SoundCloud insights page detected. Waiting for GraphQL traffic...';
+        setSoundCloudStatusText('Supported SoundCloud insights page detected. Waiting for GraphQL traffic...');
         reportSoundCloudPageStatus();
     }
 
@@ -4340,11 +4368,11 @@ function handleLocationChange(reason) {
     if (isSoundCloudPage()) {
         if (isSupportedSoundCloudInsightsPage()) {
             injectNetworkMonitor();
-            soundCloudLastStatusText = networkMonitorInjected
+            setSoundCloudStatusText(networkMonitorInjected
                 ? 'SoundCloud insights page detected. Waiting for supported GraphQL captures...'
-                : 'SoundCloud insights page detected, but monitor injection has not completed yet.';
+                : 'SoundCloud insights page detected, but monitor injection has not completed yet.');
         } else {
-            soundCloudLastStatusText = 'Current SoundCloud page is not a supported insights / for-artists view.';
+            setSoundCloudStatusText('Current SoundCloud page is not a supported insights / for-artists view.');
         }
         reportSoundCloudPageStatus();
     }
@@ -5824,52 +5852,9 @@ window.addEventListener('message', function (event) {
     const payload = event.data.payload || {};
 
     if (isSoundCloudPage() && payload.soundcloud_capture) {
-        if (!isSupportedSoundCloudInsightsPage()) {
-            soundCloudLastStatusText = 'Observed SoundCloud traffic outside supported insights pages. Capture ignored.';
-            reportSoundCloudPageStatus();
-        } else {
-            const capture = payload.soundcloud_capture;
-            const normalized = capture && capture.normalized_dataset ? capture.normalized_dataset : null;
-
-            soundCloudCaptureCount += 1;
-            soundCloudLastCapture = normalized ? {
-                opName: normalized.operation_name || capture.opName || null,
-                datasetKey: normalized.dataset_key || null,
-                rowCount: typeof normalized.row_count === 'number' ? normalized.row_count : 0,
-                totalMetric: typeof normalized.total_metric === 'number' ? normalized.total_metric : null,
-                capturedAt: normalized.captured_at || new Date().toISOString(),
-            } : {
-                opName: capture && capture.opName ? capture.opName : null,
-                datasetKey: null,
-                rowCount: 0,
-                totalMetric: null,
-                capturedAt: new Date().toISOString(),
-            };
-            soundCloudLastStatusText = normalized
-                ? ('Captured SoundCloud dataset ' + normalized.dataset_key + ' via ' + (normalized.operation_name || 'GraphQL') + '.')
-                : 'Observed SoundCloud GraphQL traffic, but it did not match a supported dataset.';
-            reportSoundCloudPageStatus();
-
-            safeSendRuntimeMessageWithResponse({
-                type: 'SOUNDCLOUD_CAPTURE',
-                payload: capture,
-            }).then(function (response) {
-                if (!response || !response.ok) {
-                    soundCloudLastStatusText = 'SoundCloud capture forwarding failed: ' + ((response && response.error) || 'Unknown runtime error.');
-                    reportSoundCloudPageStatus();
-                    return;
-                }
-
-                if (response.ingest && response.ingest.attempted === false) {
-                    soundCloudLastStatusText = 'Captured SoundCloud dataset, but ingest was not attempted: ' + (response.ingest.reason || 'unknown reason') + '.';
-                } else if (response.ingest && response.ingest.ok) {
-                    soundCloudLastStatusText = 'Captured and ingested SoundCloud dataset successfully.';
-                } else if (response.ingest && response.ingest.attempted) {
-                    soundCloudLastStatusText = 'Captured SoundCloud dataset, but ingest failed' + (response.ingest.message ? ': ' + response.ingest.message : '.');
-                }
-
-                reportSoundCloudPageStatus();
-            });
+        const bridge = getSoundCloudPageBridge();
+        if (bridge) {
+            bridge.handleNetworkEventPayload(payload);
         }
     }
 
@@ -5987,3 +5972,4 @@ adminDebugConsoleInfo('[TN Social Tools] content script ready.', {
     url: location.href,
     admin_activities_match: isFacebookAdminActivitiesPage(),
 });
+

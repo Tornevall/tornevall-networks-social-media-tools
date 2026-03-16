@@ -1121,8 +1121,8 @@
     }
 
     function safeReadXhrResponseText(xhr) {
-        var responseType = '';
-        var contentType = '';
+        var responseType;
+        var contentType;
 
         try {
             responseType = String(xhr && xhr.responseType ? xhr.responseType : '');
@@ -1327,7 +1327,7 @@
         var xhr = this;
         xhr.__tnRequestBody = body;
         xhr.addEventListener('loadend', function () {
-            var responseType = '';
+            var responseType;
             try {
                 responseType = String(xhr.responseType || '');
             } catch (e) {
@@ -1359,4 +1359,5 @@
         }, 0);
     }
 }());
+
 
