@@ -193,6 +193,15 @@
     <p class="status-line status-muted" id="facebookAdminLastSubmission" style="margin-top:10px;"></p>
 </section>
 
+<section class="status-card" id="soundCloudStatusCard">
+    <h2>SoundCloud insights capture</h2>
+    <p class="status-line" id="soundCloudStatusState">Loading active-tab SoundCloud status…</p>
+    <p class="status-line status-muted" id="soundCloudStatusCounters"></p>
+    <div class="status-list" id="soundCloudRecentCaptureList">
+        <div class="status-line status-muted">No supported SoundCloud captures detected yet.</div>
+    </div>
+</section>
+
 <div class="checkbox-inline">
     <input type="checkbox" id="devMode">
     <label for="devMode">Use dev / beta server (<code>tools.tornevall.com</code>)</label>
@@ -206,6 +215,11 @@
 <div class="checkbox-inline">
     <input type="checkbox" id="pageNetworkDebugEnabled">
     <label for="pageNetworkDebugEnabled">Enable in-page XHR debug overlay on supported pages</label>
+</div>
+
+<div class="checkbox-inline">
+    <input type="checkbox" id="soundcloudAutoIngestEnabled">
+    <label for="soundcloudAutoIngestEnabled">Auto-ingest supported SoundCloud insights captures into Tools</label>
 </div>
 
 <div class="checkbox-inline">

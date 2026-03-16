@@ -694,6 +694,7 @@
             doc_id: (params && params.get('doc_id')) || (json && json.doc_id) || '',
             friendly_name: (params && (params.get('fb_api_req_friendly_name') || params.get('friendly_name'))) || (json && (json.fb_api_req_friendly_name || json.friendly_name || json.operationName)) || '',
             operation_name: (params && params.get('fb_api_req_friendly_name')) || (json && (json.operationName || json.fb_api_req_friendly_name)) || '',
+            variables_object: variables && typeof variables === 'object' ? variables : null,
             variables_preview: variables ? clip(typeof variables === 'string' ? variables : JSON.stringify(variables), 800) : '',
             source_identity: sourceIdentity,
         };
@@ -704,6 +705,157 @@
         return {
             response_preview: preview,
             mentions_activity_log: /GroupAdminActivity|GroupsCometAdminActivity|management_activities|management_activity_log_target|admin_activities|RelayPrefetchedStreamCache|ScheduledServerJS|CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|adp_CometGroupAdminActivitiesActivityLogContentQueryRelayPreloader|activity_title|"__typename"\s*:\s*"GroupAdminActivity"|"__typename"\s*:\s*"GroupsCometAdminActivity"/i.test(String(text || '')),
+        };
+    }
+
+    function supportedSoundCloudOperationToDataset(operationName) {
+        return {
+            TopTracksByWindow: 'tracks',
+            TopCountriesByWindow: 'countries',
+            TopCitiesByWindow: 'cities',
+            TopPlaylistsByWindow: 'playlists',
+            TrackByPermalink: 'lookup',
+        }[normalizeWhitespace(operationName)] || null;
+    }
+
+    function safeArray(value) {
+        return Array.isArray(value) ? value : [];
+    }
+
+    function sumSoundCloudMetric(rows, keys) {
+        return safeArray(rows).reduce(function (sum, row) {
+            if (!row || typeof row !== 'object') {
+                return sum;
+            }
+
+            for (var index = 0; index < keys.length; index += 1) {
+                var value = row[keys[index]];
+                if (typeof value !== 'undefined' && !isNaN(Number(value))) {
+                    return sum + Number(value);
+                }
+            }
+
+            return sum;
+        }, 0);
+    }
+
+    function normalizeSoundCloudRows(datasetKey, data) {
+        switch (datasetKey) {
+            case 'tracks':
+                return safeArray(data && data.topTracksByWindow).map(function (item) {
+                    return {
+                        title: item && item.track && item.track.title ? item.track.title : '',
+                        plays: item && typeof item.count !== 'undefined' ? Number(item.count) || 0 : 0,
+                        url: item && item.track && item.track.permalinkUrl ? item.track.permalinkUrl : '',
+                        artwork: item && item.track && item.track.artworkUrl ? item.track.artworkUrl : '',
+                    };
+                });
+            case 'countries':
+                return safeArray(data && data.topCountriesByWindow).map(function (item) {
+                    return {
+                        country: item && item.country && item.country.name ? item.country.name : '',
+                        code: item && item.country && item.country.countryCode ? item.country.countryCode : '',
+                        plays: item && typeof item.count !== 'undefined' ? Number(item.count) || 0 : 0,
+                    };
+                });
+            case 'cities':
+                return safeArray(data && data.topCitiesByWindow).map(function (item) {
+                    return {
+                        city: item && item.city && item.city.name ? item.city.name : '',
+                        country: item && item.city && item.city.country && item.city.country.name ? item.city.country.name : '',
+                        code: item && item.city && item.city.country && item.city.country.countryCode ? item.city.country.countryCode : '',
+                        plays: item && typeof item.count !== 'undefined' ? Number(item.count) || 0 : 0,
+                    };
+                });
+            case 'playlists':
+                return safeArray(data && data.topPlaylistsByWindow).map(function (item) {
+                    return {
+                        playlist: item && item.playlist && item.playlist.title ? item.playlist.title : '',
+                        user: item && item.playlist && item.playlist.user && item.playlist.user.username ? item.playlist.user.username : '',
+                        count: item && typeof item.count !== 'undefined' ? Number(item.count) || 0 : 0,
+                        url: item && item.playlist && item.playlist.permalinkUrl ? item.playlist.permalinkUrl : '',
+                        artwork: item && item.playlist && item.playlist.artworkUrl ? item.playlist.artworkUrl : '',
+                    };
+                });
+            case 'lookup':
+                return data && data.trackByPermalink && typeof data.trackByPermalink === 'object'
+                    ? [data.trackByPermalink]
+                    : [];
+            default:
+                return [];
+        }
+    }
+
+    function buildSoundCloudCapture(base, urlMeta, bodyMeta) {
+        var requestUrl = String(base && base.url ? base.url : '');
+        var requestHost = String(urlMeta && urlMeta.host ? urlMeta.host : '').toLowerCase();
+        var currentHost = String(window.location.hostname || '').toLowerCase();
+        var opName = normalizeWhitespace(base && base.operation_name ? base.operation_name : (bodyMeta && bodyMeta.operation_name ? bodyMeta.operation_name : ''));
+        var datasetKey = supportedSoundCloudOperationToDataset(opName);
+
+        if (!datasetKey) {
+            return null;
+        }
+
+        if (requestHost.indexOf('soundcloud.com') === -1 && currentHost.indexOf('soundcloud.com') === -1 && requestUrl.indexOf('soundcloud.com') === -1) {
+            return null;
+        }
+
+        if (!(urlMeta && urlMeta.is_graphql) && requestUrl.indexOf('graph.soundcloud.com/graphql') === -1) {
+            return null;
+        }
+
+        var parsedResponse = safeJsonParse(base && base.response_text ? base.response_text : '');
+        var data = parsedResponse && typeof parsedResponse === 'object' && typeof parsedResponse.data !== 'undefined'
+            ? parsedResponse.data
+            : parsedResponse;
+        if (!data || typeof data !== 'object') {
+            return null;
+        }
+
+        var variables = bodyMeta && bodyMeta.variables_object && typeof bodyMeta.variables_object === 'object'
+            ? bodyMeta.variables_object
+            : {};
+        var rows = normalizeSoundCloudRows(datasetKey, data);
+        var totalMetric = datasetKey === 'lookup'
+            ? null
+            : sumSoundCloudMetric(rows, ['plays', 'count', 'listeners', 'stream_count']) || null;
+        var meta = {
+            frame: window.location.href,
+            host: currentHost,
+            via: base && base.transport ? base.transport : '',
+            request_url: requestUrl,
+            request_host: requestHost,
+            status: base && typeof base.status !== 'undefined' ? base.status : null,
+        };
+
+        return {
+            opName: opName,
+            variables: variables,
+            meta: meta,
+            normalized_dataset: {
+                source_url: meta.frame,
+                source_label: 'SoundCloud 4 Artists',
+                source_type: 'soundcloud_4artists',
+                dataset_key: datasetKey,
+                operation_name: opName,
+                window_label: variables && (variables.timeWindow || variables.window || variables.selectedWindow)
+                    ? String(variables.timeWindow || variables.window || variables.selectedWindow)
+                    : '',
+                captured_at: new Date().toISOString(),
+                account_urn: variables && variables.urn ? String(variables.urn) : '',
+                account_username: variables && variables.username ? String(variables.username) : '',
+                account_permalink_url: variables && variables.permalinkUrl ? String(variables.permalinkUrl) : '',
+                rows: rows,
+                row_count: rows.length,
+                total_metric: totalMetric,
+                variables: variables,
+                meta: meta,
+                summary: {
+                    row_count: rows.length,
+                    total_metric: totalMetric,
+                },
+            }
         };
     }
 
@@ -1042,6 +1194,7 @@
         var urlMeta = buildUrlMeta(base.url || '');
         var bodyMeta = parseBodyMeta(base.request_body);
         var responseMeta = extractResponseHints(base.response_text || '');
+        var soundcloudCapture = buildSoundCloudCapture(base, urlMeta, bodyMeta);
         var batchId = [Date.now(), Math.round(Math.random() * 1000000), clip(base.url || '', 120)].join(':');
         var shouldParseDetections = !!(urlMeta.is_graphql || responseMeta.mentions_activity_log || /admin_activities|management_activities|management_activity_log_target|groupadminactivity|groupscometadminactivity|relayprefetchedstreamcache|scheduledserverjs|cometgroupadminactivitiesactivitylogcontentqueryrelaypreloader|adp_cometgroupadminactivitiesactivitylogcontentqueryrelaypreloader|activity_title|"__typename"\s*:\s*"groupadminactivity"|"__typename"\s*:\s*"groupscometadminactivity"/i.test(String(bodyMeta.preview || '')));
         var detectedEntries = Array.isArray(base.detected_entries_override)
@@ -1077,6 +1230,7 @@
             detected_count: detectedEntries.length,
             detected_comment_entries: detectedComments,
             detected_comment_count: detectedComments.length,
+            soundcloud_capture: soundcloudCapture,
             bootstrap_debug: base.bootstrap_debug || null,
         };
     }

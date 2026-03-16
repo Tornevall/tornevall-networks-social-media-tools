@@ -275,6 +275,23 @@ function queryActiveTabFacebookAdminStatus() {
     });
 }
 
+function formatSoundCloudIngestResult(ingest) {
+    if (!ingest) {
+        return 'No ingest attempt recorded yet.';
+    }
+    if (ingest.attempted === false) {
+        return 'Ingest not attempted: ' + (ingest.reason || 'unknown reason') + '.';
+    }
+    if (ingest.ok) {
+        return 'Ingest OK' + (ingest.status ? ' · HTTP ' + ingest.status : '') + (ingest.event_id ? ' · event #' + ingest.event_id : '');
+    }
+    return 'Ingest failed' + (ingest.status ? ' · HTTP ' + ingest.status : '') + (ingest.message ? ' · ' + ingest.message : '');
+}
+
+function queryActiveTabSoundCloudStatus() {
+    return sendRuntimeMessage({type: 'GET_SOUNDCLOUD_ACTIVE_TAB_STATUS'});
+}
+
 document.addEventListener('DOMContentLoaded', function () {
     const apiKeyInput = document.getElementById('apiKey');
     const responderNameInput = document.getElementById('responderName');
@@ -288,6 +305,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const devModeCheckbox = document.getElementById('devMode');
     const facebookAdminDebugCheckbox = document.getElementById('facebookAdminDebugEnabled');
     const pageNetworkDebugCheckbox = document.getElementById('pageNetworkDebugEnabled');
+    const soundcloudAutoIngestCheckbox = document.getElementById('soundcloudAutoIngestEnabled');
     const enableUnsupportedComposeCheckbox = document.getElementById('enableUnsupportedCompose');
     const endpointNote = document.getElementById('endpointNote');
     const openToolsDashboardLink = document.getElementById('openToolsDashboardLink');
@@ -306,6 +324,9 @@ document.addEventListener('DOMContentLoaded', function () {
     const facebookAdminStatusCounters = document.getElementById('facebookAdminStatusCounters');
     const facebookAdminReportableList = document.getElementById('facebookAdminReportableList');
     const facebookAdminLastSubmission = document.getElementById('facebookAdminLastSubmission');
+    const soundCloudStatusState = document.getElementById('soundCloudStatusState');
+    const soundCloudStatusCounters = document.getElementById('soundCloudStatusCounters');
+    const soundCloudRecentCaptureList = document.getElementById('soundCloudRecentCaptureList');
 
     function renderFacebookAdminStatus(result) {
         if (!facebookAdminStatusState || !facebookAdminStatusCounters || !facebookAdminReportableList || !facebookAdminLastSubmission) {
@@ -370,6 +391,55 @@ document.addEventListener('DOMContentLoaded', function () {
 
     async function refreshFacebookAdminStatus() {
         renderFacebookAdminStatus(await queryActiveTabFacebookAdminStatus());
+    }
+
+    function renderSoundCloudStatus(result) {
+        if (!soundCloudStatusState || !soundCloudStatusCounters || !soundCloudRecentCaptureList) {
+            return;
+        }
+
+        if (!result || !result.ok) {
+            soundCloudStatusState.textContent = 'Could not read SoundCloud status from the active tab.';
+            soundCloudStatusCounters.textContent = result && result.error ? result.error : 'No SoundCloud diagnostics are available yet.';
+            soundCloudRecentCaptureList.innerHTML = '<div class="status-line status-muted">No supported SoundCloud captures detected yet.</div>';
+            return;
+        }
+
+        const tab = result.activeTab || {};
+        const statusPayload = result.status || {};
+        const recentEvents = Array.isArray(result.recentEvents) ? result.recentEvents : [];
+        const pageState = statusPayload.isRelevantInsightsPage
+            ? 'Active tab is on a supported SoundCloud insights page.'
+            : (statusPayload.isSoundCloudPage
+                ? 'Active tab is on SoundCloud, but not on a supported insights / for-artists page.'
+                : 'Active tab is not on SoundCloud.');
+
+        soundCloudStatusState.textContent = statusPayload.stateText || pageState;
+        soundCloudStatusCounters.textContent = (tab.url || statusPayload.pageUrl || 'Unknown tab')
+            + ' · injected=' + (statusPayload.networkMonitorInjected ? 'yes' : 'no')
+            + ' · captures=' + (statusPayload.captureCount || 0)
+            + ' · ' + formatSoundCloudIngestResult(statusPayload.lastIngest);
+
+        if (!recentEvents.length) {
+            soundCloudRecentCaptureList.innerHTML = '<div class="status-line status-muted">No supported SoundCloud captures detected yet.</div>';
+            return;
+        }
+
+        soundCloudRecentCaptureList.innerHTML = recentEvents.map(function (event) {
+            const pill = event.datasetKey
+                ? '<span class="status-pill">' + escapeHtml(event.datasetKey) + '</span>'
+                : '<span class="status-pill">raw</span>';
+            return '<div class="status-item">'
+                + '<div>' + pill + escapeHtml(event.opName || 'Unknown operation') + '</div>'
+                + '<div class="status-muted" style="margin-top:4px;">'
+                + escapeHtml(event.capturedAt || 'Unknown time') + ' · ' + escapeHtml(formatSoundCloudIngestResult(event.ingest))
+                + '</div>'
+                + '</div>';
+        }).join('');
+    }
+
+    async function refreshSoundCloudStatus() {
+        renderSoundCloudStatus(await queryActiveTabSoundCloudStatus());
     }
 
     function renderEndpointNote() {
@@ -659,6 +729,7 @@ document.addEventListener('DOMContentLoaded', function () {
         'devMode',
         'facebookAdminDebugEnabled',
         'pageNetworkDebugEnabled',
+        'soundcloudAutoIngestEnabled',
         'enableUnsupportedCompose',
         'responderName',
         'chatGptSystemPrompt',
@@ -686,6 +757,7 @@ document.addEventListener('DOMContentLoaded', function () {
         devModeCheckbox.checked = !!data.devMode;
         facebookAdminDebugCheckbox.checked = !!data.facebookAdminDebugEnabled;
         pageNetworkDebugCheckbox.checked = !!data.pageNetworkDebugEnabled;
+        soundcloudAutoIngestCheckbox.checked = data.soundcloudAutoIngestEnabled !== false;
         enableUnsupportedComposeCheckbox.checked = !!data.enableUnsupportedCompose;
         renderEndpointNote();
         renderDebugConsoleVisibility();
@@ -697,6 +769,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         await refreshFacebookAdminStatus();
+        await refreshSoundCloudStatus();
     });
 
     devModeCheckbox.addEventListener('change', function () {
@@ -728,6 +801,14 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
+    soundcloudAutoIngestCheckbox.addEventListener('change', function () {
+        chrome.storage.sync.set({soundcloudAutoIngestEnabled: soundcloudAutoIngestCheckbox.checked}, function () {
+            setStatus(status, soundcloudAutoIngestCheckbox.checked
+                ? 'SoundCloud auto-ingest enabled.'
+                : 'SoundCloud auto-ingest disabled.', false);
+        });
+    });
+
     enableUnsupportedComposeCheckbox.addEventListener('change', function () {
         chrome.storage.sync.set({enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked}, function () {
             setStatus(status, enableUnsupportedComposeCheckbox.checked
@@ -745,6 +826,7 @@ document.addEventListener('DOMContentLoaded', function () {
             devMode: devModeCheckbox.checked,
             facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
             pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
+            soundcloudAutoIngestEnabled: soundcloudAutoIngestCheckbox.checked,
             enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
             defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
             preferredFactCheckModel: factCheckModelSelect ? (factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL) : DEFAULT_FACT_CHECK_MODEL,
@@ -799,7 +881,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const token = apiKeyInput.value.trim();
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
         const question = testQuestionInput.value.trim() || DEFAULT_TEST_QUESTION;
-        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, responseLanguageSelect, verifyFactLanguageSelect, factCheckModelSelect, quickReplyPresetSelect, quickReplyInstructionInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, pageNetworkDebugCheckbox, enableUnsupportedComposeCheckbox, autoDetectCheckbox];
+        const busyElements = [saveBtn, testBtn, resetBtn, apiKeyInput, responderNameInput, responseLanguageSelect, verifyFactLanguageSelect, factCheckModelSelect, quickReplyPresetSelect, quickReplyInstructionInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, pageNetworkDebugCheckbox, soundcloudAutoIngestCheckbox, enableUnsupportedComposeCheckbox, autoDetectCheckbox];
 
         if (!token) {
             setStatus(status, 'Paste a personal bearer token first, then test the connection.', true);
@@ -814,6 +896,7 @@ document.addEventListener('DOMContentLoaded', function () {
             devMode: devModeCheckbox.checked,
             facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
             pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
+            soundcloudAutoIngestEnabled: soundcloudAutoIngestCheckbox.checked,
             enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
             defaultVerifyFactLanguage: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
             preferredFactCheckModel: factCheckModelSelect ? (factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL) : DEFAULT_FACT_CHECK_MODEL,
@@ -906,6 +989,7 @@ document.addEventListener('DOMContentLoaded', function () {
         await refreshDebugConsole();
         setStatus(status, 'Debug console refreshed.', false);
         await refreshFacebookAdminStatus();
+        await refreshSoundCloudStatus();
     });
 
     copyDebugBtn.addEventListener('click', async function () {
@@ -930,5 +1014,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
     window.addEventListener('focus', function () {
         refreshFacebookAdminStatus();
+        refreshSoundCloudStatus();
     });
 });
