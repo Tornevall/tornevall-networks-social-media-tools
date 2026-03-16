@@ -1,4 +1,4 @@
-let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null, composerActionButton = null, quickResponseActionButton = null, adminActivitiesControl = null;
+let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null, composerActionButton = null, quickResponseActionButton = null, adminActivitiesControl = null, soundCloudInsightsControl = null;
 let panelAttachedComposer = null;
 let panelContextDirty = false;
 let verifyActionButton = null;
@@ -50,6 +50,7 @@ const IGNORED_LINK_TEXTS = ['gilla', 'svara', 'svara som', 'kommentera', 'dela',
 const MAX_RECENT_NETWORK_EVENTS = 8;
 const MAX_ADMIN_BATCH_SIZE = 50;
 const ADMIN_PANEL_POSITION_STORAGE_KEY = 'tn_social_tools_admin_panel_position';
+const SOUND_CLOUD_PANEL_POSITION_STORAGE_KEY = 'tn_social_tools_soundcloud_panel_position';
 const MAX_RECENT_FACEBOOK_COMMENT_ENTRIES = 200;
 const DEFAULT_REPLY_PROMPT = 'Write text that fits the visible context and can be pasted into the selected field.';
 const QUICK_REPLY_PRESETS = {
@@ -486,6 +487,10 @@ let adminNetworkDebugAnnounced = false;
 let lastObservedLocationHref = location.href;
 let adminActivitiesControlDragState = null;
 let adminActivitiesDragListenersBound = false;
+let soundCloudInsightsControlDragState = null;
+let soundCloudInsightsDragListenersBound = false;
+let soundCloudAutoIngestEnabled = false;
+let soundCloudToolsTokenConfigured = false;
 let activeReplyContextMeta = null;
 let latestBootstrapAdminScanDebug = null;
 let latestInjectedBootstrapAdminScanDebug = null;
@@ -1038,6 +1043,251 @@ function reportSoundCloudPageStatus() {
     if (bridge) {
         bridge.reportPageStatus();
     }
+
+    updateSoundCloudInsightsControl();
+}
+
+function formatSoundCloudIngestResult(ingest) {
+    if (!ingest) {
+        return 'No ingest attempt recorded yet.';
+    }
+    if (ingest.attempted === false) {
+        return 'Ingest not attempted: ' + (ingest.reason || 'unknown reason') + '.';
+    }
+    if (ingest.ok) {
+        return 'Ingest OK' + (ingest.status ? ' · HTTP ' + ingest.status : '') + (ingest.event_id ? ' · event #' + ingest.event_id : '');
+    }
+
+    return 'Ingest failed' + (ingest.status ? ' · HTTP ' + ingest.status : '') + (ingest.message ? ' · ' + ingest.message : '');
+}
+
+function syncSoundCloudRuntimePreference() {
+    safeStorageSyncGet(['toolsApiToken', 'soundcloudAutoIngestEnabled'], function (data) {
+        soundCloudToolsTokenConfigured = !!(data && data.toolsApiToken && String(data.toolsApiToken).trim());
+        soundCloudAutoIngestEnabled = !!(data && data.soundcloudAutoIngestEnabled === true);
+        updateSoundCloudInsightsControl();
+    });
+}
+
+function loadSoundCloudPanelPosition(control) {
+    if (!control || typeof window.localStorage === 'undefined') {
+        return;
+    }
+
+    try {
+        const raw = window.localStorage.getItem(SOUND_CLOUD_PANEL_POSITION_STORAGE_KEY);
+        if (!raw) {
+            return;
+        }
+
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.top === 'number' && typeof parsed.left === 'number') {
+            control.style.top = parsed.top + 'px';
+            control.style.left = parsed.left + 'px';
+            control.style.right = 'auto';
+        }
+    } catch (error) {
+    }
+}
+
+function saveSoundCloudPanelPosition(control) {
+    if (!control || typeof window.localStorage === 'undefined') {
+        return;
+    }
+
+    try {
+        const rect = control.getBoundingClientRect();
+        window.localStorage.setItem(SOUND_CLOUD_PANEL_POSITION_STORAGE_KEY, JSON.stringify({
+            top: Math.max(8, Math.round(rect.top)),
+            left: Math.max(8, Math.round(rect.left)),
+        }));
+    } catch (error) {
+    }
+}
+
+function clampSoundCloudPanelPosition(control) {
+    if (!control) {
+        return;
+    }
+
+    const rect = control.getBoundingClientRect();
+    const maxLeft = Math.max(8, window.innerWidth - rect.width - 8);
+    const maxTop = Math.max(8, window.innerHeight - rect.height - 8);
+    const nextLeft = Math.min(Math.max(8, rect.left), maxLeft);
+    const nextTop = Math.min(Math.max(8, rect.top), maxTop);
+
+    control.style.left = nextLeft + 'px';
+    control.style.top = nextTop + 'px';
+    control.style.right = 'auto';
+}
+
+function enableSoundCloudInsightsControlDragging(control) {
+    if (!control || control.dataset.dragReady === 'true') {
+        return;
+    }
+
+    const handle = control.querySelector('[data-role="drag-handle"]');
+    if (!handle) {
+        return;
+    }
+
+    control.dataset.dragReady = 'true';
+    loadSoundCloudPanelPosition(control);
+    clampSoundCloudPanelPosition(control);
+
+    handle.addEventListener('mousedown', function (event) {
+        if (event.button !== 0 || event.target.closest('button')) {
+            return;
+        }
+
+        const rect = control.getBoundingClientRect();
+        soundCloudInsightsControlDragState = {
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+        };
+
+        event.preventDefault();
+    });
+
+    if (soundCloudInsightsDragListenersBound) {
+        return;
+    }
+
+    soundCloudInsightsDragListenersBound = true;
+
+    window.addEventListener('mousemove', function (event) {
+        if (!soundCloudInsightsControlDragState || !soundCloudInsightsControl) {
+            return;
+        }
+
+        soundCloudInsightsControl.style.left = Math.max(8, event.clientX - soundCloudInsightsControlDragState.offsetX) + 'px';
+        soundCloudInsightsControl.style.top = Math.max(8, event.clientY - soundCloudInsightsControlDragState.offsetY) + 'px';
+        soundCloudInsightsControl.style.right = 'auto';
+        clampSoundCloudPanelPosition(soundCloudInsightsControl);
+    });
+
+    window.addEventListener('mouseup', function () {
+        if (!soundCloudInsightsControlDragState || !soundCloudInsightsControl) {
+            soundCloudInsightsControlDragState = null;
+            return;
+        }
+
+        clampSoundCloudPanelPosition(soundCloudInsightsControl);
+        saveSoundCloudPanelPosition(soundCloudInsightsControl);
+        soundCloudInsightsControlDragState = null;
+    });
+
+    window.addEventListener('resize', function () {
+        if (!soundCloudInsightsControl) {
+            return;
+        }
+
+        clampSoundCloudPanelPosition(soundCloudInsightsControl);
+        saveSoundCloudPanelPosition(soundCloudInsightsControl);
+    });
+}
+
+function updateSoundCloudInsightsControl() {
+    if (!soundCloudInsightsControl) {
+        return;
+    }
+
+    const statusPayload = buildSoundCloudPageStatusPayload().status || {};
+    const state = soundCloudInsightsControl.querySelector('[data-role="state"]');
+    const counters = soundCloudInsightsControl.querySelector('[data-role="counters"]');
+    const capture = soundCloudInsightsControl.querySelector('[data-role="capture"]');
+    const ingest = soundCloudInsightsControl.querySelector('[data-role="ingest"]');
+    const helper = soundCloudInsightsControl.querySelector('[data-role="helper"]');
+    const monitorActive = !!statusPayload.networkMonitorInjected;
+    const lastCapture = statusPayload.lastCapture || null;
+
+    if (state) {
+        state.textContent = statusPayload.stateText || 'SoundCloud insights capture is idle.';
+        state.style.color = monitorActive ? '#065f46' : '#92400e';
+    }
+
+    if (counters) {
+        counters.textContent = 'Monitor: ' + (monitorActive ? 'injected' : 'waiting')
+            + ' · Captures: ' + (statusPayload.captureCount || 0)
+            + ' · Auto-ingest: ' + (soundCloudAutoIngestEnabled ? 'enabled' : 'disabled')
+            + ' · Token: ' + (soundCloudToolsTokenConfigured ? 'configured' : 'missing');
+    }
+
+    if (capture) {
+        capture.innerHTML = lastCapture
+            ? ('<div style="font-weight:600; color:#0f172a;">'
+                + escapeHtml((lastCapture.datasetKey || 'raw') + ' · ' + (lastCapture.opName || 'Unknown operation'))
+                + '</div>'
+                + '<div style="margin-top:4px; color:#475569;">Rows: ' + escapeHtml(String(lastCapture.rowCount || 0))
+                + (lastCapture.totalMetric !== null && typeof lastCapture.totalMetric !== 'undefined' ? ' · Total metric: ' + escapeHtml(String(lastCapture.totalMetric)) : '')
+                + '</div>'
+                + '<div style="margin-top:4px; color:#64748b;">Captured: ' + escapeHtml(lastCapture.capturedAt || 'Unknown time') + '</div>')
+            : '<div style="color:#64748b;">No supported SoundCloud captures detected yet. Open insights panels that trigger GraphQL requests.</div>';
+    }
+
+    if (ingest) {
+        ingest.textContent = formatSoundCloudIngestResult(statusPayload.lastIngest);
+        ingest.style.color = statusPayload.lastIngest && statusPayload.lastIngest.ok
+            ? '#065f46'
+            : (statusPayload.lastIngest && statusPayload.lastIngest.attempted ? '#b91c1c' : '#475569');
+    }
+
+    if (helper) {
+        helper.textContent = soundCloudAutoIngestEnabled
+            ? 'Auto-ingest is enabled from the popup for this browser profile.'
+            : 'Auto-ingest is disabled by default. Enable it from the popup if you want captures pushed into Tools.';
+    }
+}
+
+function ensureSoundCloudInsightsControl() {
+    if (!isSupportedSoundCloudInsightsPage()) {
+        if (soundCloudInsightsControl) {
+            soundCloudInsightsControl.remove();
+            soundCloudInsightsControl = null;
+        }
+        return null;
+    }
+
+    if (soundCloudInsightsControl) {
+        updateSoundCloudInsightsControl();
+        return soundCloudInsightsControl;
+    }
+
+    const control = document.createElement('div');
+    control.id = 'sgpt-soundcloud-insights-control';
+    control.style.position = 'fixed';
+    control.style.top = '96px';
+    control.style.right = '16px';
+    control.style.zIndex = '2147483645';
+    control.style.width = '340px';
+    control.style.padding = '10px';
+    control.style.borderRadius = '10px';
+    control.style.border = '1px solid rgba(0,0,0,0.12)';
+    control.style.background = 'rgba(255,255,255,0.96)';
+    control.style.boxShadow = '0 6px 18px rgba(0,0,0,0.15)';
+    control.style.fontFamily = 'system-ui,sans-serif';
+    control.style.fontSize = '12px';
+    control.style.color = '#0f172a';
+    control.innerHTML = [
+        '<div data-role="drag-handle" style="display:flex; justify-content:space-between; gap:8px; align-items:center; margin-bottom:6px; cursor:move; user-select:none;">',
+        '<div style="font-weight:700;">SoundCloud insights capture</div>',
+        '<div style="font-size:11px; color:#64748b;">drag</div>',
+        '</div>',
+        '<div data-role="state" style="margin-bottom:8px; color:#334155; font-weight:600;">Supported SoundCloud insights page detected. Waiting for GraphQL traffic...</div>',
+        '<div data-role="counters" style="margin-bottom:8px; color:#475569;">Monitor: waiting · Captures: 0 · Auto-ingest: disabled · Token: missing</div>',
+        '<div style="margin-top:10px; font-weight:600; color:#334155;">Latest capture</div>',
+        '<div data-role="capture" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569; max-height:120px; overflow:auto;">No supported SoundCloud captures detected yet.</div>',
+        '<div style="margin-top:10px; font-weight:600; color:#334155;">Latest ingest result</div>',
+        '<div data-role="ingest" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569;">No ingest attempt recorded yet.</div>',
+        '<div data-role="helper" style="margin-top:10px; font-size:11px; line-height:1.35; color:#64748b;">Auto-ingest is disabled by default. Enable it from the popup if you want captures pushed into Tools.</div>'
+    ].join('');
+
+    document.body.appendChild(control);
+    soundCloudInsightsControl = control;
+    enableSoundCloudInsightsControlDragging(control);
+    updateSoundCloudInsightsControl();
+
+    return control;
 }
 
 function clipText(value, limit) {
@@ -1365,7 +1615,7 @@ function mirrorAdminDetectionsToConsole(entries, networkEntry) {
 
 function getToolsRuntimeSettings() {
     return new Promise(function (resolve) {
-        safeStorageSyncGet(['toolsApiToken', 'devMode'], function (data) {
+        safeStorageSyncGet(['toolsApiToken', 'devMode', 'soundcloudAutoIngestEnabled'], function (data) {
             resolve(data || {});
         });
     });
@@ -4364,10 +4614,12 @@ function handleLocationChange(reason) {
 
     lastObservedLocationHref = location.href;
     ensureAdminActivitiesControl();
+    ensureSoundCloudInsightsControl();
 
     if (isSoundCloudPage()) {
         if (isSupportedSoundCloudInsightsPage()) {
             injectNetworkMonitor();
+            ensureSoundCloudInsightsControl();
             setSoundCloudStatusText(networkMonitorInjected
                 ? 'SoundCloud insights page detected. Waiting for supported GraphQL captures...'
                 : 'SoundCloud insights page detected, but monitor injection has not completed yet.');
@@ -5956,10 +6208,16 @@ injectNetworkMonitor();
 ensureComposerActionButton();
 ensureVerifyActionButton();
 ensureAdminActivitiesControl();
+ensureSoundCloudInsightsControl();
+syncSoundCloudRuntimePreference();
 syncAdminDebugPreference();
 safeAddStorageChangeListener(function (changes, areaName) {
     if (areaName === 'sync' && changes.facebookAdminDebugEnabled) {
         syncAdminDebugPreference();
+    }
+
+    if (areaName === 'sync' && (changes.soundcloudAutoIngestEnabled || changes.toolsApiToken)) {
+        syncSoundCloudRuntimePreference();
     }
 });
 handleLocationChange('init');

@@ -22,6 +22,21 @@
 - Generated output now tries to auto-fill the active composer on supported platforms, while Facebook stays on a safer paste-first/manual-submit flow
 - Generic nearby parent/sibling thread context is now gathered for non-Facebook editors to give the AI more visible discussion context when available
 
+## 1.2.4 - 2026-03-12
+
+### Changed
+- Continued hardening of the Facebook admin-activity capture rollout with more monitor/background/content-script tuning around GraphQL/XHR parsing, popup diagnostics, and inline reporting behavior
+- README and popup/dashboard copy were refreshed again to better reflect the broader Social Media Tools scope rather than a Facebook-only responder
+
+### Fixed
+- Stabilization fixes shipped around the post-`1.2.2` admin-activity rollout, including additional monitor/reporting edge-case handling before the later `1.2.5` UI work
+
+## 1.2.3 - 2026-03-12
+
+### Changed
+- Historical version gap backfilled: `1.2.3` appears to have been used as an internal rollout checkpoint during the Facebook admin-activity capture work, but no preserved standalone tag remains in repository history
+- User-facing work from that checkpoint was consolidated into the subsequent `1.2.4` stabilization cut
+
 ## 1.2.2 - 2026-03-12
 
 ### Added

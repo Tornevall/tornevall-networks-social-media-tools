@@ -9,6 +9,7 @@
             statusText: 'SoundCloud insights capture is idle.',
             captureCount: 0,
             lastCapture: null,
+            lastIngest: null,
         };
 
         function isSoundCloudPage() {
@@ -90,6 +91,7 @@
                     stateText: state.statusText,
                     captureCount: state.captureCount,
                     lastCapture: state.lastCapture,
+                    lastIngest: state.lastIngest,
                 }
             };
         }
@@ -106,6 +108,8 @@
         }
 
         function applyIngestResponseStatus(response) {
+            state.lastIngest = response && response.ingest ? response.ingest : null;
+
             if (!response || !response.ok) {
                 setStatusText('SoundCloud capture forwarding failed: ' + ((response && response.error) || 'Unknown runtime error.'));
                 reportPageStatus();
@@ -142,6 +146,7 @@
 
             state.captureCount += 1;
             state.lastCapture = buildLastCapture(capture, normalized);
+            state.lastIngest = null;
             setStatusText(normalized
                 ? ('Captured SoundCloud dataset ' + normalized.dataset_key + ' via ' + (normalized.operation_name || 'GraphQL') + '.')
                 : 'Observed SoundCloud GraphQL traffic, but it did not match a supported dataset.');
