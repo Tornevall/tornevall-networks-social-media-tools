@@ -1,9 +1,17 @@
 name: Release Extension
 
 on:
+  # Triggas automatiskt vid tagg-push (v*.*.*)
   push:
     tags:
       - 'v*.*.*'
+  # Manuell trigger via GitHub Actions UI → "Run workflow"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version att releasa (utan v-prefix, t.ex. 1.2.5)'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -18,9 +26,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Extract version from tag
+      - name: Extract version
         id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+            TAG="v${VERSION}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "TAG=${TAG}"         >> "$GITHUB_OUTPUT"
 
       - name: Build extension ZIP
         run: |
@@ -33,7 +50,8 @@ jobs:
       - name: Update updates.xml
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          CODEBASE="https://github.com/Tornevall/tornevall-networks-social-media-tools/releases/download/${GITHUB_REF_NAME}/tornevall-networks-social-media-tools.zip"
+          TAG="${{ steps.version.outputs.TAG }}"
+          CODEBASE="https://github.com/Tornevall/tornevall-networks-social-media-tools/releases/download/${TAG}/tornevall-networks-social-media-tools.zip"
           sed -i \
             -e "s|codebase='[^']*'|codebase='${CODEBASE}'|" \
             -e "s|version='[^']*'|version='${VERSION}'|" \
@@ -50,8 +68,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: "v${{ steps.version.outputs.VERSION }}"
+          tag_name: ${{ steps.version.outputs.TAG }}
+          name: "${{ steps.version.outputs.TAG }}"
           generate_release_notes: true
           files: tornevall-networks-social-media-tools.zip
-
