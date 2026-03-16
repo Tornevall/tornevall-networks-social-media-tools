@@ -7,6 +7,7 @@ const TEST_PATH = '/api/social-media-tools/extension/test';
 const AI_PATH = '/api/ai/socialgpt/respond';
 const DEBUG_LOG_REQUEST = 'GET_DEBUG_LOGS';
 const DEBUG_CLEAR_REQUEST = 'CLEAR_DEBUG_LOGS';
+const RETRYABLE_REDIRECT_STATUSES = [301, 302, 303, 307, 308];
 const DEFAULT_MOOD = 'Neutral and formal';
 const DEFAULT_PERSONA_PROFILE = 'You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.';
 const DEFAULT_TEST_QUESTION = 'A Facebook user writes: "Hi, what does this tool help you with?" Reply in one short sentence in your configured tone and style.';
@@ -17,6 +18,21 @@ const DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION = '';
 
 function getBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
+}
+
+function getRetryBaseUrls(baseUrl) {
+    const normalized = String(baseUrl || '').trim();
+    const candidates = normalized ? [normalized] : [];
+
+    if (normalized === PROD_BASE_URL && candidates.indexOf(DEV_BASE_URL) === -1) {
+        candidates.push(DEV_BASE_URL);
+    }
+
+    return candidates;
+}
+
+function isRetryableRedirectStatus(status) {
+    return RETRYABLE_REDIRECT_STATUSES.indexOf(status) !== -1;
 }
 
 function setStatus(el, message, isError) {
@@ -99,8 +115,8 @@ function escapeHtml(value) {
 async function apiRequest(baseUrl, token, path, options) {
     const config = options || {};
     const method = config.method || 'GET';
-    const url = baseUrl + path;
     const startedAt = performance.now();
+    const baseUrls = getRetryBaseUrls(baseUrl);
 
     await appendPopupDebugLog({
         level: 'info',
@@ -108,77 +124,108 @@ async function apiRequest(baseUrl, token, path, options) {
         message: 'Popup API request started.',
         meta: {
             method: method,
-            url: url,
+            url: (baseUrls[0] || baseUrl) + path,
         }
     });
+    let lastFailure = null;
 
-    let response;
+    for (let index = 0; index < baseUrls.length; index += 1) {
+        const currentBaseUrl = baseUrls[index];
+        const url = currentBaseUrl + path;
+        let response;
 
-    try {
-        response = await fetch(url, {
-            method: method,
-            headers: Object.assign({
-                'Accept': 'application/json',
-                'Authorization': 'Bearer ' + token,
-            }, config.body ? {'Content-Type': 'application/json'} : {}),
-            body: config.body ? JSON.stringify(config.body) : undefined,
-        });
-    } catch (error) {
+        try {
+            response = await fetch(url, {
+                method: method,
+                headers: Object.assign({
+                    'Accept': 'application/json',
+                    'Authorization': 'Bearer ' + token,
+                }, config.body ? {'Content-Type': 'application/json'} : {}),
+                body: config.body ? JSON.stringify(config.body) : undefined,
+            });
+        } catch (error) {
+            lastFailure = {
+                status: 0,
+                data: {
+                    ok: false,
+                    message: error && error.message ? error.message : 'Network request failed.',
+                },
+                url: url,
+            };
+            break;
+        }
+
+        const durationMs = Math.round(performance.now() - startedAt);
+        const responseText = await response.text();
+        let data = {};
+
+        if (responseText) {
+            try {
+                data = JSON.parse(responseText);
+            } catch (error) {
+                data = {
+                    ok: false,
+                    message: responseText,
+                };
+            }
+        }
+
+        if ((!response.ok || (data && data.ok === false)) && isRetryableRedirectStatus(response.status) && index < baseUrls.length - 1) {
+            await appendPopupDebugLog({
+                level: 'warning',
+                category: 'popup-api',
+                message: 'Popup API request was redirected. Retrying on fallback host.',
+                meta: {
+                    method: method,
+                    url: url,
+                    fallback_url: baseUrls[index + 1] + path,
+                    status: response.status,
+                    duration_ms: durationMs,
+                }
+            });
+            lastFailure = {status: response.status, data: data, url: url};
+            continue;
+        }
+
         await appendPopupDebugLog({
-            level: 'error',
+            level: response.ok ? 'info' : 'error',
             category: 'popup-api',
-            message: 'Popup API request failed before response.',
+            message: 'Popup API request completed.',
             meta: {
                 method: method,
                 url: url,
-                duration_ms: Math.round(performance.now() - startedAt),
-                error: error && error.message ? error.message : String(error),
+                status: response.status,
+                ok: response.ok,
+                duration_ms: durationMs,
             }
         });
 
         return {
-            ok: false,
-            status: 0,
-            data: {
-                ok: false,
-                message: error && error.message ? error.message : 'Network request failed.',
-            },
+            ok: response.ok && data && data.ok !== false,
+            status: response.status,
+            data: data,
         };
     }
 
-    const durationMs = Math.round(performance.now() - startedAt);
-
-    const responseText = await response.text();
-    let data = {};
-
-    if (responseText) {
-        try {
-            data = JSON.parse(responseText);
-        } catch (error) {
-            data = {
-                ok: false,
-                message: responseText,
-            };
-        }
-    }
-
     await appendPopupDebugLog({
-        level: response.ok ? 'info' : 'error',
+        level: 'error',
         category: 'popup-api',
-        message: 'Popup API request completed.',
+        message: 'Popup API request failed before response.',
         meta: {
             method: method,
-            url: url,
-            status: response.status,
-            ok: response.ok,
-            duration_ms: durationMs,
+            url: lastFailure && lastFailure.url ? lastFailure.url : ((baseUrls[0] || baseUrl) + path),
+            duration_ms: Math.round(performance.now() - startedAt),
+            error: extractApiMessage(lastFailure ? lastFailure.data : null, 'Network request failed.'),
         }
     });
 
     return {
-        ok: response.ok && data && data.ok !== false,
-        status: response.status,
-        data: data,
+        ok: false,
+        status: lastFailure && typeof lastFailure.status === 'number' ? lastFailure.status : 0,
+        data: lastFailure && lastFailure.data ? lastFailure.data : {
+            ok: false,
+            message: 'Network request failed.',
+        },
     };
 }
 
