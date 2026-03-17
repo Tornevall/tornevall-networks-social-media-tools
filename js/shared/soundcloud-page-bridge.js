@@ -10,6 +10,8 @@
             captureCount: 0,
             lastCapture: null,
             lastIngest: null,
+            pendingCaptureCount: 0,
+            lastFlush: null,
         };
 
         function isSoundCloudPage() {
@@ -40,6 +42,20 @@
             return !!normalizeFunction(config.getNetworkMonitorInjected, function () {
                 return false;
             })();
+        }
+
+        function isHookReady() {
+            return !!normalizeFunction(config.getHookReady, function () {
+                return false;
+            })();
+        }
+
+        function getLastHookMeta() {
+            var meta = normalizeFunction(config.getLastHookMeta, function () {
+                return null;
+            })();
+
+            return meta && typeof meta === 'object' ? meta : null;
         }
 
         function sendRuntimeMessage(message) {
@@ -88,10 +104,14 @@
                     isSoundCloudPage: isSoundCloudPage(),
                     isRelevantInsightsPage: isSupportedInsightsPage(),
                     networkMonitorInjected: !!(isNetworkMonitorInjected() && isSupportedInsightsPage()),
+                    hookReady: isHookReady(),
                     stateText: state.statusText,
                     captureCount: state.captureCount,
                     lastCapture: state.lastCapture,
                     lastIngest: state.lastIngest,
+                    pendingCaptureCount: state.pendingCaptureCount,
+                    lastFlush: state.lastFlush,
+                    lastHookMeta: getLastHookMeta(),
                 }
             };
         }
@@ -109,6 +129,10 @@
 
         function applyIngestResponseStatus(response) {
             state.lastIngest = response && response.ingest ? response.ingest : null;
+            state.pendingCaptureCount = response && typeof response.pending_capture_count === 'number'
+                ? response.pending_capture_count
+                : state.pendingCaptureCount;
+            state.lastFlush = response && response.last_flush ? response.last_flush : state.lastFlush;
 
             if (!response || !response.ok) {
                 setStatusText('SoundCloud capture forwarding failed: ' + ((response && response.error) || 'Unknown runtime error.'));
@@ -117,7 +141,9 @@
             }
 
             if (response.ingest && response.ingest.attempted === false) {
-                setStatusText('Captured SoundCloud dataset, but ingest was not attempted: ' + (response.ingest.reason || 'unknown reason') + '.');
+                setStatusText('Captured SoundCloud dataset, but ingest was not attempted: ' + (response.ingest.reason === 'empty_normalized_rows'
+                    ? 'no normalized insight rows were found yet'
+                    : (response.ingest.reason || 'unknown reason')) + '.');
             } else if (response.ingest && response.ingest.ok) {
                 setStatusText('Captured and ingested SoundCloud dataset successfully.');
             } else if (response.ingest && response.ingest.attempted) {

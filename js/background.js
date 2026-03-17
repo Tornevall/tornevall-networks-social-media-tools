@@ -7,7 +7,10 @@ const SOUNDCLOUD_INGEST_PATH = '/api/social-media-tools/soundcloud/ingest';
 const DEBUG_LOG_KEY = 'tn_networks_debug_logs';
 const MAX_DEBUG_LOGS = 200;
 const MAX_SOUNDCLOUD_RECENT_EVENTS = 5;
+const MAX_SOUNDCLOUD_PENDING_CAPTURES = 50;
+const MAX_SOUNDCLOUD_SENT_FINGERPRINTS = 200;
 const RETRYABLE_REDIRECT_STATUSES = [301, 302, 303, 307, 308];
+const EXTENSION_DISPLAY_NAME = 'Tornevall Networks Social Media Tools';
 const FALLBACK_AVAILABLE_MODELS = [
     {id: 'gpt-4o-mini', label: 'gpt-4o-mini'},
     {id: 'gpt-4o', label: 'gpt-4o'},
@@ -90,7 +93,7 @@ function setAuthFailureIndicator(message) {
 
 function clearAuthFailureIndicator() {
     chrome.action.setBadgeText({text: ''});
-    chrome.action.setTitle({title: 'Tornevall Networks Social Media Tools'});
+    chrome.action.setTitle({title: EXTENSION_DISPLAY_NAME});
 }
 
 function extractToolsApiMessage(data) {
@@ -676,6 +679,220 @@ function normalizeSoundCloudCaptureForIngest(payload) {
     };
 }
 
+function buildSimpleHash(value) {
+    var input = String(value || '');
+    var hash = 0;
+    for (var index = 0; index < input.length; index += 1) {
+        hash = ((hash << 5) - hash) + input.charCodeAt(index);
+        hash |= 0;
+    }
+
+    return 'sc_' + Math.abs(hash).toString(36);
+}
+
+function buildSoundCloudCaptureFingerprint(normalizedPayload) {
+    if (!normalizedPayload || typeof normalizedPayload !== 'object') {
+        return '';
+    }
+
+    return buildSimpleHash(JSON.stringify({
+        source_url: normalizedPayload.source_url || '',
+        dataset_key: normalizedPayload.dataset_key || '',
+        operation_name: normalizedPayload.operation_name || '',
+        window_label: normalizedPayload.window_label || '',
+        rows: Array.isArray(normalizedPayload.rows) ? normalizedPayload.rows : [],
+    }));
+}
+
+function ensureSoundCloudTabCollections(status) {
+    if (!status || typeof status !== 'object') {
+        return;
+    }
+
+    if (!Array.isArray(status.pendingCaptures)) {
+        status.pendingCaptures = [];
+    }
+
+    if (!Array.isArray(status.sentFingerprints)) {
+        status.sentFingerprints = [];
+    }
+
+    status.pendingCaptureCount = Array.isArray(status.pendingCaptures) ? status.pendingCaptures.length : 0;
+    status.duplicateCaptureCount = typeof status.duplicateCaptureCount === 'number' ? status.duplicateCaptureCount : 0;
+}
+
+function rememberSoundCloudSentFingerprint(status, fingerprint) {
+    if (!status || !fingerprint) {
+        return;
+    }
+
+    ensureSoundCloudTabCollections(status);
+    status.sentFingerprints = status.sentFingerprints.filter(function (existingFingerprint) {
+        return existingFingerprint !== fingerprint;
+    });
+    status.sentFingerprints.unshift(fingerprint);
+    if (status.sentFingerprints.length > MAX_SOUNDCLOUD_SENT_FINGERPRINTS) {
+        status.sentFingerprints = status.sentFingerprints.slice(0, MAX_SOUNDCLOUD_SENT_FINGERPRINTS);
+    }
+}
+
+function queueSoundCloudPendingCapture(tabId, rawPayload, normalizedPayload) {
+    var status = ensureSoundCloudTabStatus(tabId);
+    var fingerprint = buildSoundCloudCaptureFingerprint(normalizedPayload);
+
+    ensureSoundCloudTabCollections(status);
+
+    if (!fingerprint) {
+        return {
+            queued: false,
+            duplicate: false,
+            reason: 'missing_fingerprint',
+            fingerprint: '',
+            pending_count: status.pendingCaptureCount,
+        };
+    }
+
+    if (status.sentFingerprints.indexOf(fingerprint) !== -1) {
+        status.duplicateCaptureCount += 1;
+        return {
+            queued: false,
+            duplicate: true,
+            reason: 'already_ingested',
+            fingerprint: fingerprint,
+            pending_count: status.pendingCaptureCount,
+        };
+    }
+
+    if (status.pendingCaptures.some(function (entry) { return entry && entry.fingerprint === fingerprint; })) {
+        status.duplicateCaptureCount += 1;
+        return {
+            queued: false,
+            duplicate: true,
+            reason: 'already_buffered',
+            fingerprint: fingerprint,
+            pending_count: status.pendingCaptureCount,
+        };
+    }
+
+    status.pendingCaptures.unshift({
+        fingerprint: fingerprint,
+        normalizedPayload: normalizedPayload,
+        rawPayload: rawPayload || null,
+        capturedAt: normalizedPayload && normalizedPayload.captured_at ? normalizedPayload.captured_at : new Date().toISOString(),
+    });
+    if (status.pendingCaptures.length > MAX_SOUNDCLOUD_PENDING_CAPTURES) {
+        status.pendingCaptures = status.pendingCaptures.slice(0, MAX_SOUNDCLOUD_PENDING_CAPTURES);
+    }
+    status.pendingCaptureCount = status.pendingCaptures.length;
+
+    return {
+        queued: true,
+        duplicate: false,
+        reason: '',
+        fingerprint: fingerprint,
+        pending_count: status.pendingCaptureCount,
+    };
+}
+
+function updateSoundCloudTabStatus(tabId, patch) {
+    var status = ensureSoundCloudTabStatus(tabId);
+    Object.assign(status, patch || {}, {
+        updatedAt: new Date().toISOString(),
+    });
+    return status;
+}
+
+function pushSoundCloudBufferStatusToTab(tabId) {
+    var status = ensureSoundCloudTabStatus(tabId);
+    if (typeof tabId !== 'number' || !chrome || !chrome.tabs || typeof chrome.tabs.sendMessage !== 'function') {
+        return;
+    }
+
+    chrome.tabs.sendMessage(tabId, {
+        type: 'SOUNDCLOUD_BUFFER_STATUS',
+        payload: {
+            pendingCaptureCount: status.pendingCaptureCount || 0,
+            duplicateCaptureCount: status.duplicateCaptureCount || 0,
+            lastFlush: status.lastFlush || null,
+            lastIngest: status.lastIngest || null,
+        }
+    }, function () {
+    });
+}
+
+async function flushSoundCloudPendingCapturesForTab(tabId, apiToken, baseUrl) {
+    var status = ensureSoundCloudTabStatus(tabId);
+    ensureSoundCloudTabCollections(status);
+
+    if (!status.pendingCaptures.length) {
+        status.lastFlush = {
+            attempted: false,
+            ok: true,
+            reason: 'nothing_pending',
+            flushed_count: 0,
+            duplicate_count: 0,
+            failed_count: 0,
+            remaining_count: 0,
+            flushed_at: new Date().toISOString(),
+        };
+
+        pushSoundCloudBufferStatusToTab(tabId);
+        return status.lastFlush;
+    }
+
+    var pendingEntries = status.pendingCaptures.slice();
+    var remainingEntries = [];
+    var flushedCount = 0;
+    var duplicateCount = 0;
+    var failedCount = 0;
+    var lastResult = null;
+
+    for (var index = 0; index < pendingEntries.length; index += 1) {
+        var entry = pendingEntries[index];
+        if (!entry || !entry.normalizedPayload) {
+            continue;
+        }
+
+        var ingestResult = await callSoundCloudIngest(apiToken, baseUrl, entry.normalizedPayload);
+        lastResult = ingestResult;
+
+        if (ingestResult && ingestResult.ok) {
+            flushedCount += 1;
+            if (ingestResult.duplicate_detected) {
+                duplicateCount += 1;
+            }
+            rememberSoundCloudSentFingerprint(status, entry.fingerprint);
+            continue;
+        }
+
+        failedCount += 1;
+        remainingEntries.push(entry);
+    }
+
+    status.pendingCaptures = remainingEntries;
+    status.pendingCaptureCount = remainingEntries.length;
+    status.lastFlush = {
+        attempted: true,
+        ok: failedCount === 0,
+        flushed_count: flushedCount,
+        duplicate_count: duplicateCount,
+        failed_count: failedCount,
+        remaining_count: remainingEntries.length,
+        flushed_at: new Date().toISOString(),
+        last_result: lastResult,
+    };
+
+    pushSoundCloudBufferStatusToTab(tabId);
+    return status.lastFlush;
+}
+
+async function flushAllPendingSoundCloudCaptures(apiToken, baseUrl) {
+    var keys = Object.keys(soundCloudTabStatusCache);
+    for (var index = 0; index < keys.length; index += 1) {
+        await flushSoundCloudPendingCapturesForTab(soundCloudTabStatusCache[keys[index]].tabId, apiToken, baseUrl);
+    }
+}
+
 function ensureSoundCloudTabStatus(tabId) {
     var key = typeof tabId === 'number' ? String(tabId) : 'unknown';
     if (!soundCloudTabStatusCache[key]) {
@@ -687,24 +904,26 @@ function ensureSoundCloudTabStatus(tabId) {
             isSoundCloudPage: false,
             isRelevantInsightsPage: false,
             networkMonitorInjected: false,
+            hookReady: false,
             stateText: '',
             captureCount: 0,
             lastCapture: null,
             lastIngest: null,
+            lastHookMeta: null,
             recentEvents: [],
+            pendingCaptures: [],
+            sentFingerprints: [],
+            pendingCaptureCount: 0,
+            duplicateCaptureCount: 0,
+            lastFlush: null,
         };
     }
+
+    ensureSoundCloudTabCollections(soundCloudTabStatusCache[key]);
 
     return soundCloudTabStatusCache[key];
 }
 
-function updateSoundCloudTabStatus(tabId, patch) {
-    var status = ensureSoundCloudTabStatus(tabId);
-    Object.assign(status, patch || {}, {
-        updatedAt: new Date().toISOString(),
-    });
-    return status;
-}
 
 function rememberSoundCloudEvent(tabId, rawPayload, normalized, ingestResult) {
     var status = ensureSoundCloudTabStatus(tabId);
@@ -713,6 +932,9 @@ function rememberSoundCloudEvent(tabId, rawPayload, normalized, ingestResult) {
         capturedAt: normalized && normalized.captured_at ? normalized.captured_at : new Date().toISOString(),
         opName: rawPayload && rawPayload.opName ? rawPayload.opName : (normalized && normalized.operation_name ? normalized.operation_name : null),
         datasetKey: normalized && normalized.dataset_key ? normalized.dataset_key : null,
+        rowCount: normalized && typeof normalized.row_count === 'number' ? normalized.row_count : null,
+        via: rawPayload && rawPayload.meta && rawPayload.meta.via ? rawPayload.meta.via : null,
+        host: rawPayload && rawPayload.meta && rawPayload.meta.host ? rawPayload.meta.host : null,
         ingest: ingestResult || null,
     });
     if (recentEvents.length > MAX_SOUNDCLOUD_RECENT_EVENTS) {
@@ -792,6 +1014,8 @@ async function callSoundCloudIngest(apiToken, baseUrl, payload) {
             message: extractToolsApiMessage(data),
             event_id: data && data.event ? data.event.id : null,
             source_id: data && data.source ? data.source.id : null,
+            duplicate_detected: !!(data && data.duplicate_detected),
+            payload_hash: data && data.payload_hash ? data.payload_hash : null,
         };
     } catch (e) {
         await appendDebugLog({
@@ -840,6 +1064,13 @@ function getSoundCloudActiveTabStatus() {
 
                 if (pageStatus && pageStatus.ok) {
                     mergedStatus = Object.assign({}, mergedStatus, pageStatus.status || {});
+                    mergedStatus.pendingCaptureCount = typeof mergedStatus.pendingCaptureCount === 'number'
+                        ? mergedStatus.pendingCaptureCount
+                        : (cachedStatus.pendingCaptureCount || 0);
+                    mergedStatus.duplicateCaptureCount = typeof mergedStatus.duplicateCaptureCount === 'number'
+                        ? mergedStatus.duplicateCaptureCount
+                        : (cachedStatus.duplicateCaptureCount || 0);
+                    mergedStatus.lastFlush = mergedStatus.lastFlush || cachedStatus.lastFlush || null;
                 } else if (!mergedStatus.pageUrl) {
                     mergedStatus.pageUrl = tab.url || '';
                 }
@@ -1010,9 +1241,13 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
             isSoundCloudPage: !!statusPayload.isSoundCloudPage,
             isRelevantInsightsPage: !!statusPayload.isRelevantInsightsPage,
             networkMonitorInjected: !!statusPayload.networkMonitorInjected,
+            hookReady: !!statusPayload.hookReady,
             stateText: statusPayload.stateText || '',
             captureCount: typeof statusPayload.captureCount === 'number' ? statusPayload.captureCount : ensureSoundCloudTabStatus(statusTabId).captureCount,
             lastCapture: statusPayload.lastCapture || ensureSoundCloudTabStatus(statusTabId).lastCapture,
+            lastHookMeta: statusPayload.lastHookMeta || ensureSoundCloudTabStatus(statusTabId).lastHookMeta,
+            pendingCaptureCount: typeof statusPayload.pendingCaptureCount === 'number' ? statusPayload.pendingCaptureCount : ensureSoundCloudTabStatus(statusTabId).pendingCaptureCount,
+            lastFlush: statusPayload.lastFlush || ensureSoundCloudTabStatus(statusTabId).lastFlush,
         });
         sendResponse({ok: true, status: updatedStatus});
         return true;
@@ -1024,14 +1259,38 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
         chrome.storage.sync.get(['toolsApiToken', 'devMode', 'soundcloudAutoIngestEnabled'], async function (data) {
             var normalizedPayload = normalizeSoundCloudCaptureForIngest(capturePayload);
             var ingestResult = {attempted: false, ok: false, reason: 'unsupported_operation'};
+            var queueResult = null;
 
             if (normalizedPayload) {
-                if (data.soundcloudAutoIngestEnabled !== true) {
-                    ingestResult = {attempted: false, ok: false, reason: 'auto_ingest_disabled'};
-                } else if (!data.toolsApiToken) {
-                    ingestResult = {attempted: false, ok: false, reason: 'missing_tools_token'};
+                if (normalizedPayload.dataset_key !== 'lookup' && (!normalizedPayload.row_count || !Array.isArray(normalizedPayload.rows) || !normalizedPayload.rows.length)) {
+                    ingestResult = {attempted: false, ok: false, reason: 'empty_normalized_rows'};
                 } else {
-                    ingestResult = await callSoundCloudIngest(data.toolsApiToken, getToolsBaseUrl(!!data.devMode), normalizedPayload);
+                    queueResult = queueSoundCloudPendingCapture(captureTabId, capturePayload, normalizedPayload);
+                    if (queueResult.duplicate) {
+                        ingestResult = {
+                            attempted: false,
+                            ok: true,
+                            reason: queueResult.reason,
+                            duplicate_detected: true,
+                            buffered_count: queueResult.pending_count,
+                        };
+                    } else if (data.soundcloudAutoIngestEnabled !== true) {
+                        ingestResult = {
+                            attempted: false,
+                            ok: false,
+                            reason: 'auto_ingest_disabled',
+                            buffered_count: queueResult.pending_count,
+                        };
+                    } else if (!data.toolsApiToken) {
+                        ingestResult = {
+                            attempted: false,
+                            ok: false,
+                            reason: 'missing_tools_token',
+                            buffered_count: queueResult.pending_count,
+                        };
+                    } else {
+                        ingestResult = await flushSoundCloudPendingCapturesForTab(captureTabId, data.toolsApiToken, getToolsBaseUrl(!!data.devMode));
+                    }
                 }
             }
 
@@ -1042,8 +1301,10 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
                 isSoundCloudPage: true,
                 isRelevantInsightsPage: true,
                 networkMonitorInjected: true,
+                hookReady: true,
                 stateText: normalizedPayload
-                    ? ('Captured ' + normalizedPayload.dataset_key + ' via ' + (normalizedPayload.operation_name || 'SoundCloud GraphQL') + '.')
+                    ? ('Captured ' + normalizedPayload.dataset_key + ' via ' + (normalizedPayload.operation_name || 'SoundCloud GraphQL')
+                        + (queueResult && queueResult.duplicate ? ' (duplicate ignored).' : (currentStatus.pendingCaptureCount ? '. Buffered ' + currentStatus.pendingCaptureCount + ' capture(s) pending.' : '.')))
                     : 'Observed SoundCloud GraphQL traffic, but it did not match a supported insights dataset.',
                 captureCount: (currentStatus.captureCount || 0) + 1,
                 lastCapture: normalizedPayload ? {
@@ -1054,12 +1315,19 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
                     capturedAt: normalizedPayload.captured_at,
                 } : currentStatus.lastCapture,
                 lastIngest: ingestResult,
+                lastHookMeta: capturePayload && capturePayload.meta ? capturePayload.meta : currentStatus.lastHookMeta,
+                pendingCaptureCount: currentStatus.pendingCaptureCount || 0,
+                duplicateCaptureCount: currentStatus.duplicateCaptureCount || 0,
+                lastFlush: currentStatus.lastFlush || null,
             });
             rememberSoundCloudEvent(captureTabId, capturePayload, normalizedPayload, ingestResult);
+            pushSoundCloudBufferStatusToTab(captureTabId);
 
             sendResponse({
                 ok: true,
                 ingest: ingestResult,
+                pending_capture_count: currentStatus.pendingCaptureCount || 0,
+                last_flush: currentStatus.lastFlush || null,
                 normalized: normalizedPayload ? {
                     dataset_key: normalizedPayload.dataset_key,
                     operation_name: normalizedPayload.operation_name,
@@ -1079,4 +1347,33 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
     }
 });
 
-console.log('[Tornevall Networks Social Media Tools] Background SW ready for tools.tornevall.net / tools.tornevall.com');
+chrome.storage.onChanged.addListener(function (changes, areaName) {
+    if (areaName !== 'sync') {
+        return;
+    }
+
+    var shouldTryFlush = false;
+    if (changes.soundcloudAutoIngestEnabled && changes.soundcloudAutoIngestEnabled.newValue === true) {
+        shouldTryFlush = true;
+    }
+    if (changes.toolsApiToken && changes.toolsApiToken.newValue) {
+        shouldTryFlush = true;
+    }
+    if (changes.devMode) {
+        shouldTryFlush = true;
+    }
+
+    if (!shouldTryFlush) {
+        return;
+    }
+
+    chrome.storage.sync.get(['toolsApiToken', 'devMode', 'soundcloudAutoIngestEnabled'], async function (data) {
+        if (data.soundcloudAutoIngestEnabled !== true || !data.toolsApiToken) {
+            return;
+        }
+
+        await flushAllPendingSoundCloudCaptures(data.toolsApiToken, getToolsBaseUrl(!!data.devMode));
+    });
+});
+
+console.log('[' + EXTENSION_DISPLAY_NAME + '] Background SW ready for tools.tornevall.net / tools.tornevall.com');

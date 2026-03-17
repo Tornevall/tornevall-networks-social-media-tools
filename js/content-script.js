@@ -51,6 +51,10 @@ const MAX_RECENT_NETWORK_EVENTS = 8;
 const MAX_ADMIN_BATCH_SIZE = 50;
 const ADMIN_PANEL_POSITION_STORAGE_KEY = 'tn_social_tools_admin_panel_position';
 const SOUND_CLOUD_PANEL_POSITION_STORAGE_KEY = 'tn_social_tools_soundcloud_panel_position';
+const NETWORK_MONITOR_STATE_ATTRIBUTE = 'data-tn-network-monitor-active';
+const SOUNDCLOUD_BUFFER_ELEMENT_ID = 'tn-networks-soundcloud-buffer';
+const SOUND_CLOUD_DIRECT_HOOK_READY_ATTRIBUTE = 'data-tn-soundcloud-hook-ready';
+const SOUND_CLOUD_DIRECT_BUFFER_ELEMENT_ID = 'tn-soundcloud-direct-capture-buffer';
 const MAX_RECENT_FACEBOOK_COMMENT_ENTRIES = 200;
 const DEFAULT_REPLY_PROMPT = 'Write text that fits the visible context and can be pasted into the selected field.';
 const QUICK_REPLY_PRESETS = {
@@ -159,6 +163,10 @@ function safeChromeCall(action, fallback) {
         return fallback;
     }
 
+    if (typeof chrome === 'undefined' || !chrome) {
+        return fallback;
+    }
+
     try {
         return action();
     } catch (error) {
@@ -173,18 +181,27 @@ function safeChromeCall(action, fallback) {
 
 function getExtensionVersion() {
     return safeChromeCall(function () {
+        if (!chrome.runtime || typeof chrome.runtime.getManifest !== 'function') {
+            return 'unknown';
+        }
         return chrome.runtime.getManifest().version;
     }, 'unknown');
 }
 
 function safeRuntimeGetURL(path) {
     return safeChromeCall(function () {
+        if (!chrome.runtime || typeof chrome.runtime.getURL !== 'function') {
+            return '';
+        }
         return chrome.runtime.getURL(path);
     }, '');
 }
 
 function safeSendRuntimeMessage(message) {
     return safeChromeCall(function () {
+        if (!chrome.runtime || typeof chrome.runtime.sendMessage !== 'function') {
+            return false;
+        }
         chrome.runtime.sendMessage(message);
         return true;
     }, false);
@@ -193,6 +210,9 @@ function safeSendRuntimeMessage(message) {
 function safeSendRuntimeMessageWithResponse(message) {
     return new Promise(function (resolve) {
         const sent = safeChromeCall(function () {
+            if (!chrome.runtime || typeof chrome.runtime.sendMessage !== 'function') {
+                return false;
+            }
             chrome.runtime.sendMessage(message, function (response) {
                 if (chrome.runtime && chrome.runtime.lastError) {
                     if (isContextInvalidatedError(chrome.runtime.lastError)) {
@@ -215,6 +235,9 @@ function safeSendRuntimeMessageWithResponse(message) {
 
 function safeStorageSyncGet(keys, callback) {
     const result = safeChromeCall(function () {
+        if (!chrome.storage || !chrome.storage.sync || typeof chrome.storage.sync.get !== 'function') {
+            return false;
+        }
         chrome.storage.sync.get(keys, function (data) {
             if (chrome.runtime && chrome.runtime.lastError && isContextInvalidatedError(chrome.runtime.lastError)) {
                 handleExtensionContextInvalidated(chrome.runtime.lastError);
@@ -234,6 +257,12 @@ function safeStorageSyncGet(keys, callback) {
 
 function safeStorageSyncSet(values, callback) {
     return safeChromeCall(function () {
+        if (!chrome.storage || !chrome.storage.sync || typeof chrome.storage.sync.set !== 'function') {
+            if (typeof callback === 'function') {
+                callback();
+            }
+            return false;
+        }
         chrome.storage.sync.set(values, function () {
             if (chrome.runtime && chrome.runtime.lastError && isContextInvalidatedError(chrome.runtime.lastError)) {
                 handleExtensionContextInvalidated(chrome.runtime.lastError);
@@ -248,6 +277,9 @@ function safeStorageSyncSet(values, callback) {
 
 function safeAddRuntimeMessageListener(handler) {
     return safeChromeCall(function () {
+        if (!chrome.runtime || !chrome.runtime.onMessage || typeof chrome.runtime.onMessage.addListener !== 'function') {
+            return false;
+        }
         chrome.runtime.onMessage.addListener(handler);
         return true;
     }, false);
@@ -255,6 +287,9 @@ function safeAddRuntimeMessageListener(handler) {
 
 function safeAddStorageChangeListener(handler) {
     return safeChromeCall(function () {
+        if (!chrome.storage || !chrome.storage.onChanged || typeof chrome.storage.onChanged.addListener !== 'function') {
+            return false;
+        }
         chrome.storage.onChanged.addListener(handler);
         return true;
     }, false);
@@ -491,6 +526,11 @@ let soundCloudInsightsControlDragState = null;
 let soundCloudInsightsDragListenersBound = false;
 let soundCloudAutoIngestEnabled = false;
 let soundCloudToolsTokenConfigured = false;
+let soundCloudDirectHookReady = false;
+let soundCloudDirectHookMeta = null;
+let soundCloudBackgroundPendingCaptureCount = 0;
+let soundCloudBackgroundDuplicateCaptureCount = 0;
+let soundCloudBackgroundLastFlush = null;
 let activeReplyContextMeta = null;
 let latestBootstrapAdminScanDebug = null;
 let latestInjectedBootstrapAdminScanDebug = null;
@@ -1002,7 +1042,13 @@ function getSoundCloudPageBridge() {
                 return document.title || '';
             },
             getNetworkMonitorInjected: function () {
-                return !!(networkMonitorInjected && isSupportedSoundCloudInsightsPage());
+                return !!((isSoundCloudPage() ? soundCloudDirectHookReady : isNetworkMonitorActive()) && isSupportedSoundCloudInsightsPage());
+            },
+            getHookReady: function () {
+                return !!soundCloudDirectHookReady;
+            },
+            getLastHookMeta: function () {
+                return soundCloudDirectHookMeta;
             },
             sendRuntimeMessage: safeSendRuntimeMessage,
             sendRuntimeMessageWithResponse: safeSendRuntimeMessageWithResponse,
@@ -1023,19 +1069,226 @@ function setSoundCloudStatusText(text) {
 
 function buildSoundCloudPageStatusPayload() {
     const bridge = getSoundCloudPageBridge();
-    return bridge ? bridge.buildPageStatusPayload() : {
+    const payload = bridge ? bridge.buildPageStatusPayload() : {
         ok: true,
         status: {
             pageUrl: location.href,
             title: document.title || '',
             isSoundCloudPage: isSoundCloudPage(),
             isRelevantInsightsPage: isSupportedSoundCloudInsightsPage(),
-            networkMonitorInjected: !!(networkMonitorInjected && isSupportedSoundCloudInsightsPage()),
+            networkMonitorInjected: !!((isSoundCloudPage() ? soundCloudDirectHookReady : isNetworkMonitorActive()) && isSupportedSoundCloudInsightsPage()),
+            hookReady: !!soundCloudDirectHookReady,
             stateText: 'SoundCloud insights capture is unavailable.',
             captureCount: 0,
             lastCapture: null,
+            pendingCaptureCount: soundCloudBackgroundPendingCaptureCount || 0,
+            lastFlush: soundCloudBackgroundLastFlush || null,
+            lastHookMeta: soundCloudDirectHookMeta,
         }
     };
+
+    if (payload && payload.status) {
+        payload.status.pendingCaptureCount = soundCloudBackgroundPendingCaptureCount || payload.status.pendingCaptureCount || 0;
+        payload.status.duplicateCaptureCount = soundCloudBackgroundDuplicateCaptureCount || payload.status.duplicateCaptureCount || 0;
+        payload.status.lastFlush = soundCloudBackgroundLastFlush || payload.status.lastFlush || null;
+    }
+
+    return payload;
+}
+
+function isNetworkMonitorActive() {
+    if (networkMonitorInjected) {
+        return true;
+    }
+
+    try {
+        return !!(document.documentElement && document.documentElement.getAttribute(NETWORK_MONITOR_STATE_ATTRIBUTE) === '1');
+    } catch (error) {
+        return false;
+    }
+}
+
+function syncSoundCloudDirectHookStateFromDom() {
+    if (!isSoundCloudPage()) {
+        return;
+    }
+
+    try {
+        if (document.documentElement && document.documentElement.getAttribute(SOUND_CLOUD_DIRECT_HOOK_READY_ATTRIBUTE) === '1') {
+            soundCloudDirectHookReady = true;
+        }
+    } catch (error) {
+    }
+}
+
+function handleIncomingNetworkPayload(payload) {
+    if (isSoundCloudPage() && payload.soundcloud_capture) {
+        const bridge = getSoundCloudPageBridge();
+        if (bridge) {
+            bridge.handleNetworkEventPayload(payload);
+        }
+    }
+
+    if (isFacebookPage() && Array.isArray(payload.detected_comment_entries) && payload.detected_comment_entries.length) {
+        rememberFacebookCommentEntries(payload.detected_comment_entries);
+        if (panel && activeComposer && document.contains(activeComposer) && !markedElements.length) {
+            const contextField = panel.querySelector('#sgpt-context');
+            if (contextField) {
+                contextField.value = getCurrentPanelContextValue();
+            }
+            updatePanelAnchorNote();
+        }
+    }
+
+    if (!isFacebookAdminActivitiesPage()) {
+        return;
+    }
+
+    ensureAdminActivitiesControl();
+    const networkEntry = rememberAdminNetworkEvent(payload);
+    mirrorAdminNetworkEventToConsole(networkEntry);
+    let addedFromPayload = 0;
+    if (adminIngestEnabled && networkEntry.detected_entries && networkEntry.detected_entries.length) {
+        addedFromPayload = rememberDetectedAdminEntries(networkEntry.detected_entries, payload && payload.bootstrap_debug ? 'injected-bootstrap-scan' : 'network-event');
+    }
+
+    if (networkEntry.detected_entries && networkEntry.detected_entries.length) {
+        mirrorAdminDetectionsToConsole(networkEntry.detected_entries, networkEntry);
+    }
+
+    if (payload && payload.bootstrap_debug) {
+        latestInjectedBootstrapAdminScanDebug = Object.assign({}, payload.bootstrap_debug, {
+            pending_added: addedFromPayload,
+        });
+
+        if (adminDebugEnabled) {
+            debugLog({
+                level: 'info',
+                category: 'facebook-admin-bootstrap-monitor',
+                message: 'Injected monitor bootstrap scan completed.',
+                meta: latestInjectedBootstrapAdminScanDebug,
+            });
+        }
+    }
+
+    if (!adminNetworkDebugAnnounced) {
+        adminNetworkDebugAnnounced = true;
+        if (adminDebugEnabled) {
+            debugLog({
+                level: 'info',
+                category: 'facebook-network-status',
+                message: 'Facebook in-page monitor is receiving network events.',
+                meta: {
+                    url: location.href,
+                    first_event: networkEntry.summary,
+                }
+            });
+        }
+    }
+
+    if (networkEntry.interesting && adminDebugEnabled) {
+        debugLog({
+            level: 'info',
+            category: 'facebook-network',
+            message: 'Interesting Facebook XHR/fetch event captured.',
+            meta: {
+                url: location.href,
+                transport: networkEntry.transport,
+                method: networkEntry.method,
+                status: networkEntry.status,
+                duration_ms: networkEntry.duration_ms,
+                pathname: networkEntry.pathname,
+                doc_id: networkEntry.doc_id,
+                friendly_name: networkEntry.friendly_name,
+                request_preview: networkEntry.request_preview,
+                response_preview: networkEntry.response_preview,
+            }
+        });
+    }
+
+    adminLastStatusText = adminIngestEnabled
+        ? (networkEntry.detected_count
+            ? 'Detected ' + networkEntry.detected_count + ' admin activity entr' + (networkEntry.detected_count === 1 ? 'y' : 'ies') + '. Bulk upload to Tools is queued.'
+            : (networkEntry.interesting
+                ? 'Activity statistics are enabled. Waiting for matching admin-log traffic.'
+                : 'Activity statistics are enabled. Waiting for matching admin-log traffic.'))
+        : (networkEntry.detected_count
+            ? 'Observed ' + networkEntry.detected_count + ' admin activity entr' + (networkEntry.detected_count === 1 ? 'y' : 'ies') + '. Statistics are disabled, so nothing was queued.'
+            : (networkEntry.interesting
+                ? 'Interesting activity detected, but statistics are disabled for this URI.'
+                : 'Statistics are disabled for this exact Facebook URI. Enable them only when you want to collect from this page.'));
+    updateAdminActivitiesControl();
+    if (adminIngestEnabled && networkEntry.interesting) {
+        scheduleAdminActivitiesScan('network-event');
+    }
+}
+
+function handleSoundCloudDirectCapture(detail) {
+    if (!detail || typeof detail !== 'object' || !detail.opName) {
+        return;
+    }
+
+    soundCloudDirectHookMeta = detail.meta && typeof detail.meta === 'object' ? detail.meta : null;
+    handleIncomingNetworkPayload({
+        soundcloud_capture: {
+            opName: detail.opName,
+            variables: detail.variables && typeof detail.variables === 'object' ? detail.variables : {},
+            data: detail.data && typeof detail.data === 'object' ? detail.data : {},
+            meta: detail.meta && typeof detail.meta === 'object' ? detail.meta : {},
+        }
+    });
+}
+
+function drainBufferedSoundCloudDirectCaptures() {
+    if (!isSoundCloudPage()) {
+        return;
+    }
+
+    const bufferNode = document.getElementById(SOUND_CLOUD_DIRECT_BUFFER_ELEMENT_ID);
+    if (!bufferNode) {
+        return;
+    }
+
+    let queuedCaptures = [];
+    try {
+        const parsed = JSON.parse(bufferNode.textContent || '[]');
+        queuedCaptures = Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+        queuedCaptures = [];
+    }
+
+    bufferNode.textContent = '[]';
+
+    queuedCaptures.forEach(function (detail) {
+        handleSoundCloudDirectCapture(detail);
+    });
+}
+
+function drainBufferedSoundCloudNetworkEvents() {
+    if (!isSoundCloudPage()) {
+        return;
+    }
+
+    const bufferNode = document.getElementById(SOUNDCLOUD_BUFFER_ELEMENT_ID);
+    if (!bufferNode) {
+        return;
+    }
+
+    let bufferedPayloads = [];
+    try {
+        const parsed = JSON.parse(bufferNode.textContent || '[]');
+        bufferedPayloads = Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+        bufferedPayloads = [];
+    }
+
+    bufferNode.textContent = '[]';
+
+    bufferedPayloads.forEach(function (payload) {
+        if (payload && typeof payload === 'object') {
+            handleIncomingNetworkPayload(payload);
+        }
+    });
 }
 
 function reportSoundCloudPageStatus() {
@@ -1051,7 +1304,24 @@ function formatSoundCloudIngestResult(ingest) {
     if (!ingest) {
         return 'No ingest attempt recorded yet.';
     }
+    if (typeof ingest.flushed_count === 'number') {
+        return 'Buffered flush '
+            + (ingest.ok ? 'OK' : 'partial')
+            + ' · Flushed: ' + ingest.flushed_count
+            + ' · Duplicates: ' + (ingest.duplicate_count || 0)
+            + ' · Remaining: ' + (ingest.remaining_count || 0)
+            + (ingest.failed_count ? ' · Failed: ' + ingest.failed_count : '');
+    }
     if (ingest.attempted === false) {
+        if (ingest.reason === 'empty_normalized_rows') {
+            return 'Ingest not attempted: the captured SoundCloud dataset did not contain any normalized insight rows yet.';
+        }
+        if (ingest.reason === 'already_buffered') {
+            return 'Capture already buffered. Waiting for auto-ingest to flush it.';
+        }
+        if (ingest.reason === 'already_ingested') {
+            return 'Duplicate capture ignored because this snapshot was already ingested.';
+        }
         return 'Ingest not attempted: ' + (ingest.reason || 'unknown reason') + '.';
     }
     if (ingest.ok) {
@@ -1066,6 +1336,15 @@ function syncSoundCloudRuntimePreference() {
         soundCloudToolsTokenConfigured = !!(data && data.toolsApiToken && String(data.toolsApiToken).trim());
         soundCloudAutoIngestEnabled = !!(data && data.soundcloudAutoIngestEnabled === true);
         updateSoundCloudInsightsControl();
+    });
+}
+
+function setSoundCloudAutoIngestEnabled(nextValue) {
+    const enabled = !!nextValue;
+    soundCloudAutoIngestEnabled = enabled;
+    safeStorageSyncSet({soundcloudAutoIngestEnabled: enabled}, function () {
+        updateSoundCloudInsightsControl();
+        reportSoundCloudPageStatus();
     });
 }
 
@@ -1198,8 +1477,12 @@ function updateSoundCloudInsightsControl() {
     const capture = soundCloudInsightsControl.querySelector('[data-role="capture"]');
     const ingest = soundCloudInsightsControl.querySelector('[data-role="ingest"]');
     const helper = soundCloudInsightsControl.querySelector('[data-role="helper"]');
+    const debug = soundCloudInsightsControl.querySelector('[data-role="debug"]');
+    const toggleButton = soundCloudInsightsControl.querySelector('[data-role="toggle-auto-ingest"]');
     const monitorActive = !!statusPayload.networkMonitorInjected;
     const lastCapture = statusPayload.lastCapture || null;
+    const lastHookMeta = statusPayload.lastHookMeta || soundCloudDirectHookMeta || null;
+    const latestSendState = statusPayload.lastFlush || statusPayload.lastIngest || null;
 
     if (state) {
         state.textContent = statusPayload.stateText || 'SoundCloud insights capture is idle.';
@@ -1209,6 +1492,7 @@ function updateSoundCloudInsightsControl() {
     if (counters) {
         counters.textContent = 'Monitor: ' + (monitorActive ? 'injected' : 'waiting')
             + ' · Captures: ' + (statusPayload.captureCount || 0)
+            + ' · Buffered: ' + (statusPayload.pendingCaptureCount || 0)
             + ' · Auto-ingest: ' + (soundCloudAutoIngestEnabled ? 'enabled' : 'disabled')
             + ' · Token: ' + (soundCloudToolsTokenConfigured ? 'configured' : 'missing');
     }
@@ -1226,16 +1510,35 @@ function updateSoundCloudInsightsControl() {
     }
 
     if (ingest) {
-        ingest.textContent = formatSoundCloudIngestResult(statusPayload.lastIngest);
-        ingest.style.color = statusPayload.lastIngest && statusPayload.lastIngest.ok
+        ingest.textContent = formatSoundCloudIngestResult(latestSendState);
+        ingest.style.color = latestSendState && latestSendState.ok
             ? '#065f46'
-            : (statusPayload.lastIngest && statusPayload.lastIngest.attempted ? '#b91c1c' : '#475569');
+            : (latestSendState && latestSendState.attempted ? '#b91c1c' : '#475569');
     }
 
     if (helper) {
         helper.textContent = soundCloudAutoIngestEnabled
-            ? 'Auto-ingest is enabled from the popup for this browser profile.'
-            : 'Auto-ingest is disabled by default. Enable it from the popup if you want captures pushed into Tools.';
+            ? ((statusPayload.pendingCaptureCount || 0)
+                ? 'Auto-ingest is on. Buffered captures will flush into Tools as soon as the extension can send them.'
+                : 'New supported captures from this browser are pushed to Tools automatically.')
+            : ((statusPayload.pendingCaptureCount || 0)
+                ? 'Auto-ingest is off, but supported captures are being buffered here and can be flushed later without losing them.'
+                : 'Auto-ingest is off. Turn it on here when you want supported captures from this browser sent to Tools.');
+    }
+
+    if (debug) {
+        debug.innerHTML = '<div><strong>Hook:</strong> ' + escapeHtml(statusPayload.hookReady ? 'ready' : 'waiting') + '</div>'
+            + '<div><strong>Page:</strong> ' + escapeHtml(isSupportedSoundCloudInsightsPage() ? 'supported' : 'unsupported') + '</div>'
+            + '<div><strong>Buffered:</strong> ' + escapeHtml(String(statusPayload.pendingCaptureCount || 0)) + '</div>'
+            + '<div><strong>Last op:</strong> ' + escapeHtml(lastCapture && lastCapture.opName ? lastCapture.opName : 'none yet') + '</div>'
+            + '<div><strong>Via:</strong> ' + escapeHtml(lastHookMeta && lastHookMeta.via ? lastHookMeta.via : 'n/a') + '</div>'
+            + '<div><strong>Host:</strong> ' + escapeHtml(lastHookMeta && lastHookMeta.host ? lastHookMeta.host : location.hostname) + '</div>'
+            + '<div><strong>Request:</strong> ' + escapeHtml(lastHookMeta && lastHookMeta.request_url ? lastHookMeta.request_url : 'n/a') + '</div>';
+    }
+
+    if (toggleButton) {
+        toggleButton.textContent = soundCloudAutoIngestEnabled ? 'Disable auto-ingest' : 'Enable auto-ingest';
+        toggleButton.style.background = soundCloudAutoIngestEnabled ? '#b91c1c' : '#0f766e';
     }
 }
 
@@ -1275,15 +1578,26 @@ function ensureSoundCloudInsightsControl() {
         '</div>',
         '<div data-role="state" style="margin-bottom:8px; color:#334155; font-weight:600;">Supported SoundCloud insights page detected. Waiting for GraphQL traffic...</div>',
         '<div data-role="counters" style="margin-bottom:8px; color:#475569;">Monitor: waiting · Captures: 0 · Auto-ingest: disabled · Token: missing</div>',
+        '<div style="margin-bottom:8px;">',
+        '<button type="button" data-role="toggle-auto-ingest" style="appearance:none; border:none; border-radius:999px; background:#0f766e; color:#fff; padding:7px 12px; font-size:11px; font-weight:700; cursor:pointer;">Enable auto-ingest</button>',
+        '</div>',
+        '<div style="margin-top:8px; font-weight:600; color:#334155;">Debug</div>',
+        '<div data-role="debug" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569; max-height:110px; overflow:auto;">Hook: waiting</div>',
         '<div style="margin-top:10px; font-weight:600; color:#334155;">Latest capture</div>',
         '<div data-role="capture" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569; max-height:120px; overflow:auto;">No supported SoundCloud captures detected yet.</div>',
         '<div style="margin-top:10px; font-weight:600; color:#334155;">Latest ingest result</div>',
         '<div data-role="ingest" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569;">No ingest attempt recorded yet.</div>',
-        '<div data-role="helper" style="margin-top:10px; font-size:11px; line-height:1.35; color:#64748b;">Auto-ingest is disabled by default. Enable it from the popup if you want captures pushed into Tools.</div>'
+        '<div data-role="helper" style="margin-top:10px; font-size:11px; line-height:1.35; color:#64748b;">Auto-ingest is off. Turn it on here when you want supported captures from this browser sent to Tools.</div>'
     ].join('');
 
     document.body.appendChild(control);
     soundCloudInsightsControl = control;
+    const toggleButton = control.querySelector('[data-role="toggle-auto-ingest"]');
+    if (toggleButton) {
+        toggleButton.addEventListener('click', function () {
+            setSoundCloudAutoIngestEnabled(!soundCloudAutoIngestEnabled);
+        });
+    }
     enableSoundCloudInsightsControlDragging(control);
     updateSoundCloudInsightsControl();
 
@@ -4548,6 +4862,17 @@ function injectNetworkMonitor() {
         return;
     }
 
+    if (platform.id === 'soundcloud') {
+        networkMonitorInjected = !!soundCloudDirectHookReady;
+        if (isSupportedSoundCloudInsightsPage()) {
+            setSoundCloudStatusText(soundCloudDirectHookReady
+                ? 'SoundCloud insights page detected. Dedicated GraphQL hook is ready and waiting for captures...'
+                : 'SoundCloud insights page detected. Waiting for dedicated GraphQL hook...');
+            reportSoundCloudPageStatus();
+        }
+        return;
+    }
+
     if (platform.id === 'soundcloud' && typeof platform.isSupportedPage === 'function' && !platform.isSupportedPage(location)) {
         setSoundCloudStatusText('Current SoundCloud page is not a supported insights / for-artists view.');
         reportSoundCloudPageStatus();
@@ -6091,118 +6416,60 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
 
     } else if (req.type === 'START_FACT_VERIFICATION') {
         startFactVerification();
+    } else if (req.type === 'SOUNDCLOUD_BUFFER_STATUS') {
+        const payload = req && req.payload && typeof req.payload === 'object' ? req.payload : {};
+        soundCloudBackgroundPendingCaptureCount = typeof payload.pendingCaptureCount === 'number' ? payload.pendingCaptureCount : soundCloudBackgroundPendingCaptureCount;
+        soundCloudBackgroundDuplicateCaptureCount = typeof payload.duplicateCaptureCount === 'number' ? payload.duplicateCaptureCount : soundCloudBackgroundDuplicateCaptureCount;
+        soundCloudBackgroundLastFlush = payload.lastFlush || soundCloudBackgroundLastFlush;
+        if (payload.lastIngest) {
+            const bridge = getSoundCloudPageBridge();
+            if (bridge && typeof bridge.setStatusText === 'function' && payload.lastFlush && typeof payload.lastFlush.remaining_count === 'number') {
+                bridge.setStatusText(payload.lastFlush.remaining_count > 0
+                    ? 'Buffered SoundCloud captures were flushed partially. Some captures are still pending.'
+                    : 'Buffered SoundCloud captures were flushed into Tools.');
+            }
+        }
+        updateSoundCloudInsightsControl();
+        sendResponse({ok: true});
     } else if (req.type === 'GET_SOUNDCLOUD_PAGE_STATUS') {
         sendResponse(buildSoundCloudPageStatusPayload());
     }
 });
 
-window.addEventListener('message', function (event) {
-    if (event.source !== window || !event.data || event.data.source !== 'tn-networks-social-media-tools' || event.data.type !== 'NETWORK_EVENT') {
+window.addEventListener('scx-hook-ready', function (event) {
+    if (!isSoundCloudPage()) {
         return;
     }
 
-    const payload = event.data.payload || {};
-
-    if (isSoundCloudPage() && payload.soundcloud_capture) {
-        const bridge = getSoundCloudPageBridge();
-        if (bridge) {
-            bridge.handleNetworkEventPayload(payload);
-        }
-    }
-
-    if (isFacebookPage() && Array.isArray(payload.detected_comment_entries) && payload.detected_comment_entries.length) {
-        rememberFacebookCommentEntries(payload.detected_comment_entries);
-        if (panel && activeComposer && document.contains(activeComposer) && !markedElements.length) {
-            const contextField = panel.querySelector('#sgpt-context');
-            if (contextField) {
-                contextField.value = getCurrentPanelContextValue();
-            }
-            updatePanelAnchorNote();
-        }
-    }
-
-    if (!isFacebookAdminActivitiesPage()) {
-        return;
-    }
-
-    ensureAdminActivitiesControl();
-    const networkEntry = rememberAdminNetworkEvent(payload);
-    mirrorAdminNetworkEventToConsole(networkEntry);
-    let addedFromPayload = 0;
-    if (adminIngestEnabled && networkEntry.detected_entries && networkEntry.detected_entries.length) {
-        addedFromPayload = rememberDetectedAdminEntries(networkEntry.detected_entries, payload && payload.bootstrap_debug ? 'injected-bootstrap-scan' : 'network-event');
-    }
-
-    if (networkEntry.detected_entries && networkEntry.detected_entries.length) {
-        mirrorAdminDetectionsToConsole(networkEntry.detected_entries, networkEntry);
-    }
-
-    if (payload && payload.bootstrap_debug) {
-        latestInjectedBootstrapAdminScanDebug = Object.assign({}, payload.bootstrap_debug, {
-            pending_added: addedFromPayload,
-        });
-
-        if (adminDebugEnabled) {
-            debugLog({
-                level: 'info',
-                category: 'facebook-admin-bootstrap-monitor',
-                message: 'Injected monitor bootstrap scan completed.',
-                meta: latestInjectedBootstrapAdminScanDebug,
-            });
-        }
-    }
-
-    if (!adminNetworkDebugAnnounced) {
-        adminNetworkDebugAnnounced = true;
-        if (adminDebugEnabled) {
-            debugLog({
-                level: 'info',
-                category: 'facebook-network-status',
-                message: 'Facebook in-page monitor is receiving network events.',
-                meta: {
-                    url: location.href,
-                    first_event: networkEntry.summary,
-                }
-            });
-        }
-    }
-
-    if (networkEntry.interesting && adminDebugEnabled) {
-        debugLog({
-            level: 'info',
-            category: 'facebook-network',
-            message: 'Interesting Facebook XHR/fetch event captured.',
-            meta: {
-                url: location.href,
-                transport: networkEntry.transport,
-                method: networkEntry.method,
-                status: networkEntry.status,
-                duration_ms: networkEntry.duration_ms,
-                pathname: networkEntry.pathname,
-                doc_id: networkEntry.doc_id,
-                friendly_name: networkEntry.friendly_name,
-                request_preview: networkEntry.request_preview,
-                response_preview: networkEntry.response_preview,
-            }
-        });
-    }
-
-    adminLastStatusText = adminIngestEnabled
-        ? (networkEntry.detected_count
-            ? 'Detected ' + networkEntry.detected_count + ' admin activity entr' + (networkEntry.detected_count === 1 ? 'y' : 'ies') + '. Bulk upload to Tools is queued.'
-            : (networkEntry.interesting
-                ? 'Activity statistics are enabled. Waiting for matching admin-log traffic.'
-                : 'Activity statistics are enabled. Waiting for matching admin-log traffic.'))
-        : (networkEntry.detected_count
-            ? 'Observed ' + networkEntry.detected_count + ' admin activity entr' + (networkEntry.detected_count === 1 ? 'y' : 'ies') + '. Statistics are disabled, so nothing was queued.'
-            : (networkEntry.interesting
-                ? 'Interesting activity detected, but statistics are disabled for this URI.'
-                : 'Statistics are disabled for this exact Facebook URI. Enable them only when you want to collect from this page.'));
-    updateAdminActivitiesControl();
-    if (adminIngestEnabled && networkEntry.interesting) {
-        scheduleAdminActivitiesScan('network-event');
-    }
+    soundCloudDirectHookReady = true;
+    soundCloudDirectHookMeta = event && event.detail && typeof event.detail === 'object' ? event.detail : null;
+    setSoundCloudStatusText('SoundCloud insights hook is ready. Waiting for supported GraphQL captures...');
+    reportSoundCloudPageStatus();
 }, true);
+
+window.addEventListener('scx-graphql-capture', function (event) {
+    if (!isSoundCloudPage()) {
+        return;
+    }
+
+    handleSoundCloudDirectCapture(event && event.detail ? event.detail : null);
+}, true);
+
+window.addEventListener('message', function (event) {
+    if (!event.data || event.data.source !== 'tn-networks-social-media-tools' || event.data.type !== 'NETWORK_EVENT') {
+        return;
+    }
+
+    if (isSoundCloudPage() && soundCloudDirectHookReady && event.data.payload && event.data.payload.soundcloud_capture) {
+        return;
+    }
+
+    handleIncomingNetworkPayload(event.data.payload || {});
+}, true);
+
+syncSoundCloudDirectHookStateFromDom();
+drainBufferedSoundCloudDirectCaptures();
+drainBufferedSoundCloudNetworkEvents();
 
 injectNetworkMonitor();
 ensureComposerActionButton();

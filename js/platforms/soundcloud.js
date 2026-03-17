@@ -11,7 +11,9 @@
         var host = getHost(locationObject);
         var path = getPath(locationObject);
 
-        if (host.indexOf('artists.soundcloud.com') !== -1 || host.indexOf('insights.soundcloud.com') !== -1) {
+        if (host.indexOf('artists.soundcloud.com') !== -1
+            || host.indexOf('insights.soundcloud.com') !== -1
+            || host.indexOf('insights-ui.soundcloud.com') !== -1) {
             return true;
         }
 

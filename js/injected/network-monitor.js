@@ -5,6 +5,61 @@
 
     window.__TN_NETWORK_MONITOR__ = true;
 
+    var NETWORK_MONITOR_STATE_ATTRIBUTE = 'data-tn-network-monitor-active';
+    var SOUNDCLOUD_BUFFER_ELEMENT_ID = 'tn-networks-soundcloud-buffer';
+
+    function markNetworkMonitorActive() {
+        try {
+            if (document.documentElement) {
+                document.documentElement.setAttribute(NETWORK_MONITOR_STATE_ATTRIBUTE, '1');
+            }
+        } catch (e) {
+        }
+    }
+
+    function getSoundCloudBufferElement() {
+        var existing = document.getElementById(SOUNDCLOUD_BUFFER_ELEMENT_ID);
+        if (existing) {
+            return existing;
+        }
+
+        try {
+            var node = document.createElement('script');
+            node.id = SOUNDCLOUD_BUFFER_ELEMENT_ID;
+            node.type = 'application/json';
+            node.setAttribute('data-role', 'tn-soundcloud-buffer');
+            node.textContent = '[]';
+            (document.documentElement || document.head || document.body).appendChild(node);
+            return node;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function bufferSoundCloudPayload(payload) {
+        if (!payload || !payload.soundcloud_capture) {
+            return;
+        }
+
+        var node = getSoundCloudBufferElement();
+        if (!node) {
+            return;
+        }
+
+        try {
+            var existing = safeJsonParse(node.textContent || '[]');
+            var queue = Array.isArray(existing) ? existing : [];
+            queue.push(payload);
+            if (queue.length > 12) {
+                queue = queue.slice(queue.length - 12);
+            }
+            node.textContent = JSON.stringify(queue);
+        } catch (e) {
+        }
+    }
+
+    markNetworkMonitorActive();
+
     function clip(value, limit) {
         var text = String(value || '');
         if (text.length <= limit) {
@@ -739,10 +794,33 @@
         }, 0);
     }
 
+    function extractSoundCloudCollectionItems(value) {
+        if (Array.isArray(value)) {
+            return value;
+        }
+
+        if (value && typeof value === 'object') {
+            if (Array.isArray(value.collection)) {
+                return value.collection;
+            }
+            if (Array.isArray(value.items)) {
+                return value.items;
+            }
+            if (Array.isArray(value.nodes)) {
+                return value.nodes;
+            }
+            if (Array.isArray(value.results)) {
+                return value.results;
+            }
+        }
+
+        return [];
+    }
+
     function normalizeSoundCloudRows(datasetKey, data) {
         switch (datasetKey) {
             case 'tracks':
-                return safeArray(data && data.topTracksByWindow).map(function (item) {
+                return extractSoundCloudCollectionItems(data && data.topTracksByWindow).map(function (item) {
                     return {
                         title: item && item.track && item.track.title ? item.track.title : '',
                         plays: item && typeof item.count !== 'undefined' ? Number(item.count) || 0 : 0,
@@ -751,7 +829,7 @@
                     };
                 });
             case 'countries':
-                return safeArray(data && data.topCountriesByWindow).map(function (item) {
+                return extractSoundCloudCollectionItems(data && data.topCountriesByWindow).map(function (item) {
                     return {
                         country: item && item.country && item.country.name ? item.country.name : '',
                         code: item && item.country && item.country.countryCode ? item.country.countryCode : '',
@@ -759,7 +837,7 @@
                     };
                 });
             case 'cities':
-                return safeArray(data && data.topCitiesByWindow).map(function (item) {
+                return extractSoundCloudCollectionItems(data && data.topCitiesByWindow).map(function (item) {
                     return {
                         city: item && item.city && item.city.name ? item.city.name : '',
                         country: item && item.city && item.city.country && item.city.country.name ? item.city.country.name : '',
@@ -768,7 +846,7 @@
                     };
                 });
             case 'playlists':
-                return safeArray(data && data.topPlaylistsByWindow).map(function (item) {
+                return extractSoundCloudCollectionItems(data && data.topPlaylistsByWindow).map(function (item) {
                     return {
                         playlist: item && item.playlist && item.playlist.title ? item.playlist.title : '',
                         user: item && item.playlist && item.playlist.user && item.playlist.user.username ? item.playlist.user.username : '',
@@ -805,7 +883,9 @@
             return null;
         }
 
-        var parsedResponse = safeJsonParse(base && base.response_text ? base.response_text : '');
+        var parsedResponse = base && base.response_json && typeof base.response_json === 'object'
+            ? base.response_json
+            : safeJsonParse(base && base.response_text ? base.response_text : '');
         var data = parsedResponse && typeof parsedResponse === 'object' && typeof parsedResponse.data !== 'undefined'
             ? parsedResponse.data
             : parsedResponse;
@@ -832,6 +912,7 @@
         return {
             opName: opName,
             variables: variables,
+            data: data,
             meta: meta,
             normalized_dataset: {
                 source_url: meta.frame,
@@ -1237,12 +1318,21 @@
 
     function post(payload) {
         try {
+            bufferSoundCloudPayload(payload);
 
             window.postMessage({
                 source: 'tn-networks-social-media-tools',
                 type: 'NETWORK_EVENT',
                 payload: payload,
             }, '*');
+
+            if (window.top && window.top !== window) {
+                window.top.postMessage({
+                    source: 'tn-networks-social-media-tools',
+                    type: 'NETWORK_EVENT',
+                    payload: payload,
+                }, '*');
+            }
         } catch (e) {
         }
     }
@@ -1267,34 +1357,53 @@
             var method = init.method || (input && input.method) || 'GET';
             var startedAt = Date.now();
             var requestBody = init.body || null;
+            var isSoundCloudGraphqlRequest = String(url || '').indexOf('graph.soundcloud.com/graphql') !== -1;
 
             return originalFetch.apply(this, args).then(function (response) {
-                var cloned = response.clone();
-                cloned.text().then(function (bodyText) {
-                    post(buildPayload({
-                        transport: 'fetch',
-                        method: method,
-                        url: url,
-                        is_graphql: String(url || '').indexOf('graphql') !== -1,
-                        status: response.status,
-                        duration_ms: Date.now() - startedAt,
-                        content_type: response.headers && response.headers.get ? (response.headers.get('content-type') || '') : '',
-                        request_body: requestBody,
-                        response_text: bodyText,
-                    }));
-                }).catch(function () {
-                    post(buildPayload({
-                        transport: 'fetch',
-                        method: method,
-                        url: url,
-                        is_graphql: String(url || '').indexOf('graphql') !== -1,
-                        status: response.status,
-                        duration_ms: Date.now() - startedAt,
-                        content_type: response.headers && response.headers.get ? (response.headers.get('content-type') || '') : '',
-                        request_body: requestBody,
-                        response_text: '[unavailable]',
-                    }));
-                });
+                var basePayload = {
+                    transport: 'fetch',
+                    method: method,
+                    url: url,
+                    is_graphql: String(url || '').indexOf('graphql') !== -1,
+                    status: response.status,
+                    duration_ms: Date.now() - startedAt,
+                    content_type: response.headers && response.headers.get ? (response.headers.get('content-type') || '') : '',
+                    request_body: requestBody,
+                };
+
+                if (isSoundCloudGraphqlRequest) {
+                    var jsonClone = response.clone();
+                    var textClone = response.clone();
+
+                    jsonClone.json().then(function (json) {
+                        post(buildPayload(Object.assign({}, basePayload, {
+                            response_json: json,
+                            response_text: typeof json === 'undefined' ? '' : JSON.stringify(json),
+                        })));
+                    }).catch(function () {
+                        textClone.text().then(function (bodyText) {
+                            post(buildPayload(Object.assign({}, basePayload, {
+                                response_json: safeJsonParse(bodyText),
+                                response_text: bodyText,
+                            })));
+                        }).catch(function () {
+                            post(buildPayload(Object.assign({}, basePayload, {
+                                response_text: '[unavailable]',
+                            })));
+                        });
+                    });
+                } else {
+                    var cloned = response.clone();
+                    cloned.text().then(function (bodyText) {
+                        post(buildPayload(Object.assign({}, basePayload, {
+                            response_text: bodyText,
+                        })));
+                    }).catch(function () {
+                        post(buildPayload(Object.assign({}, basePayload, {
+                            response_text: '[unavailable]',
+                        })));
+                    });
+                }
 
                 return response;
             }).catch(function (error) {
@@ -1328,11 +1437,14 @@
         xhr.__tnRequestBody = body;
         xhr.addEventListener('loadend', function () {
             var responseType;
+            var responseText;
             try {
                 responseType = String(xhr.responseType || '');
             } catch (e) {
                 responseType = '';
             }
+
+            responseText = safeReadXhrResponseText(xhr);
 
             post(buildPayload({
                 transport: 'xhr',
@@ -1344,7 +1456,8 @@
                 content_type: typeof xhr.getResponseHeader === 'function' ? (xhr.getResponseHeader('content-type') || '') : '',
                 response_type: responseType,
                 request_body: xhr.__tnRequestBody,
-                response_text: safeReadXhrResponseText(xhr),
+                response_json: safeJsonParse(responseText),
+                response_text: responseText,
             }));
         });
 
