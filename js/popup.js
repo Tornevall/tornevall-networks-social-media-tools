@@ -292,11 +292,20 @@ function formatSoundCloudIngestResult(ingest) {
         if (ingest.reason === 'empty_normalized_rows') {
             return 'Ingest not attempted: the captured SoundCloud dataset contained no normalized rows yet.';
         }
+        if (ingest.reason === 'unsupported_operation') {
+            return 'Ingest not attempted: this SoundCloud GraphQL operation is not one of the supported insights datasets yet.';
+        }
         if (ingest.reason === 'already_buffered') {
             return 'Capture already buffered locally.';
         }
         if (ingest.reason === 'already_ingested') {
             return 'Duplicate capture ignored because it was already ingested.';
+        }
+        if (ingest.reason === 'auto_ingest_disabled') {
+            return 'Ingest not attempted: auto-ingest starts disabled on each SoundCloud insights visit until you enable it manually.';
+        }
+        if (ingest.reason === 'missing_tools_token') {
+            return 'Ingest not attempted: configure a Tools bearer token first.';
         }
         return 'Ingest not attempted: ' + (ingest.reason || 'unknown reason') + '.';
     }

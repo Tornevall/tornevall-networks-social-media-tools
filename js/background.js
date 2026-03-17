@@ -566,6 +566,29 @@ function safeArray(value) {
     return Array.isArray(value) ? value : [];
 }
 
+function extractSoundCloudCollectionItems(value) {
+    if (Array.isArray(value)) {
+        return value;
+    }
+
+    if (value && typeof value === 'object') {
+        if (Array.isArray(value.collection)) {
+            return value.collection;
+        }
+        if (Array.isArray(value.items)) {
+            return value.items;
+        }
+        if (Array.isArray(value.nodes)) {
+            return value.nodes;
+        }
+        if (Array.isArray(value.results)) {
+            return value.results;
+        }
+    }
+
+    return [];
+}
+
 function sumSoundCloudMetric(rows, keys) {
     return safeArray(rows).reduce(function (sum, row) {
         if (!row || typeof row !== 'object') {
@@ -606,7 +629,7 @@ function normalizeSoundCloudCaptureForIngest(payload) {
     var totalMetric = null;
     switch (datasetKey) {
         case 'tracks':
-            rows = safeArray(data.topTracksByWindow).map(function (item) {
+            rows = extractSoundCloudCollectionItems(data.topTracksByWindow).map(function (item) {
                 return {
                     title: item && item.track && item.track.title ? item.track.title : '',
                     plays: item && typeof item.count !== 'undefined' ? Number(item.count) || 0 : 0,
@@ -617,7 +640,7 @@ function normalizeSoundCloudCaptureForIngest(payload) {
             totalMetric = sumSoundCloudMetric(rows, ['plays']) || null;
             break;
         case 'countries':
-            rows = safeArray(data.topCountriesByWindow).map(function (item) {
+            rows = extractSoundCloudCollectionItems(data.topCountriesByWindow).map(function (item) {
                 return {
                     country: item && item.country && item.country.name ? item.country.name : '',
                     code: item && item.country && item.country.countryCode ? item.country.countryCode : '',
@@ -627,7 +650,7 @@ function normalizeSoundCloudCaptureForIngest(payload) {
             totalMetric = sumSoundCloudMetric(rows, ['plays']) || null;
             break;
         case 'cities':
-            rows = safeArray(data.topCitiesByWindow).map(function (item) {
+            rows = extractSoundCloudCollectionItems(data.topCitiesByWindow).map(function (item) {
                 return {
                     city: item && item.city && item.city.name ? item.city.name : '',
                     country: item && item.city && item.city.country && item.city.country.name ? item.city.country.name : '',
@@ -638,7 +661,7 @@ function normalizeSoundCloudCaptureForIngest(payload) {
             totalMetric = sumSoundCloudMetric(rows, ['plays']) || null;
             break;
         case 'playlists':
-            rows = safeArray(data.topPlaylistsByWindow).map(function (item) {
+            rows = extractSoundCloudCollectionItems(data.topPlaylistsByWindow).map(function (item) {
                 return {
                     playlist: item && item.playlist && item.playlist.title ? item.playlist.title : '',
                     user: item && item.playlist && item.playlist.user && item.playlist.user.username ? item.playlist.user.username : '',

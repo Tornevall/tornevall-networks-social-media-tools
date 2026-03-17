@@ -1316,11 +1316,20 @@ function formatSoundCloudIngestResult(ingest) {
         if (ingest.reason === 'empty_normalized_rows') {
             return 'Ingest not attempted: the captured SoundCloud dataset did not contain any normalized insight rows yet.';
         }
+        if (ingest.reason === 'unsupported_operation') {
+            return 'Ingest not attempted: this SoundCloud GraphQL operation is not one of the supported insights datasets yet.';
+        }
         if (ingest.reason === 'already_buffered') {
             return 'Capture already buffered. Waiting for auto-ingest to flush it.';
         }
         if (ingest.reason === 'already_ingested') {
             return 'Duplicate capture ignored because this snapshot was already ingested.';
+        }
+        if (ingest.reason === 'auto_ingest_disabled') {
+            return 'Ingest not attempted: auto-ingest starts disabled on each SoundCloud insights visit until you enable it manually.';
+        }
+        if (ingest.reason === 'missing_tools_token') {
+            return 'Ingest not attempted: configure a Tools bearer token first.';
         }
         return 'Ingest not attempted: ' + (ingest.reason || 'unknown reason') + '.';
     }
@@ -1336,6 +1345,48 @@ function syncSoundCloudRuntimePreference() {
         soundCloudToolsTokenConfigured = !!(data && data.toolsApiToken && String(data.toolsApiToken).trim());
         soundCloudAutoIngestEnabled = !!(data && data.soundcloudAutoIngestEnabled === true);
         updateSoundCloudInsightsControl();
+    });
+}
+
+function isSupportedSoundCloudInsightsUrl(value) {
+    if (!value) {
+        return false;
+    }
+
+    const platform = getSoundCloudPlatformDefinition();
+    if (!platform || typeof platform.isSupportedPage !== 'function') {
+        return false;
+    }
+
+    try {
+        return !!platform.isSupportedPage(new URL(String(value), location.origin));
+    } catch (error) {
+        return false;
+    }
+}
+
+function resetSoundCloudAutoIngestOnInsightsEntry(previousHref, reason) {
+    if (!isSoundCloudPage() || !isSupportedSoundCloudInsightsPage()) {
+        return;
+    }
+
+    const enteringSupportedInsights = reason === 'init' || !isSupportedSoundCloudInsightsUrl(previousHref);
+    if (!enteringSupportedInsights) {
+        return;
+    }
+
+    soundCloudAutoIngestEnabled = false;
+    safeStorageSyncGet(['soundcloudAutoIngestEnabled'], function (data) {
+        if (data && data.soundcloudAutoIngestEnabled === true) {
+            safeStorageSyncSet({soundcloudAutoIngestEnabled: false}, function () {
+                updateSoundCloudInsightsControl();
+                reportSoundCloudPageStatus();
+            });
+            return;
+        }
+
+        updateSoundCloudInsightsControl();
+        reportSoundCloudPageStatus();
     });
 }
 
@@ -4935,6 +4986,10 @@ function handleLocationChange(reason) {
                 auto_disabled: true,
             }
         );
+    }
+
+    if (isSoundCloudPage()) {
+        resetSoundCloudAutoIngestOnInsightsEntry(previousHref, reason);
     }
 
     lastObservedLocationHref = location.href;
