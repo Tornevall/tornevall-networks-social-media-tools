@@ -178,29 +178,14 @@
     Register at <strong>tools.tornevall.net</strong> and generate a <strong>personal bearer token</strong> there to use this extension.
 </p>
 <p class="helper-note">
-    More settings and Facebook admin-log tools live in Tools.
+    More settings and platform-specific tools live in Tools.
     For more info, <a id="openToolsDashboardLink" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">open dashboard</a>.
+    You can also <a id="forumLink" href="https://forum.tornevall.net" target="_blank" rel="noopener noreferrer">open the forum</a>.
 </p>
 
-<section class="status-card" id="facebookAdminStatusCard">
-    <h2>Facebook admin activity reporting</h2>
-    <p class="status-line" id="facebookAdminStatusState">Loading active-tab admin reporting status…</p>
-    <p class="status-line status-muted" id="facebookAdminStatusCounters"></p>
-    <p class="status-line" style="font-weight:700; margin-top:10px;">Reportable if enabled</p>
-    <div class="status-list" id="facebookAdminReportableList">
-        <div class="status-line status-muted">No reportable admin-log entries detected yet.</div>
-    </div>
-    <p class="status-line status-muted" id="facebookAdminLastSubmission" style="margin-top:10px;"></p>
-</section>
-
-<section class="status-card" id="soundCloudStatusCard">
-    <h2>SoundCloud insights capture</h2>
-    <p class="status-line" id="soundCloudStatusState">Loading active-tab SoundCloud status…</p>
-    <p class="status-line status-muted" id="soundCloudStatusCounters"></p>
-    <div class="status-list" id="soundCloudRecentCaptureList">
-        <div class="status-line status-muted">No supported SoundCloud captures detected yet.</div>
-    </div>
-</section>
+<div class="button-row" style="margin-bottom:12px;">
+    <button id="openOptionsPageBtn" type="button">Open config page</button>
+</div>
 
 <div class="checkbox-inline">
     <input type="checkbox" id="devMode">
@@ -210,17 +195,6 @@
 <div class="checkbox-inline">
     <input type="checkbox" id="facebookAdminDebugEnabled">
     <label for="facebookAdminDebugEnabled">Enable Facebook admin debug diagnostics</label>
-</div>
-
-<div class="checkbox-inline">
-    <input type="checkbox" id="pageNetworkDebugEnabled">
-    <label for="pageNetworkDebugEnabled">Enable in-page XHR debug overlay on supported pages</label>
-</div>
-
-
-<div class="checkbox-inline">
-    <input type="checkbox" id="enableUnsupportedCompose">
-    <label for="enableUnsupportedCompose">Show <em>Write with Tools</em> on unsupported sites too (experimental)</label>
 </div>
 
 <label for="apiKey">Tools API Bearer Token:</label>
@@ -305,6 +279,7 @@
     </div>
     <pre id="debugConsole">No logs yet.</pre>
 </details>
+<script src="../js/shared/extension-links.js"></script>
 <script src="../js/popup.js"></script>
 </body>
 </html>

@@ -141,6 +141,18 @@ if (!window.__scx_hook_installed__) {
                     meta: meta,
                 };
                 bufferDetail(detail);
+                try {
+                    if (window.top && window.top !== window && typeof window.top.postMessage === 'function') {
+                        window.top.postMessage({
+                            source: 'tn-networks-social-media-tools',
+                            type: 'NETWORK_EVENT',
+                            payload: {
+                                soundcloud_capture: detail,
+                            },
+                        }, '*');
+                    }
+                } catch (forwardError) {
+                }
                 window.dispatchEvent(new CustomEvent('scx-graphql-capture', {
                     detail: detail
                 }));

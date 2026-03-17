@@ -525,6 +525,7 @@ let adminActivitiesDragListenersBound = false;
 let soundCloudInsightsControlDragState = null;
 let soundCloudInsightsDragListenersBound = false;
 let soundCloudAutoIngestEnabled = false;
+let soundCloudAutoIngestTouchedThisVisit = false;
 let soundCloudToolsTokenConfigured = false;
 let soundCloudDirectHookReady = false;
 let soundCloudDirectHookMeta = null;
@@ -1123,6 +1124,10 @@ function syncSoundCloudDirectHookStateFromDom() {
 
 function handleIncomingNetworkPayload(payload) {
     if (isSoundCloudPage() && payload.soundcloud_capture) {
+        if (payload.soundcloud_capture.meta && typeof payload.soundcloud_capture.meta === 'object') {
+            soundCloudDirectHookReady = true;
+            soundCloudDirectHookMeta = payload.soundcloud_capture.meta;
+        }
         const bridge = getSoundCloudPageBridge();
         if (bridge) {
             bridge.handleNetworkEventPayload(payload);
@@ -1343,7 +1348,7 @@ function formatSoundCloudIngestResult(ingest) {
 function syncSoundCloudRuntimePreference() {
     safeStorageSyncGet(['toolsApiToken', 'soundcloudAutoIngestEnabled'], function (data) {
         soundCloudToolsTokenConfigured = !!(data && data.toolsApiToken && String(data.toolsApiToken).trim());
-        soundCloudAutoIngestEnabled = !!(data && data.soundcloudAutoIngestEnabled === true);
+        soundCloudAutoIngestEnabled = !!(data && data.soundcloudAutoIngestEnabled === true && (!isSupportedSoundCloudInsightsPage() || soundCloudAutoIngestTouchedThisVisit));
         updateSoundCloudInsightsControl();
     });
 }
@@ -1375,6 +1380,7 @@ function resetSoundCloudAutoIngestOnInsightsEntry(previousHref, reason) {
         return;
     }
 
+    soundCloudAutoIngestTouchedThisVisit = false;
     soundCloudAutoIngestEnabled = false;
     safeStorageSyncGet(['soundcloudAutoIngestEnabled'], function (data) {
         if (data && data.soundcloudAutoIngestEnabled === true) {
@@ -1392,6 +1398,7 @@ function resetSoundCloudAutoIngestOnInsightsEntry(previousHref, reason) {
 
 function setSoundCloudAutoIngestEnabled(nextValue) {
     const enabled = !!nextValue;
+    soundCloudAutoIngestTouchedThisVisit = true;
     soundCloudAutoIngestEnabled = enabled;
     safeStorageSyncSet({soundcloudAutoIngestEnabled: enabled}, function () {
         updateSoundCloudInsightsControl();
@@ -2593,11 +2600,20 @@ function findEditableTarget(node) {
         return null;
     }
 
-    if (isEditableTarget(node)) {
-        return node;
+    const candidate = isEditableTarget(node)
+        ? node
+        : (node.closest ? node.closest(EDITABLE_SELECTOR) : null);
+
+    if (!candidate) {
+        return null;
     }
 
-    return node.closest ? node.closest(EDITABLE_SELECTOR) : null;
+    const platform = getActivePlatformDefinition();
+    if (!platform || typeof platform.supportsComposerTarget !== 'function') {
+        return null;
+    }
+
+    return platform.supportsComposerTarget(candidate, location) ? candidate : null;
 }
 
 function getActivePlatformDefinition() {
@@ -3533,7 +3549,6 @@ function clearMarkedContextSelection() {
     markedElements = [];
     isClickMarkingActive = false;
     safeSendRuntimeMessage({type: 'RESET_MARK_MODE'});
-    safeSendRuntimeMessage({type: 'TOGGLE_MARK_MODE', enabled: false});
 }
 
 function setPanelContextValue(value, options) {
@@ -3581,6 +3596,19 @@ function syncPanelMarkModeState() {
 
 function setPanelMarkMode(enabled) {
     return safeSendRuntimeMessageWithResponse({type: 'SET_MARK_MODE', enabled: !!enabled}).then(function (response) {
+        if (!response || !response.ok) {
+            const fallbackEnabled = !!enabled;
+            isClickMarkingActive = fallbackEnabled;
+            updatePanelMarkModeButton(fallbackEnabled);
+            updatePanelAnchorNote();
+            return {
+                ok: true,
+                enabled: fallbackEnabled,
+                localOnly: true,
+                warning: response && response.error ? response.error : 'Background mark-mode sync was unavailable.',
+            };
+        }
+
         const nextEnabled = !!(response && response.ok && response.enabled);
         isClickMarkingActive = nextEnabled;
         updatePanelMarkModeButton(nextEnabled);
@@ -6029,7 +6057,7 @@ function openReplyPanel() {
 
     hideVerifyHoverButton(true);
     isClickMarkingActive = false;
-    safeSendRuntimeMessage({type: 'TOGGLE_MARK_MODE', enabled: false});
+    safeSendRuntimeMessage({type: 'RESET_MARK_MODE'});
 
     safeStorageSyncGet(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood', 'defaultResponseLanguage', 'lastResponseLength', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel'], (data) => {
         const label = p.querySelector('#sgpt-responder-name');

@@ -318,6 +318,12 @@ chrome.runtime.onInstalled.addListener(function () {
 chrome.tabs.onUpdated.addListener(function (tabId, info) {
     if (info.status === 'loading') {
         setTabMarking(tabId, false);
+        var currentStatus = ensureSoundCloudTabStatus(tabId);
+        resetSoundCloudTabStatus(
+            tabId,
+            typeof info.url === 'string' && info.url ? info.url : currentStatus.pageUrl,
+            typeof info.title === 'string' && info.title ? info.title : currentStatus.title
+        );
     }
 });
 
@@ -555,11 +561,61 @@ async function callFacebookAdminIngest(apiToken, baseUrl, payload) {
 function supportedSoundCloudOperationToDataset(operationName) {
     return {
         TopTracksByWindow: 'tracks',
+        TopTracksByRange: 'tracks',
         TopCountriesByWindow: 'countries',
         TopCitiesByWindow: 'cities',
         TopPlaylistsByWindow: 'playlists',
         TrackByPermalink: 'lookup',
     }[String(operationName || '').trim()] || null;
+}
+
+function isSoundCloudHost(hostname) {
+    return String(hostname || '').toLowerCase().indexOf('soundcloud.com') !== -1;
+}
+
+function isSoundCloudUrl(url) {
+    try {
+        return isSoundCloudHost(new URL(String(url || '')).hostname);
+    } catch (error) {
+        return false;
+    }
+}
+
+function isSupportedSoundCloudInsightsUrl(url) {
+    try {
+        var parsed = new URL(String(url || ''));
+        var host = String(parsed.hostname || '').toLowerCase();
+        var path = String(parsed.pathname || '').toLowerCase();
+
+        if (!isSoundCloudHost(host)) {
+            return false;
+        }
+
+        if (host.indexOf('artists.soundcloud.com') !== -1
+            || host.indexOf('insights.soundcloud.com') !== -1
+            || host.indexOf('insights-ui.soundcloud.com') !== -1) {
+            return true;
+        }
+
+        return /\/insights(?:\/|$)/.test(path)
+            || /\/stats(?:\/|$)/.test(path)
+            || /\/you\/insights(?:\/|$)/.test(path)
+            || /\/for-artists(?:\/|$)/.test(path);
+    } catch (error) {
+        return false;
+    }
+}
+
+function getSoundCloudIdleStateText(tabUrl) {
+    if (isSupportedSoundCloudInsightsUrl(tabUrl)) {
+        return 'Supported SoundCloud insights page detected. Waiting for page status from the active tab.';
+    }
+
+    if (isSoundCloudUrl(tabUrl)) {
+        return 'Current SoundCloud page is not a supported insights / for-artists view.';
+    }
+
+    return 'SoundCloud insights capture is idle. Open a supported SoundCloud insights page to enable the in-page capture overlay.';
 }
 
 function safeArray(value) {
@@ -629,12 +685,17 @@ function normalizeSoundCloudCaptureForIngest(payload) {
     var totalMetric = null;
     switch (datasetKey) {
         case 'tracks':
-            rows = extractSoundCloudCollectionItems(data.topTracksByWindow).map(function (item) {
+            rows = extractSoundCloudCollectionItems(data.topTracksByWindow || data.topTracksByRange).map(function (item) {
+                var track = item && item.track && typeof item.track === 'object' ? item.track : {};
                 return {
-                    title: item && item.track && item.track.title ? item.track.title : '',
+                    urn: track.urn ? String(track.urn) : '',
+                    title: track.title ? String(track.title) : '',
                     plays: item && typeof item.count !== 'undefined' ? Number(item.count) || 0 : 0,
-                    url: item && item.track && item.track.permalinkUrl ? item.track.permalinkUrl : '',
-                    artwork: item && item.track && item.track.artworkUrl ? item.track.artworkUrl : '',
+                    url: track.permalinkUrl ? String(track.permalinkUrl) : '',
+                    permalink: track.permalink ? String(track.permalink) : '',
+                    artwork: track.artworkUrl ? String(track.artworkUrl) : '',
+                    created_at: track.createdAt ? String(track.createdAt) : '',
+                    timeseries_by_window: Array.isArray(track.timeseriesByWindow) ? track.timeseriesByWindow : [],
                 };
             });
             totalMetric = sumSoundCloudMetric(rows, ['plays']) || null;
@@ -644,6 +705,7 @@ function normalizeSoundCloudCaptureForIngest(payload) {
                 return {
                     country: item && item.country && item.country.name ? item.country.name : '',
                     code: item && item.country && item.country.countryCode ? item.country.countryCode : '',
+                    country_code: item && item.country && item.country.countryCode ? item.country.countryCode : '',
                     plays: item && typeof item.count !== 'undefined' ? Number(item.count) || 0 : 0,
                 };
             });
@@ -655,6 +717,7 @@ function normalizeSoundCloudCaptureForIngest(payload) {
                     city: item && item.city && item.city.name ? item.city.name : '',
                     country: item && item.city && item.city.country && item.city.country.name ? item.city.country.name : '',
                     code: item && item.city && item.city.country && item.city.country.countryCode ? item.city.country.countryCode : '',
+                    country_code: item && item.city && item.city.country && item.city.country.countryCode ? item.city.country.countryCode : '',
                     plays: item && typeof item.count !== 'undefined' ? Number(item.count) || 0 : 0,
                 };
             });
@@ -662,12 +725,14 @@ function normalizeSoundCloudCaptureForIngest(payload) {
             break;
         case 'playlists':
             rows = extractSoundCloudCollectionItems(data.topPlaylistsByWindow).map(function (item) {
+                var playlist = item && item.playlist && typeof item.playlist === 'object' ? item.playlist : {};
                 return {
-                    playlist: item && item.playlist && item.playlist.title ? item.playlist.title : '',
-                    user: item && item.playlist && item.playlist.user && item.playlist.user.username ? item.playlist.user.username : '',
+                    urn: playlist.urn ? String(playlist.urn) : '',
+                    playlist: playlist.title ? String(playlist.title) : '',
+                    user: playlist.user && playlist.user.username ? String(playlist.user.username) : '',
                     count: item && typeof item.count !== 'undefined' ? Number(item.count) || 0 : 0,
-                    url: item && item.playlist && item.playlist.permalinkUrl ? item.playlist.permalinkUrl : '',
-                    artwork: item && item.playlist && item.playlist.artworkUrl ? item.playlist.artworkUrl : '',
+                    url: playlist.permalinkUrl ? String(playlist.permalinkUrl) : '',
+                    artwork: playlist.artworkUrl ? String(playlist.artworkUrl) : '',
                 };
             });
             totalMetric = sumSoundCloudMetric(rows, ['count']) || null;
@@ -947,6 +1012,33 @@ function ensureSoundCloudTabStatus(tabId) {
     return soundCloudTabStatusCache[key];
 }
 
+function resetSoundCloudTabStatus(tabId, tabUrl, tabTitle) {
+    var key = typeof tabId === 'number' ? String(tabId) : 'unknown';
+    soundCloudTabStatusCache[key] = {
+        tabId: typeof tabId === 'number' ? tabId : null,
+        updatedAt: new Date().toISOString(),
+        pageUrl: String(tabUrl || ''),
+        title: String(tabTitle || ''),
+        isSoundCloudPage: isSoundCloudUrl(tabUrl),
+        isRelevantInsightsPage: isSupportedSoundCloudInsightsUrl(tabUrl),
+        networkMonitorInjected: false,
+        hookReady: false,
+        stateText: getSoundCloudIdleStateText(tabUrl),
+        captureCount: 0,
+        lastCapture: null,
+        lastIngest: null,
+        lastHookMeta: null,
+        recentEvents: [],
+        pendingCaptures: [],
+        sentFingerprints: [],
+        pendingCaptureCount: 0,
+        duplicateCaptureCount: 0,
+        lastFlush: null,
+    };
+
+    return soundCloudTabStatusCache[key];
+}
+
 
 function rememberSoundCloudEvent(tabId, rawPayload, normalized, ingestResult) {
     var status = ensureSoundCloudTabStatus(tabId);
@@ -1077,6 +1169,23 @@ function getSoundCloudActiveTabStatus() {
                     activeTab: null,
                     status: cachedStatus,
                     recentEvents: cachedStatus.recentEvents || [],
+                });
+                return;
+            }
+
+            if (!isSoundCloudUrl(tab.url || '')) {
+                cachedStatus = resetSoundCloudTabStatus(tabId, tab.url || '', tab.title || '');
+                resolve({
+                    ok: true,
+                    activeTab: {
+                        id: tab.id,
+                        url: tab.url || '',
+                        title: tab.title || '',
+                    },
+                    status: Object.assign({}, cachedStatus, {
+                        responseError: null,
+                    }),
+                    recentEvents: [],
                 });
                 return;
             }

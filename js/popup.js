@@ -17,6 +17,8 @@ const DEFAULT_FACT_CHECK_MODEL = 'gpt-4o';
 const DEFAULT_QUICK_REPLY_PRESET = 'default';
 const DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION = '';
 const REMOTE_AUTOSAVE_DELAY_MS = 700;
+const FORUM_URL = (window.TNNetworksExtensionLinks && window.TNNetworksExtensionLinks.FORUM_URL) || 'https://forum.tornevall.net';
+const TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH = (window.TNNetworksExtensionLinks && window.TNNetworksExtensionLinks.TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH) || '/admin/social-media-tools/facebook';
 
 function getBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
@@ -331,11 +333,11 @@ document.addEventListener('DOMContentLoaded', function () {
     const systemPromptInput = document.getElementById('systemPrompt');
     const devModeCheckbox = document.getElementById('devMode');
     const facebookAdminDebugCheckbox = document.getElementById('facebookAdminDebugEnabled');
-    const pageNetworkDebugCheckbox = document.getElementById('pageNetworkDebugEnabled');
-    const enableUnsupportedComposeCheckbox = document.getElementById('enableUnsupportedCompose');
     const endpointNote = document.getElementById('endpointNote');
     const openToolsDashboardLink = document.getElementById('openToolsDashboardLink');
     const openToolsDashboardLinkInline = document.getElementById('openToolsDashboardLinkInline');
+    const forumLink = document.getElementById('forumLink');
+    const openOptionsPageBtn = document.getElementById('openOptionsPageBtn');
     const status = document.getElementById('status');
     const testBtn = document.getElementById('testConnectionBtn');
     const resetBtn = document.getElementById('resetPromptBtn');
@@ -345,13 +347,6 @@ document.addEventListener('DOMContentLoaded', function () {
     const refreshDebugBtn = document.getElementById('refreshDebugBtn');
     const copyDebugBtn = document.getElementById('copyDebugBtn');
     const clearDebugBtn = document.getElementById('clearDebugBtn');
-    const facebookAdminStatusState = document.getElementById('facebookAdminStatusState');
-    const facebookAdminStatusCounters = document.getElementById('facebookAdminStatusCounters');
-    const facebookAdminReportableList = document.getElementById('facebookAdminReportableList');
-    const facebookAdminLastSubmission = document.getElementById('facebookAdminLastSubmission');
-    const soundCloudStatusState = document.getElementById('soundCloudStatusState');
-    const soundCloudStatusCounters = document.getElementById('soundCloudStatusCounters');
-    const soundCloudRecentCaptureList = document.getElementById('soundCloudRecentCaptureList');
     let popupReady = false;
     let remoteAutosaveTimer = null;
     let remoteSaveInFlight = false;
@@ -483,10 +478,13 @@ document.addEventListener('DOMContentLoaded', function () {
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
         endpointNote.innerHTML = 'AI requests are sent through <code>' + baseUrl + AI_PATH + '</code> using your Tools bearer token.';
         if (openToolsDashboardLink) {
-            openToolsDashboardLink.href = baseUrl + '/admin/social-media-tools/facebook';
+            openToolsDashboardLink.href = baseUrl + TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH;
         }
         if (openToolsDashboardLinkInline) {
-            openToolsDashboardLinkInline.href = baseUrl + '/admin/social-media-tools/facebook';
+            openToolsDashboardLinkInline.href = baseUrl + TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH;
+        }
+        if (forumLink) {
+            forumLink.href = FORUM_URL;
         }
     }
 
@@ -576,8 +574,6 @@ document.addEventListener('DOMContentLoaded', function () {
             toolsApiToken: apiKeyInput.value.trim(),
             devMode: devModeCheckbox.checked,
             facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
-            pageNetworkDebugEnabled: pageNetworkDebugCheckbox.checked,
-            enableUnsupportedCompose: enableUnsupportedComposeCheckbox.checked,
             responderName: responderNameInput.value.trim(),
             chatGptSystemPrompt: systemPromptInput.value.trim(),
             autoDetectResponder: autoDetectCheckbox.checked,
@@ -914,8 +910,6 @@ document.addEventListener('DOMContentLoaded', function () {
         'toolsApiToken',
         'devMode',
         'facebookAdminDebugEnabled',
-        'pageNetworkDebugEnabled',
-        'enableUnsupportedCompose',
         'responderName',
         'chatGptSystemPrompt',
         'autoDetectResponder',
@@ -941,8 +935,6 @@ document.addEventListener('DOMContentLoaded', function () {
         quickReplyInstructionInput.value = data.defaultQuickReplyCustomInstruction || DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
         devModeCheckbox.checked = !!data.devMode;
         facebookAdminDebugCheckbox.checked = !!data.facebookAdminDebugEnabled;
-        pageNetworkDebugCheckbox.checked = !!data.pageNetworkDebugEnabled;
-        enableUnsupportedComposeCheckbox.checked = !!data.enableUnsupportedCompose;
         renderEndpointNote();
         renderDebugConsoleVisibility();
 
@@ -951,9 +943,6 @@ document.addEventListener('DOMContentLoaded', function () {
         } else if (devModeCheckbox.checked) {
             await refreshDebugConsole();
         }
-
-        await refreshFacebookAdminStatus();
-        await refreshSoundCloudStatus();
         popupReady = true;
     });
 
@@ -976,17 +965,6 @@ document.addEventListener('DOMContentLoaded', function () {
             : 'Facebook admin debug diagnostics disabled.');
     });
 
-    pageNetworkDebugCheckbox.addEventListener('change', function () {
-        scheduleLocalAutosave(pageNetworkDebugCheckbox.checked
-            ? 'In-page XHR debug overlay enabled on supported pages.'
-            : 'In-page XHR debug overlay disabled.');
-    });
-
-    enableUnsupportedComposeCheckbox.addEventListener('change', function () {
-        scheduleLocalAutosave(enableUnsupportedComposeCheckbox.checked
-            ? 'Experimental compose button enabled on unsupported sites.'
-            : 'Compose button limited to supported sites again.');
-    });
 
     [apiKeyInput, quickReplyInstructionInput].forEach(function (field) {
         field.addEventListener('input', function () {
@@ -1022,7 +1000,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const token = apiKeyInput.value.trim();
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
         const question = testQuestionInput.value.trim() || DEFAULT_TEST_QUESTION;
-        const busyElements = [testBtn, resetBtn, apiKeyInput, responderNameInput, responseLanguageSelect, verifyFactLanguageSelect, factCheckModelSelect, quickReplyPresetSelect, quickReplyInstructionInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, pageNetworkDebugCheckbox, enableUnsupportedComposeCheckbox, autoDetectCheckbox];
+        const busyElements = [testBtn, resetBtn, apiKeyInput, responderNameInput, responseLanguageSelect, verifyFactLanguageSelect, factCheckModelSelect, quickReplyPresetSelect, quickReplyInstructionInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, autoDetectCheckbox];
 
         if (!token) {
             setStatus(status, 'Paste a personal bearer token first, then test the connection.', true);
@@ -1117,8 +1095,6 @@ document.addEventListener('DOMContentLoaded', function () {
     refreshDebugBtn.addEventListener('click', async function () {
         await refreshDebugConsole();
         setStatus(status, 'Debug console refreshed.', false);
-        await refreshFacebookAdminStatus();
-        await refreshSoundCloudStatus();
     });
 
     copyDebugBtn.addEventListener('click', async function () {
@@ -1141,8 +1117,16 @@ document.addEventListener('DOMContentLoaded', function () {
         setStatus(status, 'Debug console cleared.', false);
     });
 
-    window.addEventListener('focus', function () {
-        refreshFacebookAdminStatus();
-        refreshSoundCloudStatus();
-    });
+    if (openOptionsPageBtn) {
+        openOptionsPageBtn.addEventListener('click', function () {
+            if (chrome.runtime && typeof chrome.runtime.openOptionsPage === 'function') {
+                chrome.runtime.openOptionsPage();
+                return;
+            }
+
+            if (chrome.tabs && typeof chrome.tabs.create === 'function' && chrome.runtime && typeof chrome.runtime.getURL === 'function') {
+                chrome.tabs.create({url: chrome.runtime.getURL('html/options.html')});
+            }
+        });
+    }
 });
