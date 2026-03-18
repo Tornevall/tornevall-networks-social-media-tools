@@ -766,9 +766,12 @@
     function supportedSoundCloudOperationToDataset(operationName) {
         return {
             TopTracksByWindow: 'tracks',
+            TopTracksByRange: 'tracks',
             TopCountriesByWindow: 'countries',
             TopCitiesByWindow: 'cities',
             TopPlaylistsByWindow: 'playlists',
+            TotalsByWindow: 'totals',
+            IsrcsWithTracks: 'isrcs',
             TrackByPermalink: 'lookup',
         }[normalizeWhitespace(operationName)] || null;
     }
@@ -792,6 +795,14 @@
 
             return sum;
         }, 0);
+    }
+
+    function formatSoundCloudMetricLabel(metricKey) {
+        return String(metricKey || '')
+            .replace(/[_-]+/g, ' ')
+            .replace(/\b\w/g, function (character) {
+                return character.toUpperCase();
+            });
     }
 
     function extractSoundCloudCollectionItems(value) {
@@ -820,7 +831,7 @@
     function normalizeSoundCloudRows(datasetKey, data) {
         switch (datasetKey) {
             case 'tracks':
-                return extractSoundCloudCollectionItems(data && data.topTracksByWindow).map(function (item) {
+                return extractSoundCloudCollectionItems((data && data.topTracksByWindow) || (data && data.topTracksByRange)).map(function (item) {
                     return {
                         title: item && item.track && item.track.title ? item.track.title : '',
                         plays: item && typeof item.count !== 'undefined' ? Number(item.count) || 0 : 0,
@@ -853,6 +864,44 @@
                         count: item && typeof item.count !== 'undefined' ? Number(item.count) || 0 : 0,
                         url: item && item.playlist && item.playlist.permalinkUrl ? item.playlist.permalinkUrl : '',
                         artwork: item && item.playlist && item.playlist.artworkUrl ? item.playlist.artworkUrl : '',
+                    };
+                });
+            case 'totals': {
+                var totals = data && data.totalsByWindow && typeof data.totalsByWindow === 'object'
+                    ? data.totalsByWindow
+                    : {};
+                return Object.keys(totals).map(function (metricKey) {
+                    if (typeof totals[metricKey] === 'undefined' || isNaN(Number(totals[metricKey]))) {
+                        return null;
+                    }
+
+                    return {
+                        label: formatSoundCloudMetricLabel(metricKey),
+                        metric_key: String(metricKey),
+                        metric_value: Number(totals[metricKey]) || 0,
+                        count: Number(totals[metricKey]) || 0,
+                    };
+                }).filter(function (row) {
+                    return !!row;
+                });
+            }
+            case 'isrcs':
+                return extractSoundCloudCollectionItems(data && data.isrcsWithTracks).map(function (item) {
+                    var track = item && item.track && typeof item.track === 'object' ? item.track : {};
+                    var metadata = item && item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+
+                    return {
+                        isrc: item && item.isrc ? String(item.isrc) : '',
+                        sc_track_id: metadata && metadata.scTrackId ? String(metadata.scTrackId) : '',
+                        title: metadata && metadata.title ? String(metadata.title) : (track && track.title ? String(track.title) : ''),
+                        track_title: track && track.title ? String(track.title) : '',
+                        urn: track && track.urn ? String(track.urn) : '',
+                        url: track && track.permalinkUrl ? String(track.permalinkUrl) : '',
+                        permalink: track && track.permalink ? String(track.permalink) : '',
+                        artwork: metadata && metadata.artworkUrl ? String(metadata.artworkUrl) : (track && track.artworkUrl ? String(track.artworkUrl) : ''),
+                        released_at: metadata && metadata.releasedAt ? String(metadata.releasedAt) : '',
+                        release_date: track && track.releaseDate ? String(track.releaseDate) : '',
+                        has_track: !!(track && Object.keys(track).length),
                     };
                 });
             case 'lookup':

@@ -565,6 +565,8 @@ function supportedSoundCloudOperationToDataset(operationName) {
         TopCountriesByWindow: 'countries',
         TopCitiesByWindow: 'cities',
         TopPlaylistsByWindow: 'playlists',
+        TotalsByWindow: 'totals',
+        IsrcsWithTracks: 'isrcs',
         TrackByPermalink: 'lookup',
     }[String(operationName || '').trim()] || null;
 }
@@ -662,6 +664,14 @@ function sumSoundCloudMetric(rows, keys) {
     }, 0);
 }
 
+function formatSoundCloudMetricLabel(metricKey) {
+    return String(metricKey || '')
+        .replace(/[_-]+/g, ' ')
+        .replace(/\b\w/g, function (character) {
+            return character.toUpperCase();
+        });
+}
+
 function normalizeSoundCloudCaptureForIngest(payload) {
     if (payload && payload.normalized_dataset && typeof payload.normalized_dataset === 'object') {
         return payload.normalized_dataset;
@@ -736,6 +746,48 @@ function normalizeSoundCloudCaptureForIngest(payload) {
                 };
             });
             totalMetric = sumSoundCloudMetric(rows, ['count']) || null;
+            break;
+        case 'totals': {
+            var totals = data && data.totalsByWindow && typeof data.totalsByWindow === 'object'
+                ? data.totalsByWindow
+                : {};
+            rows = Object.keys(totals).map(function (metricKey) {
+                if (typeof totals[metricKey] === 'undefined' || isNaN(Number(totals[metricKey]))) {
+                    return null;
+                }
+
+                return {
+                    label: formatSoundCloudMetricLabel(metricKey),
+                    metric_key: String(metricKey),
+                    metric_value: Number(totals[metricKey]) || 0,
+                    count: Number(totals[metricKey]) || 0,
+                };
+            }).filter(function (row) {
+                return !!row;
+            });
+            totalMetric = sumSoundCloudMetric(rows, ['metric_value', 'count']) || null;
+            break;
+        }
+        case 'isrcs':
+            rows = extractSoundCloudCollectionItems(data && data.isrcsWithTracks).map(function (item) {
+                var track = item && item.track && typeof item.track === 'object' ? item.track : {};
+                var metadata = item && item.metadata && typeof item.metadata === 'object' ? item.metadata : {};
+
+                return {
+                    isrc: item && item.isrc ? String(item.isrc) : '',
+                    sc_track_id: metadata && metadata.scTrackId ? String(metadata.scTrackId) : '',
+                    title: metadata && metadata.title ? String(metadata.title) : (track && track.title ? String(track.title) : ''),
+                    track_title: track && track.title ? String(track.title) : '',
+                    urn: track && track.urn ? String(track.urn) : '',
+                    url: track && track.permalinkUrl ? String(track.permalinkUrl) : '',
+                    permalink: track && track.permalink ? String(track.permalink) : '',
+                    artwork: metadata && metadata.artworkUrl ? String(metadata.artworkUrl) : (track && track.artworkUrl ? String(track.artworkUrl) : ''),
+                    released_at: metadata && metadata.releasedAt ? String(metadata.releasedAt) : '',
+                    release_date: track && track.releaseDate ? String(track.releaseDate) : '',
+                    has_track: !!(track && Object.keys(track).length),
+                };
+            });
+            totalMetric = null;
             break;
         case 'lookup':
             rows = data && data.trackByPermalink && typeof data.trackByPermalink === 'object' ? [data.trackByPermalink] : [];
