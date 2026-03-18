@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.7 - 2026-03-18
+
+### Added
+- A dedicated extension options page now exists as a larger future configuration surface, with centralized links to the Tools dashboard and forum/community entry points
+- SoundCloud capture forwarding now keeps a small in-page buffer of recent payloads so the extension can recover more useful capture context even when message timing is noisy
+
+### Changed
+- Popup/status flow was trimmed again so short-form everyday controls stay in the popup while larger configuration/help content moves toward the options page
+- Background/content-script coordination around SoundCloud capture state, pending deliveries, and page bridge communication was expanded for the newer multi-frame/main-world hook setup
+
+### Fixed
+- SoundCloud insights capture got another reliability pass so GraphQL payloads from the newer injected/main-world monitor are less likely to disappear between the page bridge and the extension runtime
+
 ## 1.2.6 - 2026-03-16
 
 ### Added
