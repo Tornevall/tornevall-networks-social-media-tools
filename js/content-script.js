@@ -55,6 +55,7 @@ const NETWORK_MONITOR_STATE_ATTRIBUTE = 'data-tn-network-monitor-active';
 const SOUNDCLOUD_BUFFER_ELEMENT_ID = 'tn-networks-soundcloud-buffer';
 const SOUND_CLOUD_DIRECT_HOOK_READY_ATTRIBUTE = 'data-tn-soundcloud-hook-ready';
 const SOUND_CLOUD_DIRECT_BUFFER_ELEMENT_ID = 'tn-soundcloud-direct-capture-buffer';
+const SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED = false;
 const MAX_RECENT_FACEBOOK_COMMENT_ENTRIES = 200;
 const DEFAULT_REPLY_PROMPT = 'Write text that fits the visible context and can be pasted into the selected field.';
 const QUICK_REPLY_PRESETS = {
@@ -1025,11 +1026,19 @@ function getSoundCloudPlatformDefinition() {
 }
 
 function isSupportedSoundCloudInsightsPage() {
+    if (!SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED) {
+        return false;
+    }
+
     const platform = getSoundCloudPlatformDefinition();
     return !!(platform && typeof platform.isSupportedPage === 'function' && platform.isSupportedPage(location));
 }
 
 function getSoundCloudPageBridge() {
+    if (!SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED) {
+        return null;
+    }
+
     if (!soundCloudPageBridge
         && window.TNNetworksSoundCloudPageBridge
         && typeof window.TNNetworksSoundCloudPageBridge.create === 'function') {
@@ -1123,7 +1132,7 @@ function syncSoundCloudDirectHookStateFromDom() {
 }
 
 function handleIncomingNetworkPayload(payload) {
-    if (isSoundCloudPage() && payload.soundcloud_capture) {
+    if (SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED && isSoundCloudPage() && payload.soundcloud_capture) {
         if (payload.soundcloud_capture.meta && typeof payload.soundcloud_capture.meta === 'object') {
             soundCloudDirectHookReady = true;
             soundCloudDirectHookMeta = payload.soundcloud_capture.meta;
@@ -1525,6 +1534,14 @@ function enableSoundCloudInsightsControlDragging(control) {
 }
 
 function updateSoundCloudInsightsControl() {
+    if (!SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED) {
+        if (soundCloudInsightsControl) {
+            soundCloudInsightsControl.remove();
+            soundCloudInsightsControl = null;
+        }
+        return;
+    }
+
     if (!soundCloudInsightsControl) {
         return;
     }
@@ -1601,6 +1618,14 @@ function updateSoundCloudInsightsControl() {
 }
 
 function ensureSoundCloudInsightsControl() {
+    if (!SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED) {
+        if (soundCloudInsightsControl) {
+            soundCloudInsightsControl.remove();
+            soundCloudInsightsControl = null;
+        }
+        return null;
+    }
+
     if (!isSupportedSoundCloudInsightsPage()) {
         if (soundCloudInsightsControl) {
             soundCloudInsightsControl.remove();
@@ -6520,7 +6545,7 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
 });
 
 window.addEventListener('scx-hook-ready', function (event) {
-    if (!isSoundCloudPage()) {
+    if (!SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED || !isSoundCloudPage()) {
         return;
     }
 
@@ -6531,7 +6556,7 @@ window.addEventListener('scx-hook-ready', function (event) {
 }, true);
 
 window.addEventListener('scx-graphql-capture', function (event) {
-    if (!isSoundCloudPage()) {
+    if (!SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED || !isSoundCloudPage()) {
         return;
     }
 
@@ -6550,9 +6575,14 @@ window.addEventListener('message', function (event) {
     handleIncomingNetworkPayload(event.data.payload || {});
 }, true);
 
-syncSoundCloudDirectHookStateFromDom();
-drainBufferedSoundCloudDirectCaptures();
-drainBufferedSoundCloudNetworkEvents();
+if (SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED) {
+    syncSoundCloudDirectHookStateFromDom();
+    drainBufferedSoundCloudDirectCaptures();
+    drainBufferedSoundCloudNetworkEvents();
+} else {
+    soundCloudDirectHookReady = false;
+    soundCloudDirectHookMeta = null;
+}
 
 injectNetworkMonitor();
 ensureComposerActionButton();
