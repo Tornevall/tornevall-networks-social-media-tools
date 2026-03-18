@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.8 - 2026-03-18
+
+### Changed
+- SoundCloud-specific capture work is now being moved toward the dedicated `sc4a-insights` companion module so the main Social Media Tools extension can stay less explicit about SoundCloud scraping-oriented internals
+- Main extension copy now points more clearly toward companion/module-based expansion instead of promising that larger SoundCloud dataset controls will live directly inside this extension
+
 ## 1.2.7 - 2026-03-18
 
 ### Added

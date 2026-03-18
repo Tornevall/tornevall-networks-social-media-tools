@@ -114,7 +114,7 @@
             <ul>
                 <li>General extension identity, tokens, and responder profile</li>
                 <li>Facebook-specific reporting and diagnostics</li>
-                <li>SoundCloud capture, ingest, and analytics controls</li>
+                <li>Companion-module guidance for platform-specific add-ons when a separate module is the cleaner place for experimental capture work</li>
                 <li>Per-platform visibility rules for in-page tools</li>
                 <li>Future troubleshooting / debug section</li>
             </ul>
@@ -123,7 +123,8 @@
             <h2 style="margin-top:0;">Current notes</h2>
             <ul>
                 <li>The popup is still the active settings editor.</li>
-                <li>In-page Facebook and SoundCloud overlays are now the primary live-status surfaces.</li>
+                <li>In-page Facebook overlays are still the primary live-status surface inside this extension.</li>
+                <li>Experimental SoundCloud insights capture can live in a dedicated companion module such as <code>sc4a-insights</code> instead of staying fully exposed here.</li>
                 <li>Forum/community links are centralized through a shared constant for easier future subforum moves.</li>
             </ul>
         </div>
@@ -131,7 +132,7 @@
             <h2 style="margin-top:0;">Next expansion target</h2>
             <p class="muted" style="margin-bottom:0;">
                 When this page grows beyond a scaffold, it should become the home for the settings that do not fit well in the popup,
-                especially SoundCloud dataset controls and longer explanations of what each platform module stores.
+                especially longer explanations of what the main extension stores versus what belongs in separate companion modules.
             </p>
         </div>
     </section>
