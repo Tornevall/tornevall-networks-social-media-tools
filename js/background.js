@@ -21,9 +21,62 @@ const FALLBACK_AVAILABLE_MODELS = [
 ];
 const DEFAULT_FACT_CHECK_MODEL = 'gpt-4o';
 const soundCloudTabStatusCache = {};
+const CONTEXT_MENU_OPEN_TOOLBOX_ID = 'tn-social-tools-open-toolbox';
+const CONTEXT_MENU_VERIFY_ID = 'tn-social-tools-verify-fact';
 
 function getToolsBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
+}
+
+function safeContextMenuCreate(details) {
+    chrome.contextMenus.create(details, function () {
+        // Ignore duplicate/ephemeral context menu errors during reloads.
+        if (chrome.runtime.lastError) {
+            return;
+        }
+    });
+}
+
+function setupExtensionContextMenus() {
+    if (!chrome.contextMenus || typeof chrome.contextMenus.removeAll !== 'function') {
+        return;
+    }
+
+    chrome.contextMenus.removeAll(function () {
+        safeContextMenuCreate({
+            id: CONTEXT_MENU_OPEN_TOOLBOX_ID,
+            title: 'Open Toolbox',
+            contexts: ['all'],
+        });
+
+        safeContextMenuCreate({
+            id: CONTEXT_MENU_VERIFY_ID,
+            title: 'Verify fact with Toolbox',
+            contexts: ['selection', 'link', 'image', 'page'],
+        });
+    });
+}
+
+function buildVerificationContextFromMenuInfo(info) {
+    var chunks = [];
+
+    if (info && typeof info.selectionText === 'string' && info.selectionText.trim()) {
+        chunks.push('Selected text:\n' + info.selectionText.trim());
+    }
+
+    if (info && typeof info.linkUrl === 'string' && info.linkUrl.trim()) {
+        chunks.push('Link URL:\n' + info.linkUrl.trim());
+    }
+
+    if (info && typeof info.srcUrl === 'string' && info.srcUrl.trim()) {
+        chunks.push('Media URL:\n' + info.srcUrl.trim());
+    }
+
+    if (info && typeof info.pageUrl === 'string' && info.pageUrl.trim()) {
+        chunks.push('Page URL:\n' + info.pageUrl.trim());
+    }
+
+    return chunks.join('\n\n');
 }
 
 function getRetryBaseUrls(baseUrl) {
@@ -311,7 +364,34 @@ async function fetchAvailableModels(apiToken, baseUrl, forceRefresh) {
 }
 
 chrome.runtime.onInstalled.addListener(function () {
+    setupExtensionContextMenus();
     appendDebugLog({level: 'info', category: 'lifecycle', message: 'Extension installed / updated.'});
+});
+
+chrome.runtime.onStartup.addListener(function () {
+    setupExtensionContextMenus();
+});
+
+chrome.contextMenus.onClicked.addListener(function (info, tab) {
+    if (!tab || typeof tab.id !== 'number') {
+        return;
+    }
+
+    if (info.menuItemId === CONTEXT_MENU_OPEN_TOOLBOX_ID) {
+        chrome.tabs.sendMessage(tab.id, {
+            type: 'OPEN_TOOLBOX_FROM_CONTEXT_MENU',
+            contextText: info && typeof info.selectionText === 'string' ? info.selectionText.trim() : '',
+        });
+        return;
+    }
+
+    if (info.menuItemId === CONTEXT_MENU_VERIFY_ID) {
+        chrome.tabs.sendMessage(tab.id, {
+            type: 'START_FACT_VERIFICATION_FROM_CONTEXT_MENU',
+            contextText: buildVerificationContextFromMenuInfo(info),
+            sourceLabel: 'Context menu verify',
+        });
+    }
 });
 
 

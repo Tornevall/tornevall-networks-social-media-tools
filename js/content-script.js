@@ -3884,7 +3884,7 @@ function ensureComposerActionButton() {
     composerActionButton = document.createElement('button');
     composerActionButton.id = 'sgpt-composer-action';
     composerActionButton.type = 'button';
-    composerActionButton.textContent = 'Fill in with Tools';
+    composerActionButton.textContent = 'Open Toolbox';
     composerActionButton.style.position = 'fixed';
     composerActionButton.style.zIndex = '2147483646';
     composerActionButton.style.padding = '6px 10px';
@@ -3898,7 +3898,7 @@ function ensureComposerActionButton() {
     composerActionButton.style.touchAction = 'none';
     composerActionButton.style.boxShadow = '0 2px 10px rgba(0,0,0,0.18)';
     composerActionButton.style.display = 'none';
-    composerActionButton.title = 'Open Tools for the selected field. Drag to move it away. Double-click to reset its position.';
+    composerActionButton.title = 'Open Toolbox for the selected field. Drag to move it away. Double-click to reset its position.';
     composerActionButton.addEventListener('click', function () {
         if (composerActionButton.dataset.dragSuppressClick === 'true') {
             return;
@@ -6477,8 +6477,23 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
         isClickMarkingActive = req.enabled;
         updatePanelMarkModeButton(!!req.enabled);
         updatePanelAnchorNote();
+    } else if (req.type === 'OPEN_TOOLBOX_FROM_CONTEXT_MENU') {
+        openReplyPanel();
+        const importedContext = normalizeWhitespace(req && req.contextText ? req.contextText : '');
+        if (importedContext && panel) {
+            setPanelContextValue(importedContext);
+            panelContextDirty = true;
+            updatePanelAnchorNote();
+            updatePanelComposerActions('Context imported from context menu.', 'success');
+        }
     } else if (req.type === 'OPEN_REPLY_PANEL') {
         openReplyPanel();
+    } else if (req.type === 'START_FACT_VERIFICATION_FROM_CONTEXT_MENU') {
+        const menuContext = normalizeWhitespace(req && req.contextText ? req.contextText : '');
+        startFactVerification(menuContext || undefined, {
+            sourceLabel: req && req.sourceLabel ? String(req.sourceLabel) : 'Context menu verify',
+            preferPanel: false,
+        });
     } else if (req.type === 'GPT_RESPONSE') {
         hideLoader();
         if (pendingAiRequestMode === 'verify') {
