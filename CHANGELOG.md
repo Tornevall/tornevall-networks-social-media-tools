@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.2.12 - 2026-04-03
+
+### ⭐ MAJOR: Chrome Web Store Compliance Update
+
+**This version clarifies the extension's browser-wide scope and justifies the `<all_urls>` permission for Chrome Web Store submission.**
+
+### Fixed
+- **Selected-text overlay once again shows two actions** — `Open Toolbox` is now rendered next to `Verify fact` for plain text selections, instead of only showing the verify button.
+- **Selected text can be imported directly into the Toolbox again** — clicking the restored `Open Toolbox` selection button opens the panel and preloads the selected text as context.
+- **Background message handling cleaned up after reset/recovery edits** — duplicate `chrome.runtime.onMessage` wiring was collapsed back to one active handler while keeping the SoundCloud message endpoints intact.
+
+### Changed
+- **Manifest description updated**: Now clearly states "Browser-wide AI assistant" instead of narrow platform description
+- **`host_permissions` set to `["<all_urls>"]`**: Required for content script injection on all sites
+- **`content_scripts.matches` set to `["<all_urls>"]`**: Core feature requires browser-wide injection
+- **Documentation complete**: Added `CHROME_WEB_STORE_COMPLIANCE.md` with full CWS submission guidance
+- **README updated**: Explains why `<all_urls>` is required and not restrictable
+- **This is NOT a breaking change** — the extension already worked on all sites; this just documents it honestly
+
+### Context
+The extension is a browser-wide AI assistant (like Grammarly or 1Password). It provides:
+- Text selection overlays for fact-checking and Open Toolbox on ANY website
+- Right-click context menus available on all pages
+- AI-assisted replies across the web
+
+This **cannot** be restricted to specific domains without breaking the product.
+
+Chrome Web Store accepts broad `<all_urls>` permissions when:
+1. ✅ The extension's purpose clearly requires browser-wide access (ours does)
+2. ✅ Documentation is transparent and honest (provided)
+3. ✅ API calls are scoped to specific hosts (only tools.tornevall.net/com)
+4. ✅ No remote code execution (all local)
+
+### Related Documentation
+- **Before CWS submission**: Read `CHROME_WEB_STORE_COMPLIANCE.md`
+- **CWS submission templates**: Ready-to-use text in `CHROME_WEB_STORE_COMPLIANCE.md`
+- **Compliance checklist**: Full verification steps in `CHROME_WEB_STORE_COMPLIANCE.md`
+
+---
+
 ## 1.2.8 - 2026-03-18
 
 ### Changed

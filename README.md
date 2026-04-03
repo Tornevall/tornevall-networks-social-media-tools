@@ -1,53 +1,142 @@
 # Tornevall Networks Social Media Tools
 
-`Tornevall Networks Social Media Tools` is a standalone Chrome extension for Tools-backed reply assistance and Facebook admin activity workflows.
+**A browser-wide AI assistant and fact-checking companion for Chrome.**
 
-## What it does
+This extension provides text selection overlays, fact-checking controls, and AI-assisted replies on ANY website you visit. It's powered by the Tornevall Networks Tools platform.
 
-The extension currently focuses on three things:
+---
 
-- Tools-authenticated AI replies from the browser
-- per-user responder settings loaded from Tools
-- optional Facebook group `admin_activities` statistics submission
+## 🎯 What It Does
 
-## Server targets
+**Everywhere on the web:**
+- ✅ Select any text and see floating "Verify fact" and "Open Toolbox" buttons
+- ✅ Right-click anywhere to access "Open Toolbox" or "Verify fact" context menus
+- ✅ Get AI-powered replies and fact-checking via Tornevall Networks Tools
 
-The popup can target either of these servers:
+**On specific platforms:**
+- 📘 **Facebook**: Admin activity reporting (with permission)
+- 🎵 **SoundCloud**: Insights capture and analytics (with permission)
+- 𝕏 **X/Twitter**: Platform-specific tooling
 
-- Production: `https://tools.tornevall.net`
-- Dev / beta: `https://tools.tornevall.com`
+---
 
-## Install / load the extension
+## 🔧 Architecture: Why `<all_urls>` Permission?
 
-1. Open `chrome://extensions`
-2. Enable **Developer mode**
-3. Click **Load unpacked**
-4. Select the `socialgpt-chrome` folder
+**This extension REQUIRES `<all_urls>` in BOTH places:**
 
-## First-time setup
+```json
+"host_permissions": ["<all_urls>"],
+"content_scripts": [{
+  "matches": ["<all_urls>"],
+  ...
+}]
+```
 
-1. Open the extension popup
-2. Generate a personal bearer token in Tools
-3. Paste the token into the popup
-4. Optionally enable **Use dev / beta server**
-5. Click **Test Tools → OpenAI**
-6. Save your responder settings
+**Why?** The extension's core feature is a browser-wide AI assistant. Users need to:
+1. Select text on ANY website and fact-check it
+2. Use context menus on ANY page
+3. Get AI replies in text fields anywhere
 
-## Popup usage
+**Can we restrict this?** NO. Restricting it breaks the product.
 
-The popup is used for:
+This is identical to:
+- **Grammarly**: Grammar checking on all sites
+- **1Password**: Password manager on all sites
+- **uBlock Origin**: Ad-blocking on all sites
 
-- bearer token setup
-- responder name
-- auto-detecting your Facebook name
-- quick responder profile editing
-- testing the Tools → OpenAI connection
+---
 
-The reply panel model selector is fetched automatically from Tools.
-It does **not** call OpenAI directly from the extension.
-Instead, Tools queries the provider model catalog server-side, filters it to chat-usable models, and returns the effective list for the current bearer token/config.
+## 📥 Installation & Setup
 
-For more advanced settings, use the dashboard link in the popup.
+### Load from Source
+
+1. Clone or download this repository
+2. Open `chrome://extensions/`
+3. Enable "Developer mode" (top right)
+4. Click "Load unpacked" and select this folder
+
+### Get a Bearer Token
+
+1. Visit **https://tools.tornevall.net**
+2. Create an account
+3. Generate a **personal bearer token**
+4. Paste it into the extension popup
+
+---
+
+## 🛡️ Privacy & Security
+
+- ✅ All JavaScript is bundled locally (no remote code execution)
+- ✅ API calls go ONLY to `tools.tornevall.net` and `tools.tornevall.com`
+- ✅ Extension requires bearer token activation
+- ✅ All settings stored locally in extension storage
+- ✅ No hidden network requests
+
+---
+
+## 📚 Documentation
+
+| File | Purpose |
+|------|---------|
+| **CHROME_WEB_STORE_COMPLIANCE.md** | ⭐ READ THIS before CWS submission |
+| CHANGELOG.md | Version history |
+| manifest.json | Extension configuration |
+
+---
+
+## 🚀 For Chrome Web Store Submission
+
+**This extension is CWS-compliant** because:
+- ✅ Honest description (says "browser-wide")
+- ✅ Justified permissions (explains why `<all_urls>` is needed)
+- ✅ Limited API surface (only Tools servers)
+- ✅ No remote code (all local)
+- ✅ User authentication required
+
+**Before submitting to CWS:** Read `CHROME_WEB_STORE_COMPLIANCE.md` for:
+- Ready-to-use submission text templates
+- Answers to common reviewer questions
+- Full compliance checklist
+
+---
+
+## ⚙️ Manifest Overview
+
+```json
+{
+  "description": "Browser-wide AI assistant and social media toolkit...",
+  "host_permissions": ["<all_urls>"],          // ← Required for injection
+  "content_scripts": [{
+    "matches": ["<all_urls>"],                 // ← Required for overlay
+    "js": [...],
+    "css": [...]
+  }]
+}
+```
+
+Both `<all_urls>` entries are REQUIRED and intentional.
+
+---
+
+## 🔑 Features
+
+- **AI Replies**: Compose AI-powered responses on any page
+- **Fact-Checking**: Select text to instantly verify
+- **Settings Sync**: Preferences sync with Tools platform
+- **Platform Integrations**: Facebook admin stats, SoundCloud insights
+- **Dev Mode**: Debug console and connection testing
+
+---
+
+## 📞 Support
+
+- **Register & token**: https://tools.tornevall.net
+- **Forum**: https://forum.tornevall.net
+- **Compliance questions**: See CHROME_WEB_STORE_COMPLIANCE.md
+
+---
+
+✅ **Ready for CWS submission? Check CHROME_WEB_STORE_COMPLIANCE.md first.**
 
 ## Facebook admin activities
 

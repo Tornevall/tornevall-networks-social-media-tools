@@ -411,6 +411,7 @@ chrome.tabs.onRemoved.addListener(function (tabId) {
     delete soundCloudTabStatusCache[String(tabId)];
 });
 
+
 async function callToolsSocialGpt(apiToken, baseUrl, payload) {
     await appendDebugLog({
         level: 'info',

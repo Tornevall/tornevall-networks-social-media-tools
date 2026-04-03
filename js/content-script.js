@@ -4,6 +4,9 @@ let panelContextDirty = false;
 let verifyActionButton = null;
 let verifyActionContext = '';
 let verifyActionAnchor = null;
+let selectionToolboxActionButton = null;
+let selectionToolboxContext = '';
+let selectionToolboxAnchor = null;
 let verifyHoverButton = null;
 let verifyHoverContext = '';
 let verifyHoverAnchor = null;
@@ -3989,6 +3992,53 @@ function ensureVerifyActionButton() {
     return verifyActionButton;
 }
 
+function ensureSelectionToolboxActionButton() {
+    if (selectionToolboxActionButton) {
+        return selectionToolboxActionButton;
+    }
+
+    selectionToolboxActionButton = document.createElement('button');
+    selectionToolboxActionButton.id = 'sgpt-selection-toolbox-action';
+    selectionToolboxActionButton.type = 'button';
+    selectionToolboxActionButton.textContent = 'Open Toolbox';
+    selectionToolboxActionButton.style.position = 'fixed';
+    selectionToolboxActionButton.style.zIndex = '2147483646';
+    selectionToolboxActionButton.style.padding = '5px 10px';
+    selectionToolboxActionButton.style.border = 'none';
+    selectionToolboxActionButton.style.borderRadius = '999px';
+    selectionToolboxActionButton.style.background = '#0284c7';
+    selectionToolboxActionButton.style.color = '#fff';
+    selectionToolboxActionButton.style.fontSize = '12px';
+    selectionToolboxActionButton.style.cursor = 'pointer';
+    selectionToolboxActionButton.style.userSelect = 'none';
+    selectionToolboxActionButton.style.boxShadow = '0 2px 10px rgba(0,0,0,0.18)';
+    selectionToolboxActionButton.style.display = 'none';
+    selectionToolboxActionButton.title = 'Open Toolbox with the selected text imported as context.';
+    selectionToolboxActionButton.addEventListener('mousedown', function (event) {
+        event.preventDefault();
+    });
+    selectionToolboxActionButton.addEventListener('click', function () {
+        if (!selectionToolboxContext) {
+            return;
+        }
+        const context = selectionToolboxContext;
+        selectionToolboxContext = '';
+        selectionToolboxAnchor = null;
+        selectionToolboxActionButton.style.display = 'none';
+        if (verifyActionButton) {
+            verifyActionButton.style.display = 'none';
+        }
+        verifyActionContext = '';
+        verifyActionAnchor = null;
+        openReplyPanelWithImportedContext(context, {
+            message: 'Selected text imported into Toolbox.',
+        });
+    });
+    document.body.appendChild(selectionToolboxActionButton);
+
+    return selectionToolboxActionButton;
+}
+
 function ensureVerifyHoverButton() {
     if (verifyHoverButton) {
         return verifyHoverButton;
@@ -4189,16 +4239,19 @@ function getSelectionVerificationSource() {
         anchor: Object.assign(createFactAnchorForNode(commonNode), {
             rect: cloneAnchorRect(rect),
         }),
-        left: Math.round(rect.right - 92),
+        right: Math.round(rect.right),
         top: Math.round(rect.top - 36),
     };
 }
 
 function positionVerifyActionButton() {
     const button = ensureVerifyActionButton();
+    const toolboxButton = ensureSelectionToolboxActionButton();
     if (panel) {
         button.style.display = 'none';
         verifyActionContext = '';
+        toolboxButton.style.display = 'none';
+        selectionToolboxContext = '';
         return;
     }
 
@@ -4206,6 +4259,8 @@ function positionVerifyActionButton() {
     if (!source) {
         button.style.display = 'none';
         verifyActionContext = '';
+        toolboxButton.style.display = 'none';
+        selectionToolboxContext = '';
         if (verifyHoverTarget) {
             showVerifyHoverButtonForTarget(verifyHoverTarget);
         }
@@ -4215,8 +4270,20 @@ function positionVerifyActionButton() {
     hideVerifyHoverButton(false);
     verifyActionContext = source.context;
     verifyActionAnchor = source.anchor || null;
+    selectionToolboxContext = source.context;
+    selectionToolboxAnchor = source.anchor || null;
+
+    toolboxButton.style.display = 'block';
     button.style.display = 'block';
-    setComposerActionButtonCoordinates(button, source.left, source.top);
+
+    const verifyRect = getButtonRectForPlacement(button, 92, 30);
+    const toolboxRect = getButtonRectForPlacement(toolboxButton, 116, 30);
+    const spacing = 8;
+    const verifyLeft = source.right - verifyRect.width;
+    const toolboxLeft = verifyLeft - spacing - toolboxRect.width;
+
+    setComposerActionButtonCoordinates(toolboxButton, toolboxLeft, source.top);
+    setComposerActionButtonCoordinates(button, verifyLeft, source.top);
 }
 
 function positionComposerActionButton() {
@@ -6094,6 +6161,24 @@ function openReplyPanel() {
 
         availableToolsModels = normalizeAvailableToolsModels(data.availableToolsModels || availableToolsModels);
         defaultToolsModel = resolveDefaultToolsModel(availableToolsModels, data.defaultToolsModel || defaultToolsModel);
+
+function openReplyPanelWithImportedContext(importedContext, options) {
+    const normalizedContext = normalizeWhitespace(importedContext || '');
+    const message = options && options.message
+        ? String(options.message)
+        : 'Context imported into Toolbox.';
+
+    openReplyPanel();
+
+    if (!normalizedContext || !panel) {
+        return;
+    }
+
+    setPanelContextValue(normalizedContext, {dirty: true});
+    panelContextDirty = true;
+    updatePanelAnchorNote();
+    updatePanelComposerActions(message, 'success');
+}
         preferredToolsModel = resolveDefaultToolsModel(availableToolsModels, data.preferredToolsModel || preferredToolsModel || defaultToolsModel);
 
         if (modelField) {
@@ -6478,14 +6563,10 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
         updatePanelMarkModeButton(!!req.enabled);
         updatePanelAnchorNote();
     } else if (req.type === 'OPEN_TOOLBOX_FROM_CONTEXT_MENU') {
-        openReplyPanel();
         const importedContext = normalizeWhitespace(req && req.contextText ? req.contextText : '');
-        if (importedContext && panel) {
-            setPanelContextValue(importedContext);
-            panelContextDirty = true;
-            updatePanelAnchorNote();
-            updatePanelComposerActions('Context imported from context menu.', 'success');
-        }
+        openReplyPanelWithImportedContext(importedContext, {
+            message: 'Context imported from context menu.',
+        });
     } else if (req.type === 'OPEN_REPLY_PANEL') {
         openReplyPanel();
     } else if (req.type === 'START_FACT_VERIFICATION_FROM_CONTEXT_MENU') {
