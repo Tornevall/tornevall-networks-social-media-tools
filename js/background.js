@@ -1415,6 +1415,20 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
         return true;
     }
 
+    if (req.type === 'GET_TOOLS_RUNTIME_SETTINGS') {
+        chrome.storage.sync.get([
+            'toolsApiToken',
+            'devMode',
+            'soundcloudAutoIngestEnabled',
+            'facebookAdminDebugEnabled',
+            'defaultToolsModel',
+            'preferredFactCheckModel'
+        ], function (data) {
+            sendResponse({ok: true, settings: data || {}});
+        });
+        return true;
+    }
+
     if (req.type === 'GET_AVAILABLE_MODELS') {
         chrome.storage.sync.get(['toolsApiToken', 'devMode'], async function (data) {
             if (!data.toolsApiToken) {

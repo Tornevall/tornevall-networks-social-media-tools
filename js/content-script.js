@@ -2016,7 +2016,19 @@ function mirrorAdminDetectionsToConsole(entries, networkEntry) {
 function getToolsRuntimeSettings() {
     return new Promise(function (resolve) {
         safeStorageSyncGet(['toolsApiToken', 'devMode', 'soundcloudAutoIngestEnabled'], function (data) {
-            resolve(data || {});
+            if (data && data.toolsApiToken) {
+                resolve(data || {});
+                return;
+            }
+
+            safeSendRuntimeMessageWithResponse({type: 'GET_TOOLS_RUNTIME_SETTINGS'}).then(function (response) {
+                if (response && response.ok && response.settings) {
+                    resolve(response.settings || {});
+                    return;
+                }
+
+                resolve(data || {});
+            });
         });
     });
 }

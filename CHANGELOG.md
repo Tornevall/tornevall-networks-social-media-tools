@@ -11,6 +11,7 @@
 - **Selected text can be imported directly into the Toolbox again** — clicking the restored `Open Toolbox` selection button opens the panel and preloads the selected text as context.
 - **Verification result popup once again includes `Open Toolbox`** — after a fact-check finishes, the result box now exposes the same follow-up handoff into Toolbox instead of only showing `Refresh` and `Dig deeper`.
 - **Background message handling cleaned up after reset/recovery edits** — duplicate `chrome.runtime.onMessage` wiring was collapsed back to one active handler while keeping the SoundCloud message endpoints intact.
+- **Temporary false "missing token" states reduced** — content-script token checks now fall back to the background runtime settings reader before showing bearer-token-missing messaging, which helps after reload/sync drift.
 
 ### Changed
 - **Manifest description updated**: Now clearly states "Browser-wide AI assistant" instead of narrow platform description
@@ -42,6 +43,24 @@ Chrome Web Store accepts broad `<all_urls>` permissions when:
 - **Compliance checklist**: Full verification steps in `CHROME_WEB_STORE_COMPLIANCE.md`
 
 ---
+
+## 1.2.11 - 2026-04 (historical gap marker)
+
+### Changed
+- Historical version gap backfilled: `1.2.11` appears to have existed during the browser-wide / Chrome Web Store preparation cycle, but no preserved standalone release snapshot or trustworthy full note set remains after the later reset/recovery work.
+- User-visible work from that lost checkpoint is only documented here when it could be re-verified in surviving code or reintroduced explicitly in `1.2.12`.
+
+## 1.2.10 - 2026-04 (historical gap marker)
+
+### Changed
+- Historical version gap backfilled: `1.2.10` is currently treated as an unrecoverable repository-history gap.
+- No standalone changelog-grade release record survived for this tag/version in the current workspace state, so features are intentionally **not** guessed or reconstructed here without code evidence.
+
+## 1.2.9 - 2026-03/04 (historical gap marker)
+
+### Changed
+- Historical version gap backfilled: `1.2.9` appears to have been part of the same missing sequence between the preserved `1.2.8` state and the later `1.2.12` recovery/compliance work.
+- Missing pieces from that period should be treated as "unknown unless re-verified in code" rather than assumed released.
 
 ## 1.2.8 - 2026-03-18
 

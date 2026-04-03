@@ -13,7 +13,7 @@ Use it for:
 
 Upload a single `.zip` file where `manifest.json` is in the **root** of the zip.
 
-The zip should include:
+### Core runtime files (required)
 
 - `manifest.json`
 - `html/`
@@ -21,19 +21,27 @@ The zip should include:
 - `css/`
 - `icons/`
 
+### Documentation files (optional but recommended)
+
+- `README.md` — helps reviewers understand the extension's purpose and features
+- `CHANGELOG.md` — documents version history and changes (useful for reviewers to assess security/compliance updates)
+
+### Files to exclude
+
 Do **not** include unnecessary local/project files such as:
 
 - `.git/`
-- editor settings
+- `.gitignore`
+- editor settings (`.vscode`, etc.)
 - local caches
 - screenshots not used by the extension
-- unrelated docs unless you explicitly want them in the package
+- `CHROME_WEB_STORE_COMPLIANCE.md` (internal reference; use `CHROME_WEB_STORE_SUBMISSION.md` instead if you want to include review guidance)
 
 ---
 
 ## 2. Recommended release package contents
 
-Minimal Chrome Web Store package:
+**Minimal package** (runtime only):
 
 ```text
 manifest.json
@@ -43,7 +51,19 @@ css/
 icons/
 ```
 
-Current extension runtime files are loaded from these folders, so this is the core package.
+**Recommended package** (with documentation for reviewers):
+
+```text
+manifest.json
+html/
+js/
+css/
+icons/
+README.md
+CHANGELOG.md
+```
+
+The recommended package helps Chrome Web Store reviewers understand your extension's purpose, features, and recent changes (especially for security/compliance reviews).
 
 ---
 
@@ -53,17 +73,31 @@ Current extension runtime files are loaded from these folders, so this is the co
 
 Create a zip from the contents of the `socialgpt-chrome` folder, with `manifest.json` at zip root.
 
+Include:
+- Core runtime files: `manifest.json`, `html/`, `js/`, `css/`, `icons/`
+- Documentation: `README.md`, `CHANGELOG.md` (optional but recommended)
+
 ### Option B — terminal command from the project folder
+
+**Recommended** (with documentation):
 
 ```bash
 cd /mnt/k/Apps/wamp64/www/tornevall.com/tools.tornevall.com/projects/socialgpt-chrome
-rm -f socialgpt-chrome-cws-1.2.12.zip
-zip -r socialgpt-chrome-cws-1.2.12.zip manifest.json html js css icons
+rm -f tornevall-networks-socialgpt-chrome.zip
+zip -r tornevall-networks-socialgpt-chrome.zip manifest.json html js css icons README.md CHANGELOG.md; exit
+```
+
+**Minimal** (runtime only):
+
+```bash
+cd /mnt/k/Apps/wamp64/www/tornevall.com/tools.tornevall.com/projects/socialgpt-chrome
+rm -f tornevall-networks-socialgpt-chrome.zip
+zip -r tornevall-networks-socialgpt-chrome.zip manifest.json html js css icons; exit
 ```
 
 If `zip` is unavailable, use Windows Explorer:
 1. open the folder
-2. select `manifest.json`, `html`, `js`, `css`, `icons`
+2. select `manifest.json`, `html`, `js`, `css`, `icons` (and optionally `README.md`, `CHANGELOG.md`)
 3. right-click
 4. Send to → Compressed (zipped) folder
 
@@ -148,11 +182,16 @@ Before upload:
 
 ## 8. Important current-state note
 
-This current build uses browser-wide access directly in the manifest:
+**Manifest configuration (after 2026-04-03 compliance update):**
 
-- `host_permissions: ["<all_urls>"]`
-- `content_scripts.matches: ["<all_urls>"]`
+The current build now includes a **global browser-wide AI mode toggle** in the popup:
 
-There is **no separate optional browser-wide mode toggle** in the current reset state.
-That means the Chrome Web Store documentation must describe the extension honestly as a browser-wide tool.
+- Default manifest: `host_permissions: ["https://tools.tornevall.net", "https://tools.tornevall.com"]` + `content_scripts.matches` narrowed to Facebook, SoundCloud, X/Twitter
+- Optional global mode: Requests `optional_host_permissions: ["<all_urls>"]` when user enables the toggle, then registers content scripts via `chrome.scripting.registerContentScripts`
+- Users can revoke the global mode permission via popup toggle (disables the extension on all sites except the default platforms)
+
+This balanced approach:
+- Respects Chrome Web Store default permission limits (no `<all_urls>` in default manifest)
+- Allows advanced users to opt-in to browser-wide mode explicitly
+- Makes Chrome Web Store reviewers happy with a clear, user-initiated permission model
 

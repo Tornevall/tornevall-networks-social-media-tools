@@ -4,6 +4,12 @@
 
 This extension provides text selection overlays, fact-checking controls, and AI-assisted replies on ANY website you visit. It's powered by the Tornevall Networks Tools platform.
 
+### 🔗 Quick Links
+
+- **GitHub Project**: https://github.com/Tornevall/tornevall-networks-social-media-tools
+- **Tools Platform**: https://tools.tornevall.net
+- **Chrome Web Store**: *(coming soon after compliance review)*
+
 ---
 
 ## 🎯 What It Does
