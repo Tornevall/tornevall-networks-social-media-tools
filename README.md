@@ -12,6 +12,7 @@ This extension provides text selection overlays, fact-checking controls, and AI-
 - ✅ Select any text and see floating "Verify fact" and "Open Toolbox" buttons
 - ✅ Right-click anywhere to access "Open Toolbox" or "Verify fact" context menus
 - ✅ Get AI-powered replies and fact-checking via Tornevall Networks Tools
+- ✅ After a fact-check result appears, continue with the same context using the result-box `Open Toolbox` action
 
 **On specific platforms:**
 - 📘 **Facebook**: Admin activity reporting (with permission)
@@ -38,6 +39,8 @@ This extension provides text selection overlays, fact-checking controls, and AI-
 3. Get AI replies in text fields anywhere
 
 **Can we restrict this?** NO. Restricting it breaks the product.
+
+**Current build note:** after the recent reset/recovery cycle, the browser-wide scope is provided directly by the static manifest configuration (`host_permissions` + `content_scripts.matches` both set to `<all_urls>`). There is currently **no separate popup toggle** for browser-wide mode in this build.
 
 This is identical to:
 - **Grammarly**: Grammar checking on all sites
@@ -78,6 +81,7 @@ This is identical to:
 
 | File | Purpose |
 |------|---------|
+| **CHROME_WEB_STORE_SUBMISSION.md** | ⭐ Short release + submit guide for Chrome Web Store |
 | **CHROME_WEB_STORE_COMPLIANCE.md** | ⭐ READ THIS before CWS submission |
 | CHANGELOG.md | Version history |
 | manifest.json | Extension configuration |
@@ -97,6 +101,8 @@ This is identical to:
 - Ready-to-use submission text templates
 - Answers to common reviewer questions
 - Full compliance checklist
+
+For packaging and upload steps, use `CHROME_WEB_STORE_SUBMISSION.md`.
 
 ---
 

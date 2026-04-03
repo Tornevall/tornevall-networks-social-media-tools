@@ -1,231 +1,218 @@
-# Chrome Web Store Compliance Documentation
+# Chrome Web Store compliance documentation
 
-**Extension:** Tornevall Networks Social Media Tools  
-**Version:** 1.2.12  
-**Manifest Version:** MV3
-
----
-
-## SUMMARY: What Chrome Requires & What We Have
-
-### What We Claim (in manifest & description)
-- ✅ **Browser-wide extension** — works on ALL websites (`<all_urls>`)
-- ✅ **Clear single purpose** — AI replies, fact-checking, selected-text overlays
-- ✅ **Limited API communication** — only `tools.tornevall.net` and `tools.tornevall.com`
-- ✅ **No remote code** — all JavaScript bundled locally
-- ✅ **User-activated** — requires personal bearer token to use
-
-### What Chrome Web Store Accepts
-✅ **YES, Chrome ACCEPTS broad `<all_urls>` permissions when:**
-
-1. **Extension's purpose clearly requires browser-wide access**
-   - ✅ Ours does: "Text selection overlays, fact-checking, and AI replies on any website"
-
-2. **Documentation is transparent and honest**
-   - ✅ We describe EXACTLY what we do and WHY we need broad access
-   - ✅ We don't pretend to be narrowly-scoped when we're not
-
-3. **API calls are scoped to specific hosts**
-   - ✅ All calls go ONLY to `tools.tornevall.net` (production) or `tools.tornevall.com` (dev)
-   - ✅ No calls to arbitrary external services
-
-4. **No remote code execution**
-   - ✅ All JavaScript is bundled locally
-   - ✅ No `eval()`, no dynamic script loading from the web
-   - ✅ No hidden network calls
-
-5. **Users must opt-in**
-   - ✅ Requires a valid personal bearer token to activate AI features
-   - ✅ If no token, the overlay/fact-check UI is present but inactive
+**Extension:** Tornevall Networks Social Media Tools
+**Version:** 1.2.12
+**Manifest version:** MV3
 
 ---
 
-## Chrome Web Store Text Template
+## Purpose of this document
 
-### For "Single Purpose Statement" (required in CWS submission form)
-
-```
-Tornevall Networks Social Media Tools is a browser-wide AI assistant 
-and fact-checking companion. It provides:
-
-- Text selection overlays for "Verify fact" and "Open Toolbox" on any webpage
-- Right-click context menu items available on all sites
-- AI-assisted replies powered by the Tornevall Networks Tools platform
-- Optional platform-specific features for Facebook (admin activity capture) 
-  and SoundCloud (insights capture)
-
-All AI processing is server-side via the Tornevall Networks Tools backend.
-The extension requires a personal bearer token to activate AI features.
-```
-
-### For "Permissions Justification" (required in CWS submission form)
-
-```
-HOST PERMISSIONS — <all_urls>
-Why: The extension's core purpose is to provide text selection overlays, 
-context menu items, and AI reply controls on ANY website the user visits. 
-This requires content script injection and DOM access across all sites.
-
-PERMISSIONS — activeTab
-Why: Allows the extension to temporarily access the active tab for 
-context menu interactions.
-
-PERMISSIONS — contextMenus
-Why: Provides right-click context menu entries ("Open Toolbox", 
-"Verify fact") available on any page.
-
-PERMISSIONS — scripting
-Why: Allows dynamic content script injection when needed for context 
-menu fallback scenarios.
-
-PERMISSIONS — storage
-Why: Stores user settings (token, preferences, model selection) locally 
-in extension storage.
-```
-
-### For "Privacy & Security" (required in CWS submission form)
-
-```
-DATA HANDLING:
-- The extension stores user's personal bearer token locally in extension storage
-- No user data is transmitted except API requests to tools.tornevall.net
-- All local settings (responder name, language prefs, etc.) are stored locally
-- No data is sold, shared, or used for advertising
-
-REMOTE CODE:
-This extension does NOT execute remote code. All JavaScript files are 
-bundled locally in the extension package.
-
-API COMMUNICATION:
-The extension communicates ONLY with:
-- https://tools.tornevall.net (production Tornevall Tools platform)
-- https://tools.tornevall.com (development/beta Tornevall Tools platform)
-
-All communication requires the user's personal bearer token (authentication).
-The extension never makes unauthenticated requests or calls to third-party APIs.
-```
+This file is included as package documentation for the extension.
+It explains the extension's browser-wide scope, manifest choices, permissions, storage, and remote communication model so that the implementation, README, and Chrome Web Store submission material stay aligned.
 
 ---
 
-## Specific Answers to CWS Reviewer Questions
+## Product scope
 
-### Q: "Why does your extension need to run on ALL websites?"
+Tornevall Networks Social Media Tools is a browser-wide AI assistant and fact-checking companion for Chrome.
 
-**Answer:**
-The extension's core feature is an AI-powered fact-checking and reply assistant 
-that activates on selected text. Users should be able to:
-- Select text on ANY website
-- Right-click anywhere and choose "Open Toolbox" or "Verify fact"
-- Get AI replies in any text field
+The extension is intended to work across many websites. That is a deliberate product decision.
+It is not a narrowly site-limited extension in product scope.
 
-This requires the content script to be injected on all pages. We cannot predict 
-which websites a user will visit or want to fact-check, so we must inject on `<all_urls>`.
+Core browser-wide capabilities include:
 
-### Q: "How do you justify broad site access when most extensions are narrower?"
+* text-selection overlays such as "Verify fact" and "Open Toolbox"
+* context menu actions available on arbitrary websites
+* AI-assisted reply and page-context workflows tied to page content and editable fields
+* platform-specific features for Facebook, SoundCloud, X, and similar supported modules where relevant
 
-**Answer:**
-Our extension is a browser-wide AI assistant, similar to:
-- Grammarly (content editing on all sites)
-- 1Password (password manager on all sites)
-- uBlock Origin (ad-blocking on all sites)
-
-These extensions legitimately require `<all_urls>` because their purpose is 
-cross-site. Ours is the same: browser-wide AI assistance.
-
-We do NOT restrict access to specific sites because that would break the product.
-
-### Q: "How can users trust you with such broad access?"
-
-**Answer:**
-1. **Transparency**: We're explicit that we work on all sites
-2. **Limited API surface**: All network calls go to TWO specific hosts (tools.tornevall.net, tools.tornevall.com)
-3. **User control**: The extension requires a personal bearer token — it does nothing without user setup
-4. **No hidden activity**: All activity is visible in the overlay and context menus
-5. **Open source ready**: The code is auditable (can be provided upon request)
+Because those browser-wide overlay and fact-checking features must remain available on arbitrary sites, the extension architecture depends on broad content script coverage.
 
 ---
 
-## What NOT to Do (Common Mistakes That Get Extensions Rejected)
+## Manifest and permission model
 
-❌ **DON'T:**
-- Restrict `content_scripts.matches` to a fake narrow allowlist if your product actually needs broad access
-- Claim narrow scope in CWS but use broad scope in the code
-- Make hidden API calls to services not disclosed in documentation
-- Store user data without permission or disclose where it goes
-- Use misleading language ("works on selected sites" when it works on all sites)
+### Browser-wide content script coverage
 
-✅ **DO:**
-- Be honest about what the extension does
-- Explain WHY broad access is necessary
-- Document ALL external services you call
-- Be transparent about data storage
-- Let the code match the description
+The extension currently relies on browser-wide content script availability.
+That means `content_scripts.matches` must remain on `"<all_urls>"` for the current architecture.
 
----
+Reason:
+Restricting content script matches to a narrow allowlist would remove the browser-wide overlay, selected-text actions, and related UI from non-listed sites, which would break the core product behavior.
 
-## Our Compliance Checklist
+### Host access
 
-- ✅ Manifest description is HONEST (says "browser-wide")
-- ✅ `content_scripts.matches` is `["<all_urls>"]` (matches our actual scope)
-- ✅ `host_permissions` is LIMITED to Tools APIs only
-- ✅ No `eval()`, no dynamic script loading
-- ✅ All JavaScript is local/bundled
-- ✅ No hidden network calls
-- ✅ User must provide bearer token (requires setup)
-- ✅ Clear documentation provided
+The extension may use a mix of:
 
----
+* API-specific host permissions for Tornevall Networks Tools endpoints
+* browser-wide content script matching where required by the UI architecture
+* optional or activation-tied broader access where supported by the implementation
 
-## Submission Checklist for Chrome Web Store
+The important rule is that the manifest, runtime behavior, and documentation must describe the same real product.
 
-When submitting to CWS, ensure you:
+### Core extension permissions
 
-1. **Fill out the "Single Purpose Statement" form field**
-   - Copy the template above into the CWS form
+The extension uses these core permissions:
 
-2. **Fill out the "Permissions Justification" form field**
-   - Copy the template above into the CWS form
+* `activeTab` - temporary access to the active tab for user-triggered interactions
+* `contextMenus` - right-click actions such as "Open Toolbox" and "Verify fact"
+* `scripting` - runtime injection and related script operations where needed
+* `storage` - local extension settings and runtime preferences
 
-3. **Fill out the "Privacy & Security" form field**
-   - Copy the template above into the CWS form
-
-4. **Provide this document** if the reviewer asks "why do you need `<all_urls>`?"
-   - Reference this file: "See CHROME_WEB_STORE_COMPLIANCE.md in the extension repo"
-
-5. **Screenshot examples** (optional but helpful):
-   - A screenshot showing the extension on a random website (like example.com)
-   - A screenshot showing text selection and the floating "Verify fact" button
-   - A screenshot showing the context menu
+If the current implementation keeps `content_scripts.matches` on `"<all_urls>"`, that must be documented honestly instead of being hidden behind a fake narrow description.
 
 ---
 
-## Expected Timeline
+## Why browser-wide access is needed
 
-- ✅ **Submission ready**: Yes (all documentation complete)
-- ⏳ **CWS review time**: 1-7 days typically (can be longer if clarifications needed)
-- ✅ **Risk of rejection**: LOW (we're transparent and legitimate)
-- ✅ **Risk of getting approved**: HIGH (honest description + limited API surface)
+The extension is designed to let the user work with arbitrary page content.
+Typical browser-wide use cases include:
 
----
+* selecting text on any website and verifying the claim
+* opening Toolbox actions from selected text on any page
+* using AI assistance in editable text fields across many sites
+* attaching lightweight on-page UI tied to current page context
 
-## Questions? Contact CWS Support
+The extension cannot predict in advance which sites a user will want to inspect, verify, respond on, or analyze.
+For that reason, broad site coverage is part of the actual product design.
 
-If CWS reviewers ask for clarification, respond with:
-
-> "The extension is a browser-wide AI assistant (like Grammarly or 1Password). 
-> It requires `<all_urls>` to inject content scripts for text selection overlays 
-> and context menus on any website. All API communication is scoped to 
-> tools.tornevall.net and tools.tornevall.com only. See CHROME_WEB_STORE_COMPLIANCE.md 
-> for detailed documentation."
+This is not meant to describe passive surveillance.
+It describes browser-wide user-facing functionality that depends on content script presence on arbitrary sites.
 
 ---
 
-## Final Word
+## Remote code statement
 
-**Your extension is CWS-compliant BECAUSE you're honest about scope.**
+This extension does not download and execute remote hosted code.
 
-Many rejections happen when extensions claim narrow scope but actually need broad access. 
-You're doing the opposite: being transparent from the start. That's why CWS will accept you.
+All executable JavaScript used by the extension is bundled in the extension package.
+Remote communication is limited to HTTPS API requests used for account-linked functionality and server-side processing.
 
-✅ **Submit with confidence.**
+This distinction matters:
 
+* remote API communication is used
+* remote executable extension code is not used
+
+---
+
+## API communication
+
+The extension is designed to communicate only with the Tornevall Networks Tools endpoints used by the product.
+These include:
+
+* `https://tools.tornevall.net`
+* `https://tools.tornevall.com`
+
+These requests are used for functionality such as:
+
+* server-side AI processing
+* bearer token validation or account-linked setup
+* settings-related extension workflows
+* optional statistics or reporting flows where implemented
+
+This document should be kept in sync with the actual implementation.
+If additional external services are introduced later, they must also be documented.
+
+---
+
+## User activation model
+
+The extension is user-facing and account-linked.
+AI-related functionality depends on the user's own Tornevall Networks Tools bearer token.
+
+That means:
+
+* the extension requires user setup before AI-backed features can be used
+* browser-wide UI may be visible according to the current architecture
+* AI processing itself is tied to explicit user interaction and token-backed activation
+
+If token-dependent or checkbox-dependent activation exists in the popup, that must be reflected consistently in both public documentation and Chrome Web Store submission text.
+
+---
+
+## Storage
+
+The extension uses Chrome extension storage for settings and runtime preferences.
+Depending on implementation, this may include:
+
+* `chrome.storage.sync`
+* `chrome.storage.local`
+* `chrome.storage.session`
+
+Typical stored values can include:
+
+* bearer token
+* environment flag such as dev or production mode
+* responder and language preferences
+* model preferences
+* temporary session-specific runtime state
+* platform-specific pending or optional statistics data when relevant
+
+Storage descriptions must always match the actual code.
+If the implementation changes, this document must be updated accordingly.
+
+---
+
+## Platform-specific features
+
+In addition to browser-wide AI assistance, the extension may include platform-specific modules.
+Examples already present in the product direction include:
+
+* Facebook admin activity workflows
+* SoundCloud insights capture
+* X or Twitter-specific tooling
+
+These features should be described as platform-specific additions on top of the browser-wide core, not as the whole product.
+
+---
+
+## Documentation rules
+
+This document is intended to support package-level documentation and Chrome Web Store preparation.
+It should therefore remain:
+
+* technically honest
+* consistent with the manifest
+* consistent with runtime behavior
+* consistent with README and submission text
+* free from claims of guaranteed approval or speculative review outcomes
+
+Do not write things like:
+
+* "Chrome will accept this"
+* "risk of rejection is low"
+* "submit with confidence"
+
+Those are not implementation facts and do not belong in package documentation.
+
+---
+
+## What this document is for
+
+This file can be used as a source for:
+
+* internal package documentation
+* README alignment
+* Chrome Web Store privacy and permission explanations
+* reviewer clarification if questions arise about browser-wide scope
+
+It is not a guarantee of approval.
+It is a technical explanation of why the extension is structured the way it is.
+
+---
+
+## Maintenance note
+
+If any of the following change, this file must be updated at the same time:
+
+* `manifest.json`
+* `content_scripts.matches`
+* `host_permissions`
+* `optional_host_permissions`
+* external API endpoints
+* storage usage
+* popup activation logic
+* browser-wide overlay behavior
+
+The goal is simple: code, manifest, README, and package documentation must all describe the same real extension.

@@ -2240,6 +2240,17 @@ function buildFactBoxActions() {
                 });
             },
         },
+        {
+            label: 'Open Toolbox',
+            title: 'Open Toolbox with the same verification context so you can continue working from the selected material.',
+            background: '#0284c7',
+            color: '#ffffff',
+            onClick: function () {
+                openReplyPanelWithImportedContext(lastVerificationRequest.context, {
+                    message: 'Verification context imported into Toolbox.',
+                });
+            },
+        },
     ];
 }
 
@@ -6161,24 +6172,6 @@ function openReplyPanel() {
 
         availableToolsModels = normalizeAvailableToolsModels(data.availableToolsModels || availableToolsModels);
         defaultToolsModel = resolveDefaultToolsModel(availableToolsModels, data.defaultToolsModel || defaultToolsModel);
-
-function openReplyPanelWithImportedContext(importedContext, options) {
-    const normalizedContext = normalizeWhitespace(importedContext || '');
-    const message = options && options.message
-        ? String(options.message)
-        : 'Context imported into Toolbox.';
-
-    openReplyPanel();
-
-    if (!normalizedContext || !panel) {
-        return;
-    }
-
-    setPanelContextValue(normalizedContext, {dirty: true});
-    panelContextDirty = true;
-    updatePanelAnchorNote();
-    updatePanelComposerActions(message, 'success');
-}
         preferredToolsModel = resolveDefaultToolsModel(availableToolsModels, data.preferredToolsModel || preferredToolsModel || defaultToolsModel);
 
         if (modelField) {
@@ -6220,6 +6213,24 @@ function openReplyPanelWithImportedContext(importedContext, options) {
     });
 
     refreshAvailableModelsForPanel(false);
+}
+
+function openReplyPanelWithImportedContext(importedContext, options) {
+    const normalizedContext = normalizeWhitespace(importedContext || '');
+    const message = options && options.message
+        ? String(options.message)
+        : 'Context imported into Toolbox.';
+
+    openReplyPanel();
+
+    if (!normalizedContext || !panel) {
+        return;
+    }
+
+    setPanelContextValue(normalizedContext, {dirty: true});
+    panelContextDirty = true;
+    updatePanelAnchorNote();
+    updatePanelComposerActions(message, 'success');
 }
 
 // ---------------------------------------------

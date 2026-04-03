@@ -9,6 +9,7 @@
 ### Fixed
 - **Selected-text overlay once again shows two actions** — `Open Toolbox` is now rendered next to `Verify fact` for plain text selections, instead of only showing the verify button.
 - **Selected text can be imported directly into the Toolbox again** — clicking the restored `Open Toolbox` selection button opens the panel and preloads the selected text as context.
+- **Verification result popup once again includes `Open Toolbox`** — after a fact-check finishes, the result box now exposes the same follow-up handoff into Toolbox instead of only showing `Refresh` and `Dig deeper`.
 - **Background message handling cleaned up after reset/recovery edits** — duplicate `chrome.runtime.onMessage` wiring was collapsed back to one active handler while keeping the SoundCloud message endpoints intact.
 
 ### Changed
@@ -16,7 +17,9 @@
 - **`host_permissions` set to `["<all_urls>"]`**: Required for content script injection on all sites
 - **`content_scripts.matches` set to `["<all_urls>"]`**: Core feature requires browser-wide injection
 - **Documentation complete**: Added `CHROME_WEB_STORE_COMPLIANCE.md` with full CWS submission guidance
+- **Submission guide added**: `CHROME_WEB_STORE_SUBMISSION.md` now documents zip packaging, reviewer notes, and upload checklist for the current build
 - **README updated**: Explains why `<all_urls>` is required and not restrictable
+- **README + compliance docs synchronized with the current build**: browser-wide access is static via manifest in this revision (no separate popup global-mode toggle in the current reset state)
 - **This is NOT a breaking change** — the extension already worked on all sites; this just documents it honestly
 
 ### Context
