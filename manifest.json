@@ -1,7 +1,7 @@
 {
   "name": "Tornevall Networks Social Media Tools",
   "short_name": "tornevall-networks-social-media-tools",
-  "description": "Browser-wide AI assistant and social media toolkit. Text selection overlays, fact-checking, and AI replies on any website. Requires a personal Tornevall Networks Tools bearer token.",
+  "description": "Browser-wide AI assistant, fact-checker and koolkit. Powered by Tornevall Networks Tools.",
   "version": "1.2.12",
   "manifest_version": 3,
   "icons": {
