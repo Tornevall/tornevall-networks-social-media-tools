@@ -21,8 +21,9 @@ const t = function (key, params, fallback) {
     return extensionI18n.t(key, params, fallback);
 };
 const DEFAULT_MOOD = 'Neutral and formal';
-const DEFAULT_PERSONA_PROFILE = t('defaults.personaProfile', {}, 'You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.');
-const DEFAULT_TEST_QUESTION = t('defaults.testQuestion', {}, 'A Facebook user writes: "Hi, what does this tool help you with?" Reply in one short sentence in your configured tone and style.');
+const DEFAULT_PERSONA_PROFILE = 'You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.';
+const DEFAULT_TEST_QUESTION = 'A Facebook user writes: "Hi, what does this tool help you with?" Reply in one short sentence in your configured tone and style.';
+const DEFAULT_EXTENSION_UI_LANGUAGE = 'auto';
 const DEFAULT_RESPONSE_LANGUAGE = 'auto';
 const DEFAULT_VERIFY_FACT_LANGUAGE = 'auto';
 const DEFAULT_FACT_CHECK_MODEL = 'gpt-4o';
@@ -31,6 +32,13 @@ const DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION = '';
 const DEFAULT_MARKED_CONTEXT_LABEL_MODE = 'compact';
 const DEFAULT_MARKED_CONTEXT_EXPANSION_MODE = 'current';
 const REMOTE_AUTOSAVE_DELAY_MS = 700;
+const LEGACY_LOCALIZED_PERSONA_DEFAULTS = [
+    'Du är en vänlig, överintelligent människa som alltid är redo att hjälpa till. Svara som om du själv är den som deltar i diskussionen och försök använda språket som används i prompten.'
+];
+const LEGACY_LOCALIZED_TEST_QUESTIONS = [
+    'En Facebook-användare skriver: "Hej, vad hjälper det här verktyget dig med?" Svara i en kort mening med din konfigurerade ton och stil.',
+    'Svara i en kort mening som visar vilket svararnamn, vilken profil och vilka egna instruktioner du fick från Tools.'
+];
 const FORUM_URL = (window.TNNetworksExtensionLinks && window.TNNetworksExtensionLinks.FORUM_URL) || 'https://forum.tornevall.net';
 const TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH = (window.TNNetworksExtensionLinks && window.TNNetworksExtensionLinks.TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH) || '/admin/social-media-tools/facebook';
 
@@ -119,6 +127,52 @@ function excerptText(value, maxLength) {
     }
 
     return text.slice(0, Math.max(0, maxLength - 1)).trim() + '…';
+}
+
+function normalizeComparableText(value) {
+    return String(value == null ? '' : value)
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function matchesLegacyLocalizedDefault(value, candidates) {
+    const normalizedValue = normalizeComparableText(value);
+    if (!normalizedValue) {
+        return false;
+    }
+
+    return (candidates || []).some(function (candidate) {
+        return normalizeComparableText(candidate) === normalizedValue;
+    });
+}
+
+function sanitizePersonaProfileValue(value) {
+    const trimmed = String(value == null ? '' : value).trim();
+    if (!trimmed) {
+        return '';
+    }
+
+    return matchesLegacyLocalizedDefault(trimmed, LEGACY_LOCALIZED_PERSONA_DEFAULTS)
+        ? DEFAULT_PERSONA_PROFILE
+        : trimmed;
+}
+
+function sanitizeTestQuestionValue(value) {
+    const trimmed = String(value == null ? '' : value).trim();
+    if (!trimmed) {
+        return '';
+    }
+
+    return matchesLegacyLocalizedDefault(trimmed, LEGACY_LOCALIZED_TEST_QUESTIONS)
+        ? DEFAULT_TEST_QUESTION
+        : trimmed;
+}
+
+function normalizeExtensionUiLanguage(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return ['auto', 'en', 'sv'].indexOf(normalized) !== -1
+        ? normalized
+        : DEFAULT_EXTENSION_UI_LANGUAGE;
 }
 
 function formatPopupTestStatus(question, smokeTest, backend, openAi, user, settingsSource) {
@@ -392,11 +446,10 @@ function queryActiveTabSoundCloudStatus() {
 }
 
 document.addEventListener('DOMContentLoaded', function () {
-    extensionI18n.applyTranslations(document);
-
     const apiKeyInput = document.getElementById('apiKey');
     const responderNameInput = document.getElementById('responderName');
     const autoDetectCheckbox = document.getElementById('autoDetectName');
+    const extensionLanguageSelect = document.getElementById('extensionLanguage');
     const responseLanguageSelect = document.getElementById('responseLanguage');
     const verifyFactLanguageSelect = document.getElementById('verifyFactLanguage');
     const factCheckModelSelect = document.getElementById('factCheckModel');
@@ -729,8 +782,9 @@ document.addEventListener('DOMContentLoaded', function () {
     function syncLocalCache(values) {
         chrome.storage.sync.set({
             responderName: values.responderName,
-            chatGptSystemPrompt: values.systemPrompt,
+            chatGptSystemPrompt: sanitizePersonaProfileValue(values.systemPrompt),
             autoDetectResponder: values.autoDetectResponder,
+            extensionUiLanguage: values.extensionUiLanguage,
             defaultMood: values.defaultMood,
             defaultCustomMood: values.defaultCustomMood,
             defaultResponseLanguage: values.defaultResponseLanguage,
@@ -748,8 +802,9 @@ document.addEventListener('DOMContentLoaded', function () {
             facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
             facebookAdminStatsEnabled: facebookAdminStatsCheckbox.checked,
             responderName: responderNameInput.value.trim(),
-            chatGptSystemPrompt: systemPromptInput.value.trim(),
+            chatGptSystemPrompt: sanitizePersonaProfileValue(systemPromptInput.value),
             autoDetectResponder: autoDetectCheckbox.checked,
+            extensionUiLanguage: extensionLanguageSelect ? normalizeExtensionUiLanguage(extensionLanguageSelect.value) : DEFAULT_EXTENSION_UI_LANGUAGE,
             defaultMood: DEFAULT_MOOD,
             defaultCustomMood: '',
             defaultResponseLanguage: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
@@ -773,7 +828,7 @@ document.addEventListener('DOMContentLoaded', function () {
     function buildRemoteSettingsPayload() {
         return {
             responder_name: responderNameInput.value.trim(),
-            persona_profile: systemPromptInput.value.trim(),
+            persona_profile: sanitizePersonaProfileValue(systemPromptInput.value),
             auto_detect_responder: autoDetectCheckbox.checked,
             response_language: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
             verify_fact_language: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
@@ -823,6 +878,7 @@ document.addEventListener('DOMContentLoaded', function () {
             responderName: responderNameInput.value.trim(),
             systemPrompt: systemPromptInput.value.trim(),
             autoDetectResponder: autoDetectCheckbox.checked,
+            extensionUiLanguage: extensionLanguageSelect ? normalizeExtensionUiLanguage(extensionLanguageSelect.value) : DEFAULT_EXTENSION_UI_LANGUAGE,
             defaultMood: DEFAULT_MOOD,
             defaultCustomMood: '',
             defaultResponseLanguage: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
@@ -1039,8 +1095,14 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         const settings = result.data.settings;
+        const remotePersonaProfileRaw = String(settings.persona_profile || '').trim();
+        const sanitizedRemotePersonaProfile = sanitizePersonaProfileValue(remotePersonaProfileRaw);
+        const shouldRepairLocalizedPersonaProfile = remotePersonaProfileRaw !== ''
+            && normalizeComparableText(sanitizedRemotePersonaProfile) !== normalizeComparableText(remotePersonaProfileRaw);
         responderNameInput.value = settings.responder_name || '';
-        systemPromptInput.value = settings.persona_profile || systemPromptInput.value.trim() || DEFAULT_PERSONA_PROFILE;
+        systemPromptInput.value = sanitizedRemotePersonaProfile
+            || sanitizePersonaProfileValue(systemPromptInput.value)
+            || DEFAULT_PERSONA_PROFILE;
         autoDetectCheckbox.checked = settings.auto_detect_responder !== false;
         responseLanguageSelect.value = settings.response_language || DEFAULT_RESPONSE_LANGUAGE;
         verifyFactLanguageSelect.value = settings.verify_fact_language || DEFAULT_VERIFY_FACT_LANGUAGE;
@@ -1049,6 +1111,10 @@ document.addEventListener('DOMContentLoaded', function () {
             result.data.default_model || DEFAULT_FACT_CHECK_MODEL,
             factCheckModelSelect ? factCheckModelSelect.value : DEFAULT_FACT_CHECK_MODEL
         );
+        const sanitizedTestQuestion = sanitizeTestQuestionValue(testQuestionInput.value);
+        if (sanitizedTestQuestion !== '') {
+            testQuestionInput.value = sanitizedTestQuestion;
+        }
         if (!testQuestionInput.value.trim()) {
             testQuestionInput.value = DEFAULT_TEST_QUESTION;
         }
@@ -1072,6 +1138,11 @@ document.addEventListener('DOMContentLoaded', function () {
             new Date().toISOString(),
             result.data.models_warning || ''
         );
+
+        if (shouldRepairLocalizedPersonaProfile) {
+            await saveRemoteSettings({suppressSuccessStatus: true});
+        }
+
         await syncRemoteFacebookOutcomeConfig(token, baseUrl);
 
         setStatus(status, t('status.settingsLoaded', {baseUrl: baseUrl}, 'Settings loaded from ' + baseUrl + '.'), false);
@@ -1089,6 +1160,7 @@ document.addEventListener('DOMContentLoaded', function () {
         'responderName',
         'chatGptSystemPrompt',
         'autoDetectResponder',
+        'extensionUiLanguage',
         'defaultMood',
         'defaultCustomMood',
         'defaultResponseLanguage',
@@ -1101,9 +1173,18 @@ document.addEventListener('DOMContentLoaded', function () {
         'markedContextLabelMode',
         'markedContextExpansionMode'
     ], async function (data) {
+        const initialExtensionUiLanguage = normalizeExtensionUiLanguage(data.extensionUiLanguage || DEFAULT_EXTENSION_UI_LANGUAGE);
+        if (extensionLanguageSelect) {
+            extensionLanguageSelect.value = initialExtensionUiLanguage;
+        }
+        if (typeof extensionI18n.setLocale === 'function') {
+            extensionI18n.setLocale(initialExtensionUiLanguage);
+        }
+        extensionI18n.applyTranslations(document);
+
         if (data.toolsApiToken) apiKeyInput.value = data.toolsApiToken;
         if (data.responderName) responderNameInput.value = data.responderName;
-        systemPromptInput.value = data.chatGptSystemPrompt || DEFAULT_PERSONA_PROFILE;
+        systemPromptInput.value = sanitizePersonaProfileValue(data.chatGptSystemPrompt) || DEFAULT_PERSONA_PROFILE;
         testQuestionInput.value = DEFAULT_TEST_QUESTION;
         autoDetectCheckbox.checked = data.autoDetectResponder !== false;
         responseLanguageSelect.value = data.defaultResponseLanguage || DEFAULT_RESPONSE_LANGUAGE;
@@ -1197,6 +1278,18 @@ document.addEventListener('DOMContentLoaded', function () {
             scheduleLocalAutosave(t('status.localPrefsAutosaved', {}, 'Local extension preferences autosaved.'));
         });
     });
+
+    if (extensionLanguageSelect) {
+        extensionLanguageSelect.addEventListener('change', function () {
+            const nextLocale = normalizeExtensionUiLanguage(extensionLanguageSelect.value);
+            if (typeof extensionI18n.setLocale === 'function') {
+                extensionI18n.setLocale(nextLocale);
+            }
+            extensionI18n.applyTranslations(document);
+            renderEndpointNote();
+            scheduleLocalAutosave(t('status.localPrefsAutosaved', {}, 'Local extension preferences autosaved.'));
+        });
+    }
 
     [responderNameInput, systemPromptInput].forEach(function (field) {
         field.addEventListener('input', function () {

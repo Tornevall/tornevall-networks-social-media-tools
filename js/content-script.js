@@ -27,6 +27,7 @@ let quickResponseActionButtonDragState = null;
 let quickResponseActionButtonDragOffset = null;
 let composerActionButtonDragListenersBound = false;
 let frontResponserName = '';
+let extensionUiLanguage = 'auto';
 let defaultResponseLanguage = 'auto';
 let defaultVerifyFactLanguage = 'auto';
 let preferredFactCheckModel = 'gpt-4o';
@@ -69,6 +70,18 @@ const DEFAULT_REPLY_PROMPT = 'Write text that fits the visible context and can b
 const MARKED_CONTEXT_LABEL_MODES = ['compact', 'mark-id', 'detailed'];
 const MARKED_CONTEXT_EXPANSION_MODES = ['current', 'parent', 'parent-children', 'document'];
 const MIN_SELECTION_ACTION_LENGTH = 2;
+const extensionI18n = globalThis.TNNetworksExtensionI18n || {
+    locale: 'en',
+    t: function (key, params, fallback) {
+        return typeof fallback !== 'undefined' ? fallback : key;
+    },
+    setLocale: function () {
+        return 'en';
+    }
+};
+const ct = function (key, params, fallback) {
+    return extensionI18n.t(key, params, fallback);
+};
 const QUICK_REPLY_PRESETS = {
     default: {
         label: 'Balanced default',
@@ -314,6 +327,25 @@ function normalizeResponseLanguageChoice(value) {
         : 'auto';
 }
 
+function normalizeExtensionUiLanguage(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return ['auto', 'en', 'sv'].indexOf(normalized) !== -1
+        ? normalized
+        : 'auto';
+}
+
+function applyExtensionUiLanguage(value) {
+    extensionUiLanguage = normalizeExtensionUiLanguage(value);
+    if (typeof extensionI18n.setLocale === 'function') {
+        extensionI18n.setLocale(extensionUiLanguage);
+    }
+    refreshLocalizedExtensionUi();
+}
+
+function getEmptyContextPrompt() {
+    return '(' + ct('contentScript.anchorFocusOrMark', {}, 'Focus a text field or mark elements to build context.') + ')';
+}
+
 function normalizeQuickReplyPresetChoice(value) {
     const normalized = String(value || '').trim().toLowerCase();
     return Object.prototype.hasOwnProperty.call(QUICK_REPLY_PRESETS, normalized)
@@ -482,7 +514,8 @@ async function refreshAvailableModelsForPanel(forceRefresh) {
     }
 }
 
-safeStorageSyncGet(['defaultResponseLanguage', 'defaultVerifyFactLanguage', 'preferredFactCheckModel', 'defaultQuickReplyPreset', 'defaultQuickReplyCustomInstruction', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel', 'markedContextLabelMode', 'markedContextExpansionMode'], function (data) {
+safeStorageSyncGet(['extensionUiLanguage', 'defaultResponseLanguage', 'defaultVerifyFactLanguage', 'preferredFactCheckModel', 'defaultQuickReplyPreset', 'defaultQuickReplyCustomInstruction', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel', 'markedContextLabelMode', 'markedContextExpansionMode'], function (data) {
+    applyExtensionUiLanguage(data.extensionUiLanguage || extensionUiLanguage);
     defaultResponseLanguage = normalizeResponseLanguageChoice(data.defaultResponseLanguage || 'auto');
     defaultVerifyFactLanguage = normalizeResponseLanguageChoice(data.defaultVerifyFactLanguage || defaultResponseLanguage || 'auto');
     preferredFactCheckModel = resolvePreferredFactCheckModel(data.preferredFactCheckModel || 'gpt-4o');
@@ -502,6 +535,9 @@ safeAddStorageChangeListener(function (changes, areaName) {
         return;
     }
 
+    if (changes.extensionUiLanguage) {
+        applyExtensionUiLanguage(changes.extensionUiLanguage.newValue || extensionUiLanguage);
+    }
     if (changes.defaultResponseLanguage) {
         defaultResponseLanguage = normalizeResponseLanguageChoice(changes.defaultResponseLanguage.newValue || 'auto');
     }
@@ -538,7 +574,7 @@ safeAddStorageChangeListener(function (changes, areaName) {
         populatePanelModelOptions(preferredToolsModel);
     }
 
-    if (changes.markedContextLabelMode || changes.markedContextExpansionMode) {
+    if (changes.markedContextLabelMode || changes.markedContextExpansionMode || changes.extensionUiLanguage) {
         handleMarkedContextSettingsChanged();
     }
 });
@@ -888,6 +924,206 @@ function syncAdminRuntimePreferences() {
 
 function normalizeWhitespace(value) {
     return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function getResponseLanguageLabel(value) {
+    const normalized = normalizeResponseLanguageChoice(value || defaultResponseLanguage);
+    return {
+        auto: ct('option.language.autoContext', {}, 'Same as the selected content/context'),
+        sv: ct('option.language.sv', {}, 'Swedish'),
+        en: ct('option.language.en', {}, 'English'),
+        da: ct('option.language.da', {}, 'Danish'),
+        no: ct('option.language.no', {}, 'Norwegian'),
+        de: ct('option.language.de', {}, 'German'),
+        fr: ct('option.language.fr', {}, 'French'),
+        es: ct('option.language.es', {}, 'Spanish'),
+    }[normalized] || ct('option.language.autoContext', {}, 'Same as the selected content/context');
+}
+
+function setLabelText(label, text) {
+    if (!label) {
+        return;
+    }
+
+    const textNode = Array.from(label.childNodes).find(function (node) {
+        return node && node.nodeType === Node.TEXT_NODE;
+    });
+
+    if (textNode) {
+        textNode.textContent = text;
+    }
+}
+
+function refreshLocalizedPanelUi() {
+    if (!panel) {
+        return;
+    }
+
+    const head = panel.querySelector('#sgpt-head');
+    if (head && head.firstChild) {
+        head.firstChild.textContent = ct('contentScript.panelTitle', {}, 'Tornevall Networks Social Media Tools ↔') + ' ';
+    }
+
+    const closeButton = panel.querySelector('#sgpt-close');
+    if (closeButton) {
+        closeButton.setAttribute('aria-label', ct('contentScript.closeToolbox', {}, 'Close Toolbox'));
+        closeButton.title = ct('contentScript.closeToolbox', {}, 'Close Toolbox');
+    }
+
+    const responderLabel = panel.querySelector('#sgpt-responder-label');
+    if (responderLabel && responderLabel.firstChild) {
+        responderLabel.firstChild.textContent = ct('contentScript.responder', {}, 'Responder') + ': ';
+    }
+
+    const promptField = panel.querySelector('#sgpt-prompt');
+    if (promptField) {
+        setLabelText(promptField.parentElement, ct('contentScript.promptLabel', {}, 'Prompt'));
+        promptField.placeholder = ct('contentScript.promptPlaceholder', {}, 'Leave blank to use the default reply instruction.');
+    }
+
+    const modelField = panel.querySelector('#sgpt-model');
+    if (modelField) {
+        setLabelText(modelField.parentElement, ct('contentScript.modelLabel', {}, 'Model'));
+    }
+
+    const lengthField = panel.querySelector('#sgpt-length');
+    if (lengthField) {
+        setLabelText(lengthField.parentElement, ct('contentScript.lengthLabel', {}, 'Length'));
+        const lengthLabels = [
+            ct('contentScript.lengthAuto', {}, 'Let GPT decide'),
+            ct('contentScript.lengthAsShort', {}, 'As short as possible'),
+            ct('contentScript.lengthShortest', {}, 'At maximum one sentence. Possibly a one-liner.'),
+            ct('contentScript.lengthVeryShort', {}, '2–3 sentences (very short)'),
+            ct('contentScript.lengthShort', {}, '4–6 sentences (short)'),
+            ct('contentScript.lengthMedium', {}, '6–10 sentences (medium)'),
+            ct('contentScript.lengthExtreme', {}, 'Extreme. You want your own book.'),
+            ct('contentScript.lengthLong', {}, 'Extended (whatever is needed)')
+        ];
+        Array.from(lengthField.options).forEach(function (option, index) {
+            if (typeof lengthLabels[index] !== 'undefined') {
+                option.textContent = lengthLabels[index];
+            }
+        });
+    }
+
+    const customMoodField = panel.querySelector('#sgpt-custom');
+    if (customMoodField) {
+        setLabelText(customMoodField.parentElement, ct('contentScript.customMoodLabel', {}, 'Custom mood'));
+    }
+
+    const modifierField = panel.querySelector('#sgpt-modifier');
+    if (modifierField) {
+        setLabelText(modifierField.parentElement, ct('contentScript.changeRequestLabel', {}, 'Change request'));
+        modifierField.placeholder = ct('contentScript.changeRequestPlaceholder', {}, 'Optional: what should change?');
+    }
+
+    const languageField = panel.querySelector('#sgpt-language');
+    if (languageField) {
+        setLabelText(languageField.parentElement, ct('contentScript.languageLabel', {}, 'Language'));
+        const languageLabels = [
+            ct('option.language.autoContext', {}, 'Same as the selected content/context'),
+            ct('option.language.sv', {}, 'Swedish'),
+            ct('option.language.en', {}, 'English'),
+            ct('option.language.da', {}, 'Danish'),
+            ct('option.language.no', {}, 'Norwegian'),
+            ct('option.language.de', {}, 'German'),
+            ct('option.language.fr', {}, 'French'),
+            ct('option.language.es', {}, 'Spanish')
+        ];
+        Array.from(languageField.options).forEach(function (option, index) {
+            if (typeof languageLabels[index] !== 'undefined') {
+                option.textContent = languageLabels[index];
+            }
+        });
+    }
+
+    const inlineContextLabel = panel.querySelector('.sgpt-inline-tools > span');
+    if (inlineContextLabel) {
+        inlineContextLabel.textContent = ct('contentScript.contextLabel', {}, 'Context');
+    }
+
+    const markButton = panel.querySelector('#sgpt-context-mark');
+    if (markButton) {
+        markButton.textContent = isClickMarkingActive
+            ? ct('contentScript.stopMarking', {}, 'Stop marking')
+            : ct('contentScript.markContext', {}, 'Mark context');
+    }
+
+    const importButton = panel.querySelector('#sgpt-context-import');
+    if (importButton) {
+        importButton.textContent = ct('contentScript.import', {}, 'Import');
+    }
+
+    const clearButton = panel.querySelector('#sgpt-context-clear');
+    if (clearButton) {
+        clearButton.textContent = ct('contentScript.clear', {}, 'Clear');
+    }
+
+    const contextField = panel.querySelector('#sgpt-context');
+    if (contextField) {
+        contextField.placeholder = ct('contentScript.contextPlaceholder', {}, 'Optional context: import visible page context or write your own notes here.');
+    }
+
+    const outputField = panel.querySelector('#sgpt-out');
+    if (outputField) {
+        setLabelText(outputField.parentElement, ct('contentScript.outputLabel', {}, 'Output'));
+    }
+
+    const sendButton = panel.querySelector('#sgpt-send');
+    if (sendButton) {
+        sendButton.textContent = ct('contentScript.generate', {}, 'Generate');
+    }
+
+    const refreshButton = panel.querySelector('#sgpt-mod');
+    if (refreshButton) {
+        refreshButton.textContent = ct('contentScript.refresh', {}, 'Refresh');
+    }
+
+    const verifyButton = panel.querySelector('#sgpt-verify');
+    if (verifyButton) {
+        verifyButton.textContent = ct('contentScript.verifyFact', {}, 'Verify fact');
+    }
+
+    const pasteButton = panel.querySelector('#sgpt-paste');
+    if (pasteButton) {
+        pasteButton.textContent = ct('contentScript.pasteIntoField', {}, 'Paste into field');
+    }
+
+    const loaderLabel = panel.querySelector('#sgpt-inline-loader-label');
+    if (loaderLabel && (!loaderLabel.textContent || loaderLabel.textContent === 'Generating…' || loaderLabel.textContent === 'Genererar…')) {
+        loaderLabel.textContent = ct('contentScript.generating', {}, 'Generating…');
+    }
+
+    updatePanelAnchorNote();
+}
+
+function refreshLocalizedExtensionUi() {
+    if (composerActionButton) {
+        composerActionButton.textContent = ct('contentScript.openToolbox', {}, 'Open Toolbox');
+        composerActionButton.title = ct('contentScript.composerActionTitle', {}, 'Open Toolbox for the selected field. Drag to move it away. Double-click to reset its position.');
+    }
+
+    if (quickResponseActionButton) {
+        quickResponseActionButton.textContent = ct('contentScript.quickResponse', {}, 'Quick response');
+        quickResponseActionButton.title = ct('contentScript.quickResponseTitle', {}, 'Generate a quick reply using the preset saved in the extension popup.');
+    }
+
+    if (verifyActionButton) {
+        verifyActionButton.textContent = ct('contentScript.verifyFact', {}, 'Verify fact');
+        verifyActionButton.title = ct('contentScript.verifySelectionTitle', {}, 'Fact-check the selected text.');
+    }
+
+    if (selectionToolboxActionButton) {
+        selectionToolboxActionButton.textContent = ct('contentScript.openToolbox', {}, 'Open Toolbox');
+        selectionToolboxActionButton.title = ct('contentScript.openToolboxSelectionTitle', {}, 'Open Toolbox with the selected text imported as context.');
+    }
+
+    if (verifyHoverButton) {
+        verifyHoverButton.textContent = ct('contentScript.verifyShort', {}, 'Verify');
+        verifyHoverButton.title = ct('contentScript.verifyHoverTitle', {}, 'Verify the hovered image or link. Drag to move it away and double-click to reset.');
+    }
+
+    refreshLocalizedPanelUi();
 }
 
 function normalizeAdminActivityTimeValue(value) {
@@ -2256,27 +2492,15 @@ function clearCurrentSelection() {
     }
 }
 
-function getResponseLanguageLabel(value) {
-    const normalized = normalizeResponseLanguageChoice(value || defaultResponseLanguage);
-    return {
-        auto: 'Same as context',
-        sv: 'Swedish',
-        en: 'English',
-        da: 'Danish',
-        no: 'Norwegian',
-        de: 'German',
-        fr: 'French',
-        es: 'Spanish',
-    }[normalized] || 'Same as context';
-}
-
 function buildFactBoxSubtitle(anchor, responseLanguage, isError) {
-    const parts = [anchor ? 'Anchored to the selected content.' : 'Verification result'];
+    const parts = [anchor
+        ? ct('contentScript.factAnchoredSelected', {}, 'Anchored to the selected content.')
+        : ct('contentScript.factVerificationResult', {}, 'Verification result')];
     if (responseLanguage) {
-        parts.push('Language: ' + getResponseLanguageLabel(responseLanguage));
+        parts.push(ct('contentScript.factLanguage', {}, 'Language') + ': ' + getResponseLanguageLabel(responseLanguage));
     }
     if (isError) {
-        parts.push('You can retry below.');
+        parts.push(ct('contentScript.factRetry', {}, 'You can retry below.'));
     }
     return parts.join(' · ');
 }
@@ -2288,8 +2512,8 @@ function buildFactBoxActions() {
 
     return [
         {
-            label: 'Refresh',
-            title: 'Run the same fact-check again.',
+            label: ct('contentScript.factRefresh', {}, 'Refresh'),
+            title: ct('contentScript.factRefreshTitle', {}, 'Run the same fact-check again.'),
             background: '#e2e8f0',
             color: '#0f172a',
             onClick: function () {
@@ -2304,8 +2528,8 @@ function buildFactBoxActions() {
             },
         },
         {
-            label: 'Dig deeper',
-            title: 'Retry with a deeper pass that looks for broader context and stricter verification.',
+            label: ct('contentScript.factDigDeeper', {}, 'Dig deeper'),
+            title: ct('contentScript.factDigDeeperTitle', {}, 'Retry with a deeper pass that looks for broader context and stricter verification.'),
             background: '#7c3aed',
             color: '#ffffff',
             onClick: function () {
@@ -2321,13 +2545,13 @@ function buildFactBoxActions() {
             },
         },
         {
-            label: 'Open Toolbox',
-            title: 'Open Toolbox with the same verification context so you can continue working from the selected material.',
+            label: ct('contentScript.factOpenToolbox', {}, 'Open Toolbox'),
+            title: ct('contentScript.factOpenToolboxTitle', {}, 'Open Toolbox with the same verification context so you can continue working from the selected material.'),
             background: '#0284c7',
             color: '#ffffff',
             onClick: function () {
                 openReplyPanelWithImportedContext(lastVerificationRequest.context, {
-                    message: 'Verification context imported into Toolbox.',
+                    message: ct('contentScript.verificationContextImported', {}, 'Verification context imported into Toolbox.'),
                 });
             },
         },
@@ -2467,6 +2691,8 @@ function showFactResultBox(content, anchor, options) {
 
     const closeBtn = document.createElement('button');
     closeBtn.textContent = '×';
+    closeBtn.setAttribute('aria-label', ct('contentScript.closeToolbox', {}, 'Close Toolbox'));
+    closeBtn.title = ct('contentScript.closeToolbox', {}, 'Close Toolbox');
     closeBtn.style.position = 'absolute';
     closeBtn.style.top = '6px';
     closeBtn.style.right = '8px';
@@ -2493,15 +2719,17 @@ function showFactResultBox(content, anchor, options) {
     header.style.cursor = 'grab';
     header.style.userSelect = 'none';
     header.tabIndex = 0;
-    header.title = 'Drag to move. Double-click or press Escape to reset position.';
+    header.title = ct('contentScript.dragFactTitle', {}, 'Drag to move. Double-click or press Escape to reset position.');
 
     const title = document.createElement('div');
-    title.textContent = config.title || '✅ Fact checking via OpenAI';
+    title.textContent = config.title || ct('contentScript.factVerificationTitle', {}, '✅ Fact checking via OpenAI');
     title.style.fontWeight = '700';
     title.style.color = config.titleColor || '#0284c7';
 
     const subtitle = document.createElement('div');
-    subtitle.textContent = config.subtitle || (anchor ? 'Anchored to the selected content.' : 'Verification result');
+    subtitle.textContent = config.subtitle || (anchor
+        ? ct('contentScript.factAnchoredSelected', {}, 'Anchored to the selected content.')
+        : ct('contentScript.factVerificationResult', {}, 'Verification result'));
     subtitle.style.color = config.subtitleColor || '#7c3aed';
     subtitle.style.fontSize = '12px';
     subtitle.style.fontWeight = '600';
@@ -2527,7 +2755,7 @@ function showFactResultBox(content, anchor, options) {
     loadingSpinner.style.animation = 'sgpt-inline-spin .8s linear infinite';
 
     const loadingText = document.createElement('span');
-    loadingText.textContent = 'Checking now…';
+    loadingText.textContent = ct('contentScript.checkingNow', {}, 'Checking now…');
 
     loadingRow.appendChild(loadingSpinner);
     loadingRow.appendChild(loadingText);
@@ -2578,15 +2806,15 @@ function showFactResultBox(content, anchor, options) {
 
 function showFactVerificationPending(context, anchor, sourceLabel) {
     const normalizedContext = normalizeWhitespace(context || '');
-    const preview = normalizedContext ? clipText(normalizedContext, 280) : 'Preparing verification context…';
+    const preview = normalizedContext ? clipText(normalizedContext, 280) : ct('contentScript.previewPreparing', {}, 'Preparing verification context…');
 
     showFactResultBox(
-        'Preview:\n' + preview,
+        ct('contentScript.previewLabel', {}, 'Preview') + ':\n' + preview,
         anchor,
         {
-            title: '⏳ Verifying facts…',
+            title: ct('contentScript.verifyingFacts', {}, '⏳ Verifying facts…'),
             titleColor: '#7c3aed',
-            subtitle: 'Result appears here automatically · Language: ' + getResponseLanguageLabel(lastVerificationRequest ? lastVerificationRequest.responseLanguage : defaultResponseLanguage),
+            subtitle: ct('contentScript.resultAppears', {}, 'Result appears here automatically') + ' · ' + ct('contentScript.factLanguage', {}, 'Language') + ': ' + getResponseLanguageLabel(lastVerificationRequest ? lastVerificationRequest.responseLanguage : defaultResponseLanguage),
             subtitleColor: '#6d28d9',
             borderColor: '#c4b5fd',
             background: '#faf5ff',
@@ -2621,13 +2849,13 @@ function updatePanelBusyState(isBusy, label) {
     loader.dataset.visible = isBusy ? 'true' : 'false';
     loader.setAttribute('aria-hidden', isBusy ? 'false' : 'true');
     if (loaderLabel) {
-        loaderLabel.textContent = label || 'Working…';
+        loaderLabel.textContent = label || ct('contentScript.working', {}, 'Working…');
     }
 }
 
 function showLoader(label, options) {
     const settings = options || {};
-    updatePanelBusyState(true, label || 'Working…');
+    updatePanelBusyState(true, label || ct('contentScript.working', {}, 'Working…'));
 
     const loader = document.getElementById("socialgpt-loader");
     if (loader) {
@@ -3817,11 +4045,13 @@ function refreshMarkedElementPresentation() {
 
 function getMarkedContextExpansionLabel() {
     return {
-        current: 'current marked block only',
-        parent: 'one parent up',
-        'parent-children': 'one parent up + direct child scan',
-        document: window.top === window ? 'current page/document text' : 'current iframe/frame document text',
-    }[markedContextExpansionMode] || 'current marked block only';
+        current: ct('contentScript.extractionCurrent', {}, 'current marked block only'),
+        parent: ct('contentScript.extractionParent', {}, 'one parent up'),
+        'parent-children': ct('contentScript.extractionParentChildren', {}, 'one parent up + direct child scan'),
+        document: window.top === window
+            ? ct('contentScript.extractionDocument', {}, 'current page/document text')
+            : ct('contentScript.extractionFrameDocument', {}, 'current iframe/frame document text'),
+    }[markedContextExpansionMode] || ct('contentScript.extractionCurrent', {}, 'current marked block only');
 }
 
 function handleMarkedContextSettingsChanged() {
@@ -3862,7 +4092,9 @@ function updatePanelMarkModeButton(enabled) {
         return;
     }
 
-    button.textContent = enabled ? 'Stop marking' : 'Mark context';
+    button.textContent = enabled
+        ? ct('contentScript.stopMarking', {}, 'Stop marking')
+        : ct('contentScript.markContext', {}, 'Mark context');
     button.dataset.active = enabled ? 'true' : 'false';
     button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
 }
@@ -4131,12 +4363,12 @@ function findContextNodeForComposer(node) {
 function getActiveComposerContext() {
     if (!activeComposer || !document.contains(activeComposer)) {
         activeReplyContextMeta = null;
-        return '(Focus a text field or mark elements to build context)';
+        return getEmptyContextPrompt();
     }
 
     const contextNode = findContextNodeForComposer(activeComposer);
     activeReplyContextMeta = {source: 'composer'};
-    return contextNode ? getReadableContext(contextNode) : '(Focus a text field or mark elements to build context)';
+    return contextNode ? getReadableContext(contextNode) : getEmptyContextPrompt();
 }
 
 function updatePanelAnchorNote() {
@@ -4152,37 +4384,48 @@ function updatePanelAnchorNote() {
     const activeMarks = pruneMarkedElements();
 
     if (activeMarks.length) {
-        let message = 'Using ' + activeMarks.length + ' marked block' + (activeMarks.length === 1 ? '' : 's') + ' as context.';
+        let message = ct('contentScript.anchorMarkedBlocks', {
+            count: activeMarks.length,
+            plural: activeMarks.length === 1 ? '' : 's'
+        }, 'Using ' + activeMarks.length + ' marked block' + (activeMarks.length === 1 ? '' : 's') + ' as context.');
         if (markedContextLabelMode !== 'compact') {
-            message += ' IDs: ' + activeMarks.map(function (_, index) {
+            message += ct('contentScript.anchorMarkedIds', {
+                ids: activeMarks.map(function (_, index) {
+                    return getMarkedElementPublicId(index);
+                }).join(', ')
+            }, ' IDs: ' + activeMarks.map(function (_, index) {
                 return getMarkedElementPublicId(index);
-            }).join(', ') + '.';
+            }).join(', ') + '.');
         }
         if (markedContextExpansionMode !== 'current') {
-            message += ' Extraction: ' + getMarkedContextExpansionLabel() + '.';
+            message += ct('contentScript.anchorExtraction', {
+                label: getMarkedContextExpansionLabel()
+            }, ' Extraction: ' + getMarkedContextExpansionLabel() + '.');
         }
         note.textContent = message;
         return;
     }
 
     if (isClickMarkingActive) {
-        note.textContent = 'Mark mode is active. Click page elements to add or remove context blocks.';
+        note.textContent = ct('contentScript.anchorMarkModeActive', {}, 'Mark mode is active. Click page elements to add or remove context blocks.');
         return;
     }
 
     if (activeReplyContextMeta && activeReplyContextMeta.replyTarget) {
-        note.textContent = 'Anchored to the current reply field. Reply target detected: ' + activeReplyContextMeta.replyTarget + '.';
+        note.textContent = ct('contentScript.anchorReplyTarget', {
+            target: activeReplyContextMeta.replyTarget
+        }, 'Anchored to the current reply field. Reply target detected: ' + activeReplyContextMeta.replyTarget + '.');
         return;
     }
 
     if (activeReplyContextMeta && activeReplyContextMeta.source === 'generic-thread' && activeReplyContextMeta.threadSize > 1) {
-        note.textContent = 'Anchored to the current field with nearby conversation context from visible parent/sibling blocks.';
+        note.textContent = ct('contentScript.anchorGenericThread', {}, 'Anchored to the current field with nearby conversation context from visible parent/sibling blocks.');
         return;
     }
 
     note.textContent = activeComposer && document.contains(activeComposer)
-        ? 'Anchored to the currently focused text field.'
-        : 'Focus a text field or mark elements to build context.';
+        ? ct('contentScript.anchorFocused', {}, 'Anchored to the currently focused text field.')
+        : ct('contentScript.anchorFocusOrMark', {}, 'Focus a text field or mark elements to build context.');
 }
 
 function ensureComposerActionButton() {
@@ -4193,7 +4436,7 @@ function ensureComposerActionButton() {
     composerActionButton = document.createElement('button');
     composerActionButton.id = 'sgpt-composer-action';
     composerActionButton.type = 'button';
-    composerActionButton.textContent = 'Open Toolbox';
+    composerActionButton.textContent = ct('contentScript.openToolbox', {}, 'Open Toolbox');
     composerActionButton.style.position = 'fixed';
     composerActionButton.style.zIndex = '2147483646';
     composerActionButton.style.padding = '6px 10px';
@@ -4207,7 +4450,7 @@ function ensureComposerActionButton() {
     composerActionButton.style.touchAction = 'none';
     composerActionButton.style.boxShadow = '0 2px 10px rgba(0,0,0,0.18)';
     composerActionButton.style.display = 'none';
-    composerActionButton.title = 'Open Toolbox for the selected field. Drag to move it away. Double-click to reset its position.';
+    composerActionButton.title = ct('contentScript.composerActionTitle', {}, 'Open Toolbox for the selected field. Drag to move it away. Double-click to reset its position.');
     composerActionButton.addEventListener('click', function () {
         if (composerActionButton.dataset.dragSuppressClick === 'true') {
             return;
@@ -4228,7 +4471,7 @@ function ensureQuickResponseActionButton() {
     quickResponseActionButton = document.createElement('button');
     quickResponseActionButton.id = 'sgpt-quick-response-action';
     quickResponseActionButton.type = 'button';
-    quickResponseActionButton.textContent = 'Quick response';
+    quickResponseActionButton.textContent = ct('contentScript.quickResponse', {}, 'Quick response');
     quickResponseActionButton.style.position = 'fixed';
     quickResponseActionButton.style.zIndex = '2147483645';
     quickResponseActionButton.style.padding = '6px 10px';
@@ -4241,7 +4484,7 @@ function ensureQuickResponseActionButton() {
     quickResponseActionButton.style.userSelect = 'none';
     quickResponseActionButton.style.boxShadow = '0 2px 10px rgba(0,0,0,0.16)';
     quickResponseActionButton.style.display = 'none';
-    quickResponseActionButton.title = 'Generate a quick reply using the preset saved in the extension popup.';
+    quickResponseActionButton.title = ct('contentScript.quickResponseTitle', {}, 'Generate a quick reply using the preset saved in the extension popup.');
     quickResponseActionButton.addEventListener('mousedown', function (event) {
         event.preventDefault();
     });
@@ -4265,7 +4508,7 @@ function ensureVerifyActionButton() {
     verifyActionButton = document.createElement('button');
     verifyActionButton.id = 'sgpt-verify-action';
     verifyActionButton.type = 'button';
-    verifyActionButton.textContent = 'Verify fact';
+    verifyActionButton.textContent = ct('contentScript.verifyFact', {}, 'Verify fact');
     verifyActionButton.style.position = 'fixed';
     verifyActionButton.style.zIndex = '2147483646';
     verifyActionButton.style.padding = '5px 10px';
@@ -4278,7 +4521,7 @@ function ensureVerifyActionButton() {
     verifyActionButton.style.userSelect = 'none';
     verifyActionButton.style.boxShadow = '0 2px 10px rgba(0,0,0,0.18)';
     verifyActionButton.style.display = 'none';
-    verifyActionButton.title = 'Fact-check the selected text.';
+    verifyActionButton.title = ct('contentScript.verifySelectionTitle', {}, 'Fact-check the selected text.');
     verifyActionButton.addEventListener('mousedown', function (event) {
         event.preventDefault();
     });
@@ -4306,7 +4549,7 @@ function ensureSelectionToolboxActionButton() {
     selectionToolboxActionButton = document.createElement('button');
     selectionToolboxActionButton.id = 'sgpt-selection-toolbox-action';
     selectionToolboxActionButton.type = 'button';
-    selectionToolboxActionButton.textContent = 'Open Toolbox';
+    selectionToolboxActionButton.textContent = ct('contentScript.openToolbox', {}, 'Open Toolbox');
     selectionToolboxActionButton.style.position = 'fixed';
     selectionToolboxActionButton.style.zIndex = '2147483646';
     selectionToolboxActionButton.style.padding = '5px 10px';
@@ -4319,7 +4562,7 @@ function ensureSelectionToolboxActionButton() {
     selectionToolboxActionButton.style.userSelect = 'none';
     selectionToolboxActionButton.style.boxShadow = '0 2px 10px rgba(0,0,0,0.18)';
     selectionToolboxActionButton.style.display = 'none';
-    selectionToolboxActionButton.title = 'Open Toolbox with the selected text imported as context.';
+    selectionToolboxActionButton.title = ct('contentScript.openToolboxSelectionTitle', {}, 'Open Toolbox with the selected text imported as context.');
     selectionToolboxActionButton.addEventListener('mousedown', function (event) {
         event.preventDefault();
     });
@@ -4337,7 +4580,7 @@ function ensureSelectionToolboxActionButton() {
         verifyActionContext = '';
         verifyActionAnchor = null;
         openReplyPanelWithImportedContext(context, {
-            message: 'Selected text imported into Toolbox.',
+            message: ct('contentScript.contextImportedFromSelection', {}, 'Selected text imported into Toolbox.'),
         });
     });
     document.body.appendChild(selectionToolboxActionButton);
@@ -4353,7 +4596,7 @@ function ensureVerifyHoverButton() {
     verifyHoverButton = document.createElement('button');
     verifyHoverButton.id = 'sgpt-verify-hover';
     verifyHoverButton.type = 'button';
-    verifyHoverButton.textContent = 'Verify';
+    verifyHoverButton.textContent = ct('contentScript.verifyShort', {}, 'Verify');
     verifyHoverButton.style.position = 'fixed';
     verifyHoverButton.style.zIndex = '2147483646';
     verifyHoverButton.style.padding = '4px 9px';
@@ -4367,7 +4610,7 @@ function ensureVerifyHoverButton() {
     verifyHoverButton.style.touchAction = 'none';
     verifyHoverButton.style.boxShadow = '0 2px 10px rgba(0,0,0,0.14)';
     verifyHoverButton.style.display = 'none';
-    verifyHoverButton.title = 'Verify the hovered image or link. Drag to move it away and double-click to reset.';
+    verifyHoverButton.title = ct('contentScript.verifyHoverTitle', {}, 'Verify the hovered image or link. Drag to move it away and double-click to reset.');
     verifyHoverButton.addEventListener('mousedown', function (event) {
         event.preventDefault();
     });
@@ -6464,13 +6707,13 @@ function panelHTML() {
       .socialgpt-marked[data-tn-social-mark-badge]::after{content:attr(data-tn-social-mark-badge);position:absolute;top:0;left:0;transform:translate(6px,-70%);max-width:min(320px,calc(100% - 12px));padding:3px 8px;border-radius:999px;background:#0f172a;color:#fff;font:11px/1.2 Arial,sans-serif !important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 6px 18px rgba(15,23,42,.24);pointer-events:none;z-index:2147483646}
       .socialgpt-marked[data-tn-social-mark-mode="compact"]::after{background:#0284c7}
     </style>
-      <div id="sgpt-head">Tornevall Networks Social Media Tools ↔ <button type="button" id="sgpt-close" aria-label="Close Toolbox">×</button></div>
+      <div id="sgpt-head">${ct('contentScript.panelTitle', {}, 'Tornevall Networks Social Media Tools ↔')} <button type="button" id="sgpt-close" aria-label="${escapeHtml(ct('contentScript.closeToolbox', {}, 'Close Toolbox'))}" title="${escapeHtml(ct('contentScript.closeToolbox', {}, 'Close Toolbox'))}">×</button></div>
     <div id="sgpt-body">
-      <div id="sgpt-responder-label">Responder: <span id="sgpt-responder-name" data-name="${frontResponserName || ''}">${frontResponserName || '(loading...)'}</span></div>
-      <div id="sgpt-anchor-note">Anchored to the currently focused text field.</div>
-      <label>Prompt<input type="text" id="sgpt-prompt" placeholder="Leave blank to use the default reply instruction."></label>
+      <div id="sgpt-responder-label">${ct('contentScript.responder', {}, 'Responder')}: <span id="sgpt-responder-name" data-name="${frontResponserName || ''}">${frontResponserName || ct('contentScript.loadingResponder', {}, '(loading...)')}</span></div>
+      <div id="sgpt-anchor-note">${ct('contentScript.anchorFocused', {}, 'Anchored to the currently focused text field.')}</div>
+      <label>${ct('contentScript.promptLabel', {}, 'Prompt')}<input type="text" id="sgpt-prompt" placeholder="${escapeHtml(ct('contentScript.promptPlaceholder', {}, 'Leave blank to use the default reply instruction.'))}"></label>
       <div class="sgpt-quick-settings">
-        <label>Mood<select id="sgpt-mood">
+        <label>${ct('contentScript.moodLabel', {}, 'Mood')}<select id="sgpt-mood">
             <optgroup label="Objective & Informative">
               <option value="Neutral and formal">Neutral and formal</option>
               <option value="Fact-based and concise">Fact-based and concise</option>
@@ -6494,36 +6737,36 @@ function panelHTML() {
               <option value="Conversational and soft">Conversational and soft</option>
             </optgroup>
           </select></label>
-        <label>Model<select id="sgpt-model"></select></label>
-        <label>Length<select id="sgpt-length">
-            <option value="auto">Let GPT decide</option>
-            <option value="as-short-as-possible">As short as possible</option>
-            <option value="shortest-possible">At maxmium one sentence. Possibly a oneliner.</option>
-            <option value="very-short">2–3 sentences (very short)</option>
-            <option value="short">4–6 sentences (short)</option>
-            <option value="medium">6–10 sentences (medium)</option>
-            <option value="extreme">Extreme. You want your own book.</option>
-            <option value="long">Extended (whatever is needed)</option>
+        <label>${ct('contentScript.modelLabel', {}, 'Model')}<select id="sgpt-model"></select></label>
+        <label>${ct('contentScript.lengthLabel', {}, 'Length')}<select id="sgpt-length">
+            <option value="auto">${ct('contentScript.lengthAuto', {}, 'Let GPT decide')}</option>
+            <option value="as-short-as-possible">${ct('contentScript.lengthAsShort', {}, 'As short as possible')}</option>
+            <option value="shortest-possible">${ct('contentScript.lengthShortest', {}, 'At maximum one sentence. Possibly a one-liner.')}</option>
+            <option value="very-short">${ct('contentScript.lengthVeryShort', {}, '2–3 sentences (very short)')}</option>
+            <option value="short">${ct('contentScript.lengthShort', {}, '4–6 sentences (short)')}</option>
+            <option value="medium">${ct('contentScript.lengthMedium', {}, '6–10 sentences (medium)')}</option>
+            <option value="extreme">${ct('contentScript.lengthExtreme', {}, 'Extreme. You want your own book.')}</option>
+            <option value="long">${ct('contentScript.lengthLong', {}, 'Extended (whatever is needed)')}</option>
           </select></label>
       </div>
       <div class="sgpt-quick-settings" style="grid-template-columns:repeat(3,minmax(0,1fr));">
-        <label>Custom mood<input type="text" id="sgpt-custom"></label>
-        <label>Change request<input type="text" id="sgpt-modifier" placeholder="Optional: what should change?"></label>
-        <label>Language<select id="sgpt-language">
-            <option value="auto">Same as context</option>
-            <option value="sv">Swedish</option>
-            <option value="en">English</option>
-            <option value="da">Danish</option>
-            <option value="no">Norwegian</option>
-            <option value="de">German</option>
-            <option value="fr">French</option>
-            <option value="es">Spanish</option>
+        <label>${ct('contentScript.customMoodLabel', {}, 'Custom mood')}<input type="text" id="sgpt-custom"></label>
+        <label>${ct('contentScript.changeRequestLabel', {}, 'Change request')}<input type="text" id="sgpt-modifier" placeholder="${escapeHtml(ct('contentScript.changeRequestPlaceholder', {}, 'Optional: what should change?'))}"></label>
+        <label>${ct('contentScript.languageLabel', {}, 'Language')}<select id="sgpt-language">
+            <option value="auto">${ct('option.language.autoContext', {}, 'Same as the selected content/context')}</option>
+            <option value="sv">${ct('option.language.sv', {}, 'Swedish')}</option>
+            <option value="en">${ct('option.language.en', {}, 'English')}</option>
+            <option value="da">${ct('option.language.da', {}, 'Danish')}</option>
+            <option value="no">${ct('option.language.no', {}, 'Norwegian')}</option>
+            <option value="de">${ct('option.language.de', {}, 'German')}</option>
+            <option value="fr">${ct('option.language.fr', {}, 'French')}</option>
+            <option value="es">${ct('option.language.es', {}, 'Spanish')}</option>
         </select></label>
       </div>
-      <div class="sgpt-inline-tools"><span>Context</span><div class="sgpt-inline-actions"><button type="button" id="sgpt-context-mark" aria-pressed="false">Mark context</button><button type="button" id="sgpt-context-import">Import</button><button type="button" id="sgpt-context-clear">Clear</button></div></div>
-      <textarea id="sgpt-context" placeholder="Optional context: import visible page context or write your own notes here."></textarea>
-      <label>Output<textarea id="sgpt-out"></textarea></label>
-      <div id="sgpt-foot"><div id="sgpt-compose-status">Select a text field to enable paste/fill actions.</div><div id="sgpt-actions"><div id="sgpt-inline-loader" aria-live="polite" aria-hidden="true"><span class="sgpt-inline-loader-spinner"></span><span id="sgpt-inline-loader-label">Generating…</span></div><button id="sgpt-send">Generate</button><button id="sgpt-mod">Refresh</button><button id="sgpt-verify">Verify fact</button><button id="sgpt-paste">Paste into field</button></div></div>
+      <div class="sgpt-inline-tools"><span>${ct('contentScript.contextLabel', {}, 'Context')}</span><div class="sgpt-inline-actions"><button type="button" id="sgpt-context-mark" aria-pressed="false">${ct('contentScript.markContext', {}, 'Mark context')}</button><button type="button" id="sgpt-context-import">${ct('contentScript.import', {}, 'Import')}</button><button type="button" id="sgpt-context-clear">${ct('contentScript.clear', {}, 'Clear')}</button></div></div>
+      <textarea id="sgpt-context" placeholder="${escapeHtml(ct('contentScript.contextPlaceholder', {}, 'Optional context: import visible page context or write your own notes here.'))}"></textarea>
+      <label>${ct('contentScript.outputLabel', {}, 'Output')}<textarea id="sgpt-out"></textarea></label>
+      <div id="sgpt-foot"><div id="sgpt-compose-status">${ct('contentScript.composeStatus', {}, 'Select a text field to enable paste/fill actions.')}</div><div id="sgpt-actions"><div id="sgpt-inline-loader" aria-live="polite" aria-hidden="true"><span class="sgpt-inline-loader-spinner"></span><span id="sgpt-inline-loader-label">${ct('contentScript.generating', {}, 'Generating…')}</span></div><button id="sgpt-send">${ct('contentScript.generate', {}, 'Generate')}</button><button id="sgpt-mod">${ct('contentScript.refresh', {}, 'Refresh')}</button><button id="sgpt-verify">${ct('contentScript.verifyFact', {}, 'Verify fact')}</button><button id="sgpt-paste">${ct('contentScript.pasteIntoField', {}, 'Paste into field')}</button></div></div>
     </div>`;
 }
 
@@ -6537,11 +6780,12 @@ function createPanel() {
     panel.id = 'sgpt-panel';
     panel.innerHTML = panelHTML();
     document.body.appendChild(panel);
+    refreshLocalizedPanelUi();
 
     const panelHeader = panel.querySelector('#sgpt-head');
     if (panelHeader) {
         panelHeader.tabIndex = 0;
-        panelHeader.title = 'Drag to move Toolbox. Press Escape to snap it back near the active field.';
+        panelHeader.title = ct('contentScript.dragToolboxTitle', {}, 'Drag to move Toolbox. Press Escape to snap it back near the active field.');
         enableReplyPanelDragging(panelHeader, panel);
     }
 
@@ -6585,14 +6829,16 @@ function createPanel() {
         activeReplyContextMeta = null;
         setPanelContextValue('');
         updatePanelAnchorNote();
-        updatePanelComposerActions('Context cleared. You can import fresh context or write your own.', 'success');
+        updatePanelComposerActions(ct('contentScript.contextCleared', {}, 'Context cleared. You can import fresh context or write your own.'), 'success');
     });
     panel.querySelector('#sgpt-context-mark').addEventListener('click', async () => {
         const response = await setPanelMarkMode(!isClickMarkingActive);
         if (response && response.ok) {
-            updatePanelComposerActions(response.enabled ? 'Mark mode is active. Click page elements to add/remove context blocks.' : 'Mark mode stopped. Current marked context remains in the box.', response.enabled ? 'success' : undefined);
+            updatePanelComposerActions(response.enabled
+                ? ct('contentScript.markModeStarted', {}, 'Mark mode is active. Click page elements to add/remove context blocks.')
+                : ct('contentScript.markModeStopped', {}, 'Mark mode stopped. Current marked context remains in the box.'), response.enabled ? 'success' : undefined);
         } else {
-            updatePanelComposerActions('Could not toggle mark mode in this tab.', 'error');
+            updatePanelComposerActions(ct('contentScript.markModeUnavailable', {}, 'Could not toggle mark mode in this tab.'), 'error');
         }
     });
     panel.querySelector('#sgpt-out').addEventListener('input', () => updatePanelComposerActions());
@@ -6700,7 +6946,7 @@ function openReplyPanelWithImportedContext(importedContext, options) {
     const normalizedContext = normalizeWhitespace(importedContext || '');
     const message = options && options.message
         ? String(options.message)
-        : 'Context imported into Toolbox.';
+        : ct('contentScript.contextImported', {}, 'Context imported into Toolbox.');
 
     openReplyPanel();
 
@@ -6725,7 +6971,7 @@ function sendGPT(mod, mode) {
     const modelField = panel.querySelector('#sgpt-model');
     const model = modelField && modelField.value ? modelField.value : getPreferredFactCheckModel();
     const refreshMeta = mod ? getRefreshRequestMeta() : null;
-    showLoader(refreshMeta ? refreshMeta.loaderLabel : 'Generating…');
+    showLoader(refreshMeta ? refreshMeta.loaderLabel : ct('contentScript.generating', {}, 'Generating…'));
 
     const selectedLength = panel.querySelector('#sgpt-length').value;
     safeStorageSyncSet({ lastResponseLength: selectedLength });
@@ -6944,7 +7190,7 @@ function getSelectedQuickReplyPreset() {
 
 function sanitizeContextForAi(value) {
     const normalized = normalizeWhitespace(value || '');
-    if (!normalized || normalized === '(Focus a text field or mark elements to build context)') {
+    if (!normalized || normalized === normalizeWhitespace(getEmptyContextPrompt())) {
         return '';
     }
 
@@ -7005,9 +7251,9 @@ function sendQuickReply() {
     const promptHint = promptField ? normalizeWhitespace(promptField.value || '') : '';
     const context = getContextForAiRequest({includeCurrentTarget: true});
 
-    showLoader('Generating quick reply…');
+    showLoader(ct('contentScript.quickGenerating', {}, 'Generating quick reply…'));
     pendingAiRequestMode = 'quick-reply';
-    updatePanelComposerActions('Building a quick response from the current comment context…', 'success');
+    updatePanelComposerActions(ct('contentScript.quickBuilding', {}, 'Building a quick response from the current comment context…'), 'success');
 
     safeSendRuntimeMessage({
         type: 'GPT_REQUEST',
@@ -7034,7 +7280,7 @@ function startFactVerification(contextOverride, options) {
     const context = normalizeWhitespace(contextOverride || sanitizeContextForAi(contextField ? contextField.value : ''));
 
     if (!context) {
-        alert('There is no context to verify yet. Import, mark, or write context first.');
+        alert(ct('contentScript.verifyNoContext', {}, 'There is no context to verify yet. Import, mark, or write context first.'));
         return;
     }
 
@@ -7042,10 +7288,10 @@ function startFactVerification(contextOverride, options) {
         factResultBoxManualPosition = null;
     }
 
-    showLoader('Verifying facts…', {skipFloating: true});
+    showLoader(ct('contentScript.verifyingFacts', {}, 'Verifying facts…'), {skipFloating: true});
     clearCurrentSelection();
     if (panel) {
-        updatePanelComposerActions('Verify started. Collecting context and checking facts now…', 'success');
+        updatePanelComposerActions(ct('contentScript.verifyStarted', {}, 'Verify started. Collecting context and checking facts now…'), 'success');
     }
 
     pendingAiRequestMode = 'verify';
@@ -7093,13 +7339,13 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
     } else if (req.type === 'OPEN_TOOLBOX_FROM_CONTEXT_MENU') {
         const importedContext = normalizeWhitespace(req && req.contextText ? req.contextText : '');
         openReplyPanelWithImportedContext(importedContext, {
-            message: 'Context imported from context menu.',
+            message: ct('contentScript.contextImportedFromMenu', {}, 'Context imported from context menu.'),
         });
     } else if (req.type === 'OPEN_REPLY_PANEL_FROM_POPUP') {
         const selectionSource = getSelectionVerificationSource();
         if (selectionSource && selectionSource.context) {
             openReplyPanelWithImportedContext(selectionSource.context, {
-                message: 'Selected text imported from popup.',
+                message: ct('contentScript.contextImportedFromPopup', {}, 'Selected text imported from popup.'),
             });
             sendResponse({ok: true, importedSelection: true});
             return true;
@@ -7123,7 +7369,9 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
                 req.ok ? getReadablePanelText(req.payload) : getReadablePanelErrorText(req.error || req.payload),
                 factResultAnchor,
                 {
-                    title: req.ok ? '✅ Fact checking via OpenAI' : '⚠️ Fact check failed',
+                    title: req.ok
+                        ? ct('contentScript.factVerificationTitle', {}, '✅ Fact checking via OpenAI')
+                        : ct('contentScript.factVerificationFailedTitle', {}, '⚠️ Fact check failed'),
                     titleColor: req.ok ? '#0284c7' : '#b91c1c',
                     subtitle: buildFactBoxSubtitle(factResultAnchor, lastVerificationRequest ? lastVerificationRequest.responseLanguage : defaultResponseLanguage, !req.ok),
                     subtitleColor: req.ok ? '#7c3aed' : '#b91c1c',
@@ -7134,7 +7382,9 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
             );
             pendingAiRequestMode = null;
             if (panel) {
-                updatePanelComposerActions(req.ok ? 'Fact check complete. Review the popup result.' : 'Fact check failed. Try refresh or think harder.', req.ok ? 'success' : 'error');
+                updatePanelComposerActions(req.ok
+                    ? ct('contentScript.factCheckComplete', {}, 'Fact check complete. Review the popup result.')
+                    : ct('contentScript.factCheckFailed', {}, 'Fact check failed. Try refresh or think harder.'), req.ok ? 'success' : 'error');
             }
             return;
         }
@@ -7149,7 +7399,7 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
                 if (req.ok) {
                     updatePanelComposerActions();
                 } else {
-                    updatePanelComposerActions('Tools request failed. Review the output above before pasting anything.', 'error');
+                    updatePanelComposerActions(ct('contentScript.toolsRequestFailed', {}, 'Tools request failed. Review the output above before pasting anything.'), 'error');
                 }
                 pendingAiRequestMode = null;
                 return;

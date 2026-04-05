@@ -108,25 +108,39 @@
         return text.slice(0, Math.max(0, maxLength - 1)).trim() + '…';
     }
 
-    function safeStorageGet(storageKey) {
-        if (!global || !global.sessionStorage) {
+    function getSessionStorageTarget() {
+        if (!global) {
             return null;
         }
 
         try {
-            return global.sessionStorage.getItem(storageKey);
+            return global.sessionStorage || null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function safeStorageGet(storageKey) {
+        var storage = getSessionStorageTarget();
+        if (!storage || typeof storage.getItem !== 'function') {
+            return null;
+        }
+
+        try {
+            return storage.getItem(storageKey);
         } catch (error) {
             return null;
         }
     }
 
     function safeStorageSet(storageKey, value) {
-        if (!global || !global.sessionStorage) {
+        var storage = getSessionStorageTarget();
+        if (!storage || typeof storage.setItem !== 'function') {
             return false;
         }
 
         try {
-            global.sessionStorage.setItem(storageKey, value);
+            storage.setItem(storageKey, value);
             return true;
         } catch (error) {
             return false;
@@ -134,12 +148,13 @@
     }
 
     function safeStorageRemove(storageKey) {
-        if (!global || !global.sessionStorage) {
+        var storage = getSessionStorageTarget();
+        if (!storage || typeof storage.removeItem !== 'function') {
             return false;
         }
 
         try {
-            global.sessionStorage.removeItem(storageKey);
+            storage.removeItem(storageKey);
             return true;
         } catch (error) {
             return false;

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.15 - 2026-04-05
+
+### Fixed
+- Reply language selection now works independently from the popup/config UI language again, so choosing English, Danish, Norwegian, German, French, or Spanish no longer gets silently pulled back toward Swedish just because the browser UI is Swedish.
+- Runtime UI translations no longer rewrite editable responder-profile or test-question textareas with localized defaults, which had started contaminating stored AI prompt content for some users.
+- Existing users who were affected by the accidental Swedish default responder-profile text now get an automatic client-side repair path when the extension loads their settings.
+- Sandboxed frames that block `sessionStorage` no longer throw a noisy uncaught security error from the Facebook admin reporter helper.
+
+### Changed
+- The built-in default responder profile and test question are now kept as stable canonical English defaults, while the surrounding popup/config labels can still be localized normally.
+- Popup and config page now expose a separate **Extension language** selector (`Auto` / `English` / `Swedish`) so UI translation is explicitly independent from **Answer language** and **Verify-fact language**.
+- The SocialGPT on-page UI now follows that same extension-language setting too, including Toolbox chrome, floating action buttons, fact-check result actions, and the background context-menu labels.
+
 ## 1.2.14 - 2026-04-05
 
 ### Changed

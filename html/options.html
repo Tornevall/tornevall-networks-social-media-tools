@@ -353,6 +353,16 @@
                 <label for="autoDetectName" data-i18n="common.autoDetectName">Auto detect Facebook name</label>
             </div>
 
+            <label for="extensionLanguage" data-i18n="common.extensionLanguage">Extension language:</label>
+            <select id="extensionLanguage">
+                <option value="auto" data-i18n="option.uiLanguage.auto">Same as browser UI</option>
+                <option value="en" data-i18n="option.uiLanguage.en">English</option>
+                <option value="sv" data-i18n="option.uiLanguage.sv">Swedish</option>
+            </select>
+            <p class="helper-note" style="margin-top:-4px;" data-i18n="common.extensionLanguageHelper">
+                Controls the extension UI language for the popup, config page, and SocialGPT Toolbox. This does not change the AI reply language.
+            </p>
+
             <div class="field-grid two">
                 <div>
                     <label for="responseLanguage" data-i18n="common.responseLanguage">Answer language:</label>
@@ -400,7 +410,7 @@
             <textarea id="quickReplyInstruction" rows="3" placeholder="Example: Keep it kind, short, and suitable for public replies." data-i18n-placeholder="common.quickReplyInstructionPlaceholder"></textarea>
 
             <label for="systemPrompt" data-i18n="common.systemPrompt">Responder profile / about the person (stored in Tools):</label>
-            <textarea id="systemPrompt" rows="5" data-i18n-value="defaults.personaProfile">You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.</textarea>
+            <textarea id="systemPrompt" rows="5">You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.</textarea>
             <p class="helper-note" style="margin-top:-4px;" data-i18n-html="common.customInstructionsHelperHtml">
                 For <strong>custom instructions</strong>, use
                 <a id="openToolsDashboardLinkInline" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">Tools → Social Media Tools → Facebook</a>.
@@ -439,7 +449,7 @@
             </p>
 
             <label for="testQuestion" data-i18n="common.testQuestion">Test question (Tools → OpenAI):</label>
-            <textarea id="testQuestion" rows="3" placeholder="Ask something that should reflect your Tools personalization." data-i18n-placeholder="common.testQuestionPlaceholder" data-i18n-value="common.testQuestionDefault">Reply in one short sentence that shows which responder name, profile, and custom instructions you received from Tools.</textarea>
+            <textarea id="testQuestion" rows="3" placeholder="Ask something that should reflect your Tools personalization." data-i18n-placeholder="common.testQuestionPlaceholder">A Facebook user writes: "Hi, what does this tool help you with?" Reply in one short sentence in your configured tone and style.</textarea>
 
             <div class="button-row">
                 <button id="testConnectionBtn" type="button" data-i18n="common.testToolsOpenAi">Test Tools → OpenAI</button>

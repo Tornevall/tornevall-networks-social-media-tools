@@ -8,7 +8,7 @@ This extension provides text selection overlays, fact-checking controls, and AI-
 
 - **GitHub Project**: https://github.com/Tornevall/tornevall-networks-social-media-tools
 - **Tools Platform**: https://tools.tornevall.net
-- **Chrome Web Store**: *(coming soon after compliance review)*
+- **Chrome Web Store**: live release track since `1.2.12` *(latest fixes shipping in `1.2.15`)*
 
 ---
 
@@ -148,8 +148,19 @@ The extension now has two equivalent settings surfaces:
 
 Both surfaces read/write the same extension storage keys and trigger the same Tools-backed autosave logic when a personal bearer token is configured.
 Both surfaces also localize dynamically at runtime, with Swedish selected automatically when the browser UI prefers Swedish and English used as fallback.
+There is now also an explicit **Extension language** setting (`Auto`, `English`, `Swedish`) so the extension UI can be controlled separately from the actual AI reply language.
+That UI localization is kept separate from the actual AI reply language choice, so **Answer language** / **Verify-fact language** still control generated output independently.
+
+The same extension-language setting now also reaches the on-page SocialGPT UI itself:
+
+- Toolbox labels and buttons
+- floating `Open Toolbox` / `Verify fact` action buttons
+- fact-check result actions and subtitles
+- background context-menu labels
 
 When you paste or edit the bearer token, the UI now performs a lightweight API validation call and shows an inline spinner plus a success/error confirmation before you run the full **Test Tools → OpenAI** smoke test.
+
+As of `1.2.15`, localized UI defaults no longer overwrite your responder profile or test-question content. This specifically fixes the regression where some Swedish-browser users could end up with Swedish-biased prompt defaults even after choosing another answer language.
 
 The popup now also includes an **Open Toolbox in active tab** shortcut. If the current page already has a live text selection, the extension imports that selection into Toolbox automatically, which gives you a fallback on pages where the normal context-menu flow is flaky.
 

@@ -2,7 +2,7 @@
   "name": "Tornevall Networks Social Media Tools",
   "short_name": "tornevall-networks-social-media-tools",
   "description": "Browser-wide AI assistant, fact-checker and toolkit. Powered by Tornevall Networks Tools.",
-  "version": "1.2.14",
+  "version": "1.2.15",
   "manifest_version": 3,
   "icons": {
     "16": "icons/icon16.png",
@@ -27,6 +27,7 @@
       "all_frames": true,
       "match_about_blank": true,
       "js": [
+        "js/shared/i18n.js",
         "js/shared/platform-registry.js",
         "js/shared/facebook-admin-reporter.js",
         "js/shared/soundcloud-page-bridge.js",

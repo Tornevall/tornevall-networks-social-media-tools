@@ -1,4 +1,9 @@
 (function () {
+    var root = typeof globalThis !== 'undefined'
+        ? globalThis
+        : (typeof window !== 'undefined' ? window : this);
+    var SUPPORTED_LOCALES = ['en', 'sv'];
+
     function getByPath(object, path) {
         return String(path || '').split('.').reduce(function (current, part) {
             return current && typeof current === 'object' ? current[part] : undefined;
@@ -11,7 +16,24 @@
         });
     }
 
-    function resolveLocale() {
+    function normalizeSupportedLocale(value) {
+        var normalized = String(value || '').trim().toLowerCase();
+        if (!normalized || normalized === 'auto') {
+            return '';
+        }
+
+        if (normalized.indexOf('sv') === 0) {
+            return 'sv';
+        }
+
+        if (normalized.indexOf('en') === 0) {
+            return 'en';
+        }
+
+        return SUPPORTED_LOCALES.indexOf(normalized) !== -1 ? normalized : '';
+    }
+
+    function detectBrowserLocale() {
         var candidates = [];
 
         try {
@@ -31,13 +53,18 @@
         }
 
         for (var index = 0; index < candidates.length; index += 1) {
-            var value = String(candidates[index] || '').trim().toLowerCase();
-            if (value.indexOf('sv') === 0) {
-                return 'sv';
+            var supported = normalizeSupportedLocale(candidates[index]);
+            if (supported) {
+                return supported;
             }
         }
 
         return 'en';
+    }
+
+    function resolveLocale(preferredLocale) {
+        var preferred = normalizeSupportedLocale(preferredLocale);
+        return preferred || detectBrowserLocale();
     }
 
     var messages = {
@@ -60,6 +87,8 @@
             },
             common: {
                 endpointNoteHtml: 'Requests are sent through <code>{url}</code> using your Tools bearer token.',
+                extensionLanguage: 'Extension language:',
+                extensionLanguageHelper: 'Controls the extension UI language for the popup, config page, and SocialGPT Toolbox. This does not change the AI reply language.',
                 openToolboxInTab: 'Open Toolbox in active tab',
                 openConfigPage: 'Open config page',
                 openToolsDashboard: 'Open Tools dashboard',
@@ -103,6 +132,11 @@
                 optionsTestingHeading: 'Testing, reset & diagnostics'
             },
             option: {
+                uiLanguage: {
+                    auto: 'Same as browser UI',
+                    en: 'English',
+                    sv: 'Swedish'
+                },
                 language: {
                     autoPrompt: 'Same as the prompt/context',
                     autoContext: 'Same as the selected content/context',
@@ -135,6 +169,99 @@
             defaults: {
                 personaProfile: 'You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.',
                 testQuestion: 'A Facebook user writes: "Hi, what does this tool help you with?" Reply in one short sentence in your configured tone and style.'
+            },
+            contentScript: {
+                panelTitle: 'Tornevall Networks Social Media Tools ↔',
+                closeToolbox: 'Close Toolbox',
+                responder: 'Responder',
+                loadingResponder: '(loading...)',
+                anchorFocused: 'Anchored to the currently focused text field.',
+                anchorFocusOrMark: 'Focus a text field or mark elements to build context.',
+                anchorReplyTarget: 'Anchored to the current reply field. Reply target detected: {target}.',
+                anchorGenericThread: 'Anchored to the current field with nearby conversation context from visible parent/sibling blocks.',
+                anchorMarkModeActive: 'Mark mode is active. Click page elements to add or remove context blocks.',
+                anchorMarkedBlocks: 'Using {count} marked block{plural} as context.',
+                anchorMarkedIds: ' IDs: {ids}.',
+                anchorExtraction: ' Extraction: {label}.',
+                extractionCurrent: 'current marked block only',
+                extractionParent: 'one parent up',
+                extractionParentChildren: 'one parent up + direct child scan',
+                extractionDocument: 'current page/document text',
+                extractionFrameDocument: 'current iframe/frame document text',
+                promptLabel: 'Prompt',
+                promptPlaceholder: 'Leave blank to use the default reply instruction.',
+                moodLabel: 'Mood',
+                modelLabel: 'Model',
+                lengthLabel: 'Length',
+                lengthAuto: 'Let GPT decide',
+                lengthAsShort: 'As short as possible',
+                lengthShortest: 'At maximum one sentence. Possibly a one-liner.',
+                lengthVeryShort: '2–3 sentences (very short)',
+                lengthShort: '4–6 sentences (short)',
+                lengthMedium: '6–10 sentences (medium)',
+                lengthExtreme: 'Extreme. You want your own book.',
+                lengthLong: 'Extended (whatever is needed)',
+                customMoodLabel: 'Custom mood',
+                changeRequestLabel: 'Change request',
+                changeRequestPlaceholder: 'Optional: what should change?',
+                languageLabel: 'Language',
+                contextLabel: 'Context',
+                markContext: 'Mark context',
+                stopMarking: 'Stop marking',
+                import: 'Import',
+                clear: 'Clear',
+                contextPlaceholder: 'Optional context: import visible page context or write your own notes here.',
+                outputLabel: 'Output',
+                composeStatus: 'Select a text field to enable paste/fill actions.',
+                generating: 'Generating…',
+                working: 'Working…',
+                generate: 'Generate',
+                refresh: 'Refresh',
+                verifyFact: 'Verify fact',
+                verifyShort: 'Verify',
+                openToolbox: 'Open Toolbox',
+                quickResponse: 'Quick response',
+                pasteIntoField: 'Paste into field',
+                dragToolboxTitle: 'Drag to move Toolbox. Press Escape to snap it back near the active field.',
+                dragFactTitle: 'Drag to move. Double-click or press Escape to reset position.',
+                composerActionTitle: 'Open Toolbox for the selected field. Drag to move it away. Double-click to reset its position.',
+                quickResponseTitle: 'Generate a quick reply using the preset saved in the extension popup.',
+                verifySelectionTitle: 'Fact-check the selected text.',
+                openToolboxSelectionTitle: 'Open Toolbox with the selected text imported as context.',
+                verifyHoverTitle: 'Verify the hovered image or link. Drag to move it away and double-click to reset.',
+                contextImported: 'Context imported into Toolbox.',
+                contextImportedFromMenu: 'Context imported from context menu.',
+                contextImportedFromPopup: 'Selected text imported from popup.',
+                contextImportedFromSelection: 'Selected text imported into Toolbox.',
+                verificationContextImported: 'Verification context imported into Toolbox.',
+                contextCleared: 'Context cleared. You can import fresh context or write your own.',
+                markModeStarted: 'Mark mode is active. Click page elements to add/remove context blocks.',
+                markModeStopped: 'Mark mode stopped. Current marked context remains in the box.',
+                markModeUnavailable: 'Could not toggle mark mode in this tab.',
+                quickGenerating: 'Generating quick reply…',
+                quickBuilding: 'Building a quick response from the current comment context…',
+                verifyNoContext: 'There is no context to verify yet. Import, mark, or write context first.',
+                verifyStarted: 'Verify started. Collecting context and checking facts now…',
+                verifyingFacts: 'Verifying facts…',
+                previewPreparing: 'Preparing verification context…',
+                previewLabel: 'Preview',
+                resultAppears: 'Result appears here automatically',
+                checkingNow: 'Checking now…',
+                factVerificationTitle: '✅ Fact checking via OpenAI',
+                factVerificationFailedTitle: '⚠️ Fact check failed',
+                factVerificationResult: 'Verification result',
+                factAnchoredSelected: 'Anchored to the selected content.',
+                factLanguage: 'Language',
+                factRetry: 'You can retry below.',
+                factRefresh: 'Refresh',
+                factRefreshTitle: 'Run the same fact-check again.',
+                factDigDeeper: 'Dig deeper',
+                factDigDeeperTitle: 'Retry with a deeper pass that looks for broader context and stricter verification.',
+                factOpenToolbox: 'Open Toolbox',
+                factOpenToolboxTitle: 'Open Toolbox with the same verification context so you can continue working from the selected material.',
+                factCheckComplete: 'Fact check complete. Review the popup result.',
+                factCheckFailed: 'Fact check failed. Try refresh or think harder.',
+                toolsRequestFailed: 'Tools request failed. Review the output above before pasting anything.'
             },
             status: {
                 noActiveTab: 'No active tab is available.',
@@ -216,6 +343,8 @@
             },
             common: {
                 endpointNoteHtml: 'Anrop skickas via <code>{url}</code> med din Tools bearer-token.',
+                extensionLanguage: 'Tilläggsspråk:',
+                extensionLanguageHelper: 'Styr tilläggets UI-språk i popupen, config-sidan och SocialGPT Toolbox. Det här ändrar inte AI-svarens språk.',
                 openToolboxInTab: 'Öppna Toolbox i aktiv flik',
                 openConfigPage: 'Öppna konfigurationssidan',
                 openToolsDashboard: 'Öppna Tools-dashboard',
@@ -259,6 +388,11 @@
                 optionsTestingHeading: 'Test, återställning & diagnostik'
             },
             option: {
+                uiLanguage: {
+                    auto: 'Samma som webbläsarens UI',
+                    en: 'Engelska',
+                    sv: 'Svenska'
+                },
                 language: {
                     autoPrompt: 'Samma som prompten/kontexten',
                     autoContext: 'Samma som det valda innehållet/kontexten',
@@ -291,6 +425,99 @@
             defaults: {
                 personaProfile: 'Du är en vänlig, överintelligent människa som alltid är redo att hjälpa till. Svara som om du själv är den som deltar i diskussionen och försök använda språket som används i prompten.',
                 testQuestion: 'En Facebook-användare skriver: "Hej, vad hjälper det här verktyget dig med?" Svara i en kort mening med din konfigurerade ton och stil.'
+            },
+            contentScript: {
+                panelTitle: 'Tornevall Networks Social Media Tools ↔',
+                closeToolbox: 'Stäng Toolbox',
+                responder: 'Svarare',
+                loadingResponder: '(läser in...)',
+                anchorFocused: 'Förankrad till det textfält som just nu har fokus.',
+                anchorFocusOrMark: 'Fokusera ett textfält eller markera element för att bygga kontext.',
+                anchorReplyTarget: 'Förankrad till aktuellt svarsfält. Upptäckt svarsmål: {target}.',
+                anchorGenericThread: 'Förankrad till aktuellt fält med närliggande samtalskontext från synliga parent-/sibling-block.',
+                anchorMarkModeActive: 'Mark-läge är aktivt. Klicka på sidelement för att lägga till eller ta bort kontextblock.',
+                anchorMarkedBlocks: 'Använder {count} markerat block{plural} som kontext.',
+                anchorMarkedIds: ' ID:n: {ids}.',
+                anchorExtraction: ' Extraktion: {label}.',
+                extractionCurrent: 'endast aktuellt markerat block',
+                extractionParent: 'en nivå upp till parent',
+                extractionParentChildren: 'en nivå upp till parent + direkt child-scan',
+                extractionDocument: 'aktuell sida-/dokumenttext',
+                extractionFrameDocument: 'aktuell iframe-/frame-dokumenttext',
+                promptLabel: 'Prompt',
+                promptPlaceholder: 'Lämna tomt för att använda standardinstruktionen för svar.',
+                moodLabel: 'Ton',
+                modelLabel: 'Modell',
+                lengthLabel: 'Längd',
+                lengthAuto: 'Låt GPT avgöra',
+                lengthAsShort: 'Så kort som möjligt',
+                lengthShortest: 'Högst en mening. Gärna en oneliner.',
+                lengthVeryShort: '2–3 meningar (mycket kort)',
+                lengthShort: '4–6 meningar (kort)',
+                lengthMedium: '6–10 meningar (medel)',
+                lengthExtreme: 'Extrem. Du vill ha din egen bok.',
+                lengthLong: 'Förlängt (det som behövs)',
+                customMoodLabel: 'Anpassad ton',
+                changeRequestLabel: 'Ändringsönskemål',
+                changeRequestPlaceholder: 'Valfritt: vad ska ändras?',
+                languageLabel: 'Språk',
+                contextLabel: 'Kontext',
+                markContext: 'Markera kontext',
+                stopMarking: 'Stoppa markering',
+                import: 'Importera',
+                clear: 'Rensa',
+                contextPlaceholder: 'Valfri kontext: importera synlig sidkontext eller skriv egna anteckningar här.',
+                outputLabel: 'Utdata',
+                composeStatus: 'Välj ett textfält för att aktivera klistra in-/fyll-funktioner.',
+                generating: 'Genererar…',
+                working: 'Jobbar…',
+                generate: 'Generera',
+                refresh: 'Uppdatera',
+                verifyFact: 'Verifiera fakta',
+                verifyShort: 'Verifiera',
+                openToolbox: 'Öppna Toolbox',
+                quickResponse: 'Snabbsvar',
+                pasteIntoField: 'Klistra in i fält',
+                dragToolboxTitle: 'Dra för att flytta Toolbox. Tryck Escape för att fästa tillbaka den nära det aktiva fältet.',
+                dragFactTitle: 'Dra för att flytta. Dubbelklicka eller tryck Escape för att återställa positionen.',
+                composerActionTitle: 'Öppna Toolbox för det valda fältet. Dra för att flytta bort den. Dubbelklicka för att återställa positionen.',
+                quickResponseTitle: 'Generera ett snabbsvar med presetet som sparats i tilläggspopupen.',
+                verifySelectionTitle: 'Faktakontrollera den markerade texten.',
+                openToolboxSelectionTitle: 'Öppna Toolbox med den markerade texten importerad som kontext.',
+                verifyHoverTitle: 'Verifiera den hovrade bilden eller länken. Dra för att flytta bort knappen och dubbelklicka för att återställa.',
+                contextImported: 'Kontext importerad till Toolbox.',
+                contextImportedFromMenu: 'Kontext importerad från snabbmenyn.',
+                contextImportedFromPopup: 'Markerad text importerad från popupen.',
+                contextImportedFromSelection: 'Markerad text importerad till Toolbox.',
+                verificationContextImported: 'Verifieringskontext importerad till Toolbox.',
+                contextCleared: 'Kontext rensad. Du kan importera ny kontext eller skriva egen.',
+                markModeStarted: 'Mark-läget är aktivt. Klicka på sidelement för att lägga till eller ta bort kontextblock.',
+                markModeStopped: 'Mark-läget stoppades. Den aktuella markerade kontexten ligger kvar i rutan.',
+                markModeUnavailable: 'Kunde inte växla mark-läge i den här fliken.',
+                quickGenerating: 'Genererar snabbsvar…',
+                quickBuilding: 'Bygger ett snabbt svar från den aktuella kommentarens kontext…',
+                verifyNoContext: 'Det finns ingen kontext att verifiera ännu. Importera, markera eller skriv kontext först.',
+                verifyStarted: 'Verifiering startad. Samlar kontext och kontrollerar fakta nu…',
+                verifyingFacts: 'Verifierar fakta…',
+                previewPreparing: 'Förbereder verifieringskontext…',
+                previewLabel: 'Förhandsvisning',
+                resultAppears: 'Resultatet visas här automatiskt',
+                checkingNow: 'Kontrollerar nu…',
+                factVerificationTitle: '✅ Faktakontroll via OpenAI',
+                factVerificationFailedTitle: '⚠️ Faktakontrollen misslyckades',
+                factVerificationResult: 'Verifieringsresultat',
+                factAnchoredSelected: 'Förankrad till det valda innehållet.',
+                factLanguage: 'Språk',
+                factRetry: 'Du kan försöka igen nedan.',
+                factRefresh: 'Uppdatera',
+                factRefreshTitle: 'Kör samma faktakontroll igen.',
+                factDigDeeper: 'Gräv djupare',
+                factDigDeeperTitle: 'Försök igen med en djupare körning som letar bredare kontext och striktare verifiering.',
+                factOpenToolbox: 'Öppna Toolbox',
+                factOpenToolboxTitle: 'Öppna Toolbox med samma verifieringskontext så att du kan fortsätta arbeta från det valda materialet.',
+                factCheckComplete: 'Faktakontrollen är klar. Granska popupresultatet.',
+                factCheckFailed: 'Faktakontrollen misslyckades. Försök uppdatera eller tänka hårdare.',
+                toolsRequestFailed: 'Tools-anropet misslyckades. Granska utdata ovan innan du klistrar in något.'
             },
             status: {
                 noActiveTab: 'Ingen aktiv flik är tillgänglig.',
@@ -397,10 +624,24 @@
         }
     }
 
-    window.TNNetworksExtensionI18n = {
+    function setLocale(nextLocale) {
+        locale = resolveLocale(nextLocale);
+        api.locale = locale;
+        return locale;
+    }
+
+    var api = {
         locale: locale,
         t: t,
+        setLocale: setLocale,
+        resolveLocale: resolveLocale,
+        normalizeLocale: normalizeSupportedLocale,
+        getSupportedLocales: function () {
+            return SUPPORTED_LOCALES.slice();
+        },
         applyTranslations: applyTranslations
     };
+
+    root.TNNetworksExtensionI18n = api;
 })();
 

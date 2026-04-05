@@ -24,6 +24,42 @@ const soundCloudTabStatusCache = {};
 const CONTEXT_MENU_OPEN_TOOLBOX_ID = 'tn-social-tools-open-toolbox';
 const CONTEXT_MENU_VERIFY_ID = 'tn-social-tools-verify-fact';
 
+function normalizeExtensionUiLanguage(value) {
+    var normalized = String(value || '').trim().toLowerCase();
+    return ['auto', 'en', 'sv'].indexOf(normalized) !== -1 ? normalized : 'auto';
+}
+
+function detectBrowserUiLocale() {
+    try {
+        if (chrome.i18n && typeof chrome.i18n.getUILanguage === 'function') {
+            return String(chrome.i18n.getUILanguage() || '').toLowerCase().indexOf('sv') === 0 ? 'sv' : 'en';
+        }
+    } catch (error) {
+    }
+
+    return 'en';
+}
+
+function resolveExtensionUiLocale(preferredLocale) {
+    var normalized = normalizeExtensionUiLanguage(preferredLocale);
+    return normalized && normalized !== 'auto' ? normalized : detectBrowserUiLocale();
+}
+
+function getBackgroundUiText(locale, key) {
+    var dictionary = {
+        en: {
+            openToolbox: 'Open Toolbox',
+            verifyFact: 'Verify fact with Toolbox'
+        },
+        sv: {
+            openToolbox: 'Öppna Toolbox',
+            verifyFact: 'Verifiera fakta med Toolbox'
+        }
+    };
+
+    return (dictionary[locale] && dictionary[locale][key]) || dictionary.en[key] || key;
+}
+
 function getToolsBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
 }
@@ -42,17 +78,20 @@ function setupExtensionContextMenus() {
         return;
     }
 
-    chrome.contextMenus.removeAll(function () {
-        safeContextMenuCreate({
-            id: CONTEXT_MENU_OPEN_TOOLBOX_ID,
-            title: 'Open Toolbox',
-            contexts: ['all'],
-        });
+    chrome.storage.sync.get(['extensionUiLanguage'], function (data) {
+        var locale = resolveExtensionUiLocale(data && data.extensionUiLanguage);
+        chrome.contextMenus.removeAll(function () {
+            safeContextMenuCreate({
+                id: CONTEXT_MENU_OPEN_TOOLBOX_ID,
+                title: getBackgroundUiText(locale, 'openToolbox'),
+                contexts: ['all'],
+            });
 
-        safeContextMenuCreate({
-            id: CONTEXT_MENU_VERIFY_ID,
-            title: 'Verify fact with Toolbox',
-            contexts: ['selection', 'link', 'image', 'page'],
+            safeContextMenuCreate({
+                id: CONTEXT_MENU_VERIFY_ID,
+                title: getBackgroundUiText(locale, 'verifyFact'),
+                contexts: ['selection', 'link', 'image', 'page'],
+            });
         });
     });
 }
@@ -1630,6 +1669,10 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
 chrome.storage.onChanged.addListener(function (changes, areaName) {
     if (areaName !== 'sync') {
         return;
+    }
+
+    if (changes.extensionUiLanguage) {
+        setupExtensionContextMenus();
     }
 
     var shouldTryFlush = false;
