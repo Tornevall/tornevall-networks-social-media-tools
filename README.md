@@ -210,3 +210,6 @@ The injected network monitor skips unsafe direct `responseText` reads for binary
 If Facebook activity submission returns a server-side 500 error, make sure the Tools server is updated to the matching backend version for the extension workflow.
 
 If you change extension files locally, reload the extension in `chrome://extensions` before testing again.
+
+If you see `Uncaught ReferenceError: resetReplyTransientFieldsButKeepContext is not defined`, reload both the extension and the active page tab so the latest `content-script.js` is injected.
+

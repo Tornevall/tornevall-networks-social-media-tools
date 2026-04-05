@@ -12,6 +12,7 @@
 - **Verification result popup once again includes `Open Toolbox`** — after a fact-check finishes, the result box now exposes the same follow-up handoff into Toolbox instead of only showing `Refresh` and `Dig deeper`.
 - **Background message handling cleaned up after reset/recovery edits** — duplicate `chrome.runtime.onMessage` wiring was collapsed back to one active handler while keeping the SoundCloud message endpoints intact.
 - **Temporary false "missing token" states reduced** — content-script token checks now fall back to the background runtime settings reader before showing bearer-token-missing messaging, which helps after reload/sync drift.
+- **Reply-output flow no longer crashes with `resetReplyTransientFieldsButKeepContext is not defined`** — transient reset helpers now live in top-level scope and the panel's `Context clear` handler is properly wired again.
 
 ### Changed
 - **Manifest description updated**: Now clearly states "Browser-wide AI assistant" instead of narrow platform description

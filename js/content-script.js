@@ -3716,6 +3716,27 @@ function resetReplyPanelTransientFields(options) {
     updatePanelComposerActions(settings.statusMessage, settings.statusTone);
 }
 
+function stopMarkModeKeepingCurrentContext() {
+    isClickMarkingActive = false;
+    safeSendRuntimeMessage({type: 'SET_MARK_MODE', enabled: false});
+    updatePanelMarkModeButton(false);
+    updatePanelAnchorNote();
+}
+
+function resetReplyTransientFieldsButKeepContext() {
+    if (!panel) {
+        return;
+    }
+
+    const modifierField = panel.querySelector('#sgpt-modifier');
+    if (modifierField) {
+        modifierField.value = '';
+    }
+
+    stopMarkModeKeepingCurrentContext();
+    updatePanelComposerActions();
+}
+
 function getReadablePanelText(value, depth) {
     const level = typeof depth === 'number' ? depth : 0;
     if (level > 5) {
@@ -6093,28 +6114,8 @@ function createPanel() {
         refreshPanelContextFromCurrentTarget();
     });
     panel.querySelector('#sgpt-context-clear').addEventListener('click', () => {
-
-function stopMarkModeKeepingCurrentContext() {
-    isClickMarkingActive = false;
-    safeSendRuntimeMessage({type: 'SET_MARK_MODE', enabled: false});
-    updatePanelMarkModeButton(false);
-    updatePanelAnchorNote();
-}
-
-function resetReplyTransientFieldsButKeepContext() {
-    if (!panel) {
-        return;
-    }
-
-    const modifierField = panel.querySelector('#sgpt-modifier');
-    if (modifierField) {
-        modifierField.value = '';
-    }
-
-    stopMarkModeKeepingCurrentContext();
-    updatePanelComposerActions();
-}
         clearMarkedContextSelection();
+        stopMarkModeKeepingCurrentContext();
         activeReplyContextMeta = null;
         setPanelContextValue('');
         updatePanelAnchorNote();

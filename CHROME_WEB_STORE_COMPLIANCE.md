@@ -84,7 +84,10 @@ It describes browser-wide user-facing functionality that depends on content scri
 
 ## Remote code statement
 
-This extension does not download and execute remote hosted code.
+Remote code means any JavaScript or WebAssembly code that is not included in the extension package.
+This includes external file references in `<script>` tags, modules that point to external files, and strings evaluated with `eval()`.
+
+This extension does not download or execute remote hosted code.
 
 All executable JavaScript used by the extension is bundled in the extension package.
 Remote communication is limited to HTTPS API requests used for account-linked functionality and server-side processing.
@@ -216,3 +219,45 @@ If any of the following change, this file must be updated at the same time:
 * browser-wide overlay behavior
 
 The goal is simple: code, manifest, README, and package documentation must all describe the same real extension.
+
+---
+
+## Chrome Web Store - Privacy practices (EN paste-pack)
+
+Copy the texts below into the matching fields under Privacy practices in Chrome Web Store.
+They are written for the current manifest (browser-wide with `<all_urls>`).
+
+### Single purpose description
+
+This extension is a browser-wide AI toolkit for web text analysis, fact-checking, and reply assistance. It provides selected-text tools, context-menu actions, and platform-specific modules in one workflow.
+
+### Detailed description (store listing, minimum 25 characters)
+
+Tornevall Networks Social Media Tools is a browser-wide AI toolkit for Chrome. The user can select text on any website and use Verify fact or Open Toolbox, and get AI assistance for summaries, analysis, and reply drafts. The extension also includes add-on modules for Facebook, SoundCloud, and X/Twitter. AI functionality is account-linked and requires a personal Tornevall Networks Tools bearer token.
+
+### Justification - activeTab
+
+`activeTab` is used for user-initiated actions in the current tab, for example when the user selects Open Toolbox or Verify fact. This permission provides temporary tab access only during active interaction.
+
+### Justification - contextMenus
+
+`contextMenus` is required to show right-click actions such as Open Toolbox and Verify fact. These menu actions are a core part of the extension workflow and are triggered by the user on the current page.
+
+### Justification - scripting
+
+`scripting` is used to inject and run the extension's own locally packaged scripts in page context when features are activated. This is required for overlay features, page analysis, and real-time tool interaction.
+
+### Justification - storage
+
+`storage` is used to save user settings, bearer token, environment selection (dev/prod), and temporary preferences so the extension works consistently between sessions.
+
+### Justification - host permissions (`<all_urls>`)
+
+`<all_urls>` is required because the extension's core behavior is browser-wide. The user must be able to select text, fact-check, and open tools on any website. A narrower domain allowlist would break core functionality.
+
+### Remote code usage
+
+Remote code means any JavaScript or WebAssembly code that is not included in the extension package.
+This includes external file references in `<script>` tags, modules that point to external files, and strings evaluated with `eval()`.
+
+The extension does not download or execute remote code. All executable JavaScript is packaged locally in the extension. Network traffic is used only for API requests to Tornevall Networks Tools (`https://tools.tornevall.net` and `https://tools.tornevall.com`).
