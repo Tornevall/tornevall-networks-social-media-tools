@@ -165,6 +165,7 @@ The larger **config / options page** now also includes an **Advanced mark-mode c
 These advanced mark-mode settings are local to the extension and intentionally do not change the default compact behavior unless you enable them.
 
 The Toolbox panel itself is now draggable from its header, and the text-selection overlay was hardened so short/double-click selections trigger **Open Toolbox** / **Verify fact** more reliably.
+The Toolbox header close button (`×`) now also works again alongside the draggable header behavior.
 
 ---
 
@@ -232,6 +233,7 @@ Available advanced behaviors:
 When a richer label mode is enabled, marked elements also get a visible local badge on the page while they are active, which makes it easier to map the marked DOM node back to the context text shown in the Toolbox.
 
 The extension now also runs its content scripts in nested frames (including matching `about:blank` child frames) where Chrome allows it, so mark mode and selection overlays can work inside more iframe-backed surfaces.
+
 
 ## Local storage
 

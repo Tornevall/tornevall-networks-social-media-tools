@@ -4689,7 +4689,7 @@ function enableReplyPanelDragging(handle, box) {
     handle.dataset.dragReady = 'true';
 
     handle.addEventListener('pointerdown', function (event) {
-        if (event.button !== 0 || !box.isConnected) {
+        if (event.button !== 0 || !box.isConnected || (event.target && event.target.closest && event.target.closest('#sgpt-close'))) {
             return;
         }
 
@@ -5168,7 +5168,6 @@ function getCurrentPanelContextValue() {
 
     return getActiveComposerContext();
 }
-
 
 // ---------------------------------------------
 // EXTRACT READABLE CONTEXT (GENERIC, WITH MEDIA)
@@ -6465,7 +6464,7 @@ function panelHTML() {
       .socialgpt-marked[data-tn-social-mark-badge]::after{content:attr(data-tn-social-mark-badge);position:absolute;top:0;left:0;transform:translate(6px,-70%);max-width:min(320px,calc(100% - 12px));padding:3px 8px;border-radius:999px;background:#0f172a;color:#fff;font:11px/1.2 Arial,sans-serif !important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 6px 18px rgba(15,23,42,.24);pointer-events:none;z-index:2147483646}
       .socialgpt-marked[data-tn-social-mark-mode="compact"]::after{background:#0284c7}
     </style>
-    <div id="sgpt-head">Tornevall Networks Social Media Tools ↔ <button id="sgpt-close">×</button></div>
+      <div id="sgpt-head">Tornevall Networks Social Media Tools ↔ <button type="button" id="sgpt-close" aria-label="Close Toolbox">×</button></div>
     <div id="sgpt-body">
       <div id="sgpt-responder-label">Responder: <span id="sgpt-responder-name" data-name="${frontResponserName || ''}">${frontResponserName || '(loading...)'}</span></div>
       <div id="sgpt-anchor-note">Anchored to the currently focused text field.</div>
@@ -6550,7 +6549,14 @@ function createPanel() {
         panel.dataset.collapsed = panel.dataset.collapsed === 'true' ? 'false' : 'true';
     });
 
-    panel.querySelector('#sgpt-close').addEventListener('click', () => {
+    const closeButton = panel.querySelector('#sgpt-close');
+    closeButton.addEventListener('pointerdown', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    });
+    closeButton.addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
         closeReplyPanel();
     });
 

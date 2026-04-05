@@ -24,6 +24,7 @@
 ### Fixed
 - Facebook admin activity handling no longer keeps passively processing admin-log payloads in a tab after the new popup-level feature toggle has been turned off.
 - Mark mode no longer depends on a late page `click` alone; it now captures the target earlier, which reduces the accidental one-click shutdown/blur behavior seen on pages like WhatsApp.
+- The Toolbox close `×` control now works again after the draggable-header change, instead of being swallowed by the header interaction.
 
 ### Added
 - New lightweight endpoint: `GET /api/social-media-tools/extension/validate-token` for fast bearer-token verification without running an OpenAI smoke test.
