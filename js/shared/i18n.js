@@ -60,6 +60,7 @@
             },
             common: {
                 endpointNoteHtml: 'Requests are sent through <code>{url}</code> using your Tools bearer token.',
+                openToolboxInTab: 'Open Toolbox in active tab',
                 openConfigPage: 'Open config page',
                 openToolsDashboard: 'Open Tools dashboard',
                 openForum: 'Open forum',
@@ -83,6 +84,7 @@
                 customInstructionsHelperHtml: 'For <strong>custom instructions</strong>, use <a id="openToolsDashboardLinkInline" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">Tools → Social Media Tools → Facebook</a>.',
                 markModeAdvancedHeading: 'Advanced mark-mode context',
                 markModeAdvancedHelper: 'Keep the default compact numbering unless you need richer identifiers. These advanced options only affect the Toolbox mark-mode context and stay local in the extension.',
+                markModeFrameHelper: 'If a site keeps the real content inside an iframe or app-like surface, click inside that frame first and choose the whole frame/document mode below to pull in the visible text from that context instead of just one small DOM block.',
                 markContextLabelMode: 'Marked block labels:',
                 markContextExpansionMode: 'Marked context extraction:',
                 testQuestion: 'Test question (Tools → OpenAI):',
@@ -126,7 +128,8 @@
                 markContextExpansionMode: {
                     current: 'Current marked block only (default)',
                     parent: 'Go one parent up',
-                    parentChildren: 'Go one parent up + scan direct child blocks'
+                    parentChildren: 'Go one parent up + scan direct child blocks',
+                    document: 'Use the whole current frame/document text'
                 }
             },
             defaults: {
@@ -135,6 +138,7 @@
             },
             status: {
                 noActiveTab: 'No active tab is available.',
+                tabsUnavailable: 'Tab access is not available in this popup context.',
                 noFacebookAdminStatus: 'No Facebook admin reporting status is available for the active tab.',
                 couldNotReadFacebookStatus: 'Could not read Facebook admin reporting status from the active tab.',
                 openFacebookAdminPage: 'Open a Facebook group admin activities page to inspect reportable entries and batch totals.',
@@ -160,6 +164,11 @@
                 tokenAcceptedForUser: 'Bearer token accepted for {user}.',
                 tokenRejected: 'Bearer token rejected.',
                 tokenValidationFailed: 'Could not validate bearer token.',
+                toolboxOpened: 'Toolbox opened in the active tab.',
+                toolboxOpenedWithSelection: 'Toolbox opened in the active tab and imported the current text selection.',
+                couldNotOpenToolboxInTab: 'Could not open Toolbox in the active tab.',
+                reloadTabAndTryAgain: 'Could not reach the page helper. Reload the tab once and try again.',
+                noResponseFromTab: 'The active tab did not return a response.',
                 settingsLoaded: 'Settings loaded from {baseUrl}.',
                 environmentChanged: 'Environment changed to {baseUrl}.',
                 facebookDebugEnabled: 'Facebook admin debug diagnostics enabled.',
@@ -207,6 +216,7 @@
             },
             common: {
                 endpointNoteHtml: 'Anrop skickas via <code>{url}</code> med din Tools bearer-token.',
+                openToolboxInTab: 'Öppna Toolbox i aktiv flik',
                 openConfigPage: 'Öppna konfigurationssidan',
                 openToolsDashboard: 'Öppna Tools-dashboard',
                 openForum: 'Öppna forumet',
@@ -230,6 +240,7 @@
                 customInstructionsHelperHtml: 'För <strong>egna instruktioner</strong>, använd <a id="openToolsDashboardLinkInline" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">Tools → Social Media Tools → Facebook</a>.',
                 markModeAdvancedHeading: 'Avancerad kontext för mark-läge',
                 markModeAdvancedHelper: 'Behåll standardläget med kompakt numrering om du inte behöver rikare identifiering. De här avancerade valen påverkar bara Toolboxens mark-lägeskontext och lagras lokalt i tillägget.',
+                markModeFrameHelper: 'Om en sida lägger det riktiga innehållet i en iframe eller app-liknande yta, klicka först inne i den ramen och välj sedan hel frame-/dokumenttext nedan för att dra in den synliga texten därifrån i stället för bara ett litet DOM-block.',
                 markContextLabelMode: 'Etiketter för markerade block:',
                 markContextExpansionMode: 'Kontextextraktion för markering:',
                 testQuestion: 'Testfråga (Tools → OpenAI):',
@@ -273,7 +284,8 @@
                 markContextExpansionMode: {
                     current: 'Endast aktuellt markerat block (standard)',
                     parent: 'Gå en nivå upp till parent',
-                    parentChildren: 'Gå en nivå upp till parent + skanna direkta child-block'
+                    parentChildren: 'Gå en nivå upp till parent + skanna direkta child-block',
+                    document: 'Använd hela den aktuella framens/dokumentets text'
                 }
             },
             defaults: {
@@ -282,6 +294,7 @@
             },
             status: {
                 noActiveTab: 'Ingen aktiv flik är tillgänglig.',
+                tabsUnavailable: 'Flikåtkomst är inte tillgänglig i den här popupkontexten.',
                 noFacebookAdminStatus: 'Ingen status för Facebook-adminrapportering är tillgänglig för den aktiva fliken.',
                 couldNotReadFacebookStatus: 'Kunde inte läsa status för Facebook-adminrapportering från den aktiva fliken.',
                 openFacebookAdminPage: 'Öppna en Facebook-grupps admin activities-sida för att granska rapporterbara poster och batchsummor.',
@@ -307,6 +320,11 @@
                 tokenAcceptedForUser: 'Bearer-token godkänd för {user}.',
                 tokenRejected: 'Bearer-token avvisades.',
                 tokenValidationFailed: 'Kunde inte verifiera bearer-token.',
+                toolboxOpened: 'Toolbox öppnades i den aktiva fliken.',
+                toolboxOpenedWithSelection: 'Toolbox öppnades i den aktiva fliken och importerade den aktuella textmarkeringen.',
+                couldNotOpenToolboxInTab: 'Kunde inte öppna Toolbox i den aktiva fliken.',
+                reloadTabAndTryAgain: 'Kunde inte nå sidhjälparen. Ladda om fliken en gång och försök igen.',
+                noResponseFromTab: 'Den aktiva fliken returnerade inget svar.',
                 settingsLoaded: 'Inställningar inlästa från {baseUrl}.',
                 environmentChanged: 'Miljön byttes till {baseUrl}.',
                 facebookDebugEnabled: 'Felsökningsdiagnostik för Facebook-admin aktiverad.',

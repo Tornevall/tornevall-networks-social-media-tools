@@ -279,6 +279,43 @@ function sendRuntimeMessage(message) {
     });
 }
 
+function sendMessageToActiveTab(message) {
+    return new Promise(function (resolve) {
+        if (!chrome.tabs || typeof chrome.tabs.query !== 'function') {
+            resolve({ok: false, error: t('status.tabsUnavailable', {}, 'Tab access is not available in this popup context.')});
+            return;
+        }
+
+        chrome.tabs.query({active: true, currentWindow: true}, function (tabs) {
+            if (chrome.runtime.lastError) {
+                resolve({ok: false, error: chrome.runtime.lastError.message});
+                return;
+            }
+
+            var tab = Array.isArray(tabs) && tabs.length ? tabs[0] : null;
+            if (!tab || typeof tab.id !== 'number') {
+                resolve({ok: false, error: t('status.noActiveTab', {}, 'No active tab is available.')});
+                return;
+            }
+
+            chrome.tabs.sendMessage(tab.id, message, function (response) {
+                if (chrome.runtime.lastError) {
+                    var rawError = chrome.runtime.lastError.message || '';
+                    resolve({
+                        ok: false,
+                        error: rawError.indexOf('Receiving end does not exist') !== -1
+                            ? t('status.reloadTabAndTryAgain', {}, 'Could not reach the page helper. Reload the tab once and try again.')
+                            : rawError,
+                    });
+                    return;
+                }
+
+                resolve(response || {ok: false, error: t('status.noResponseFromTab', {}, 'The active tab did not return a response.')});
+            });
+        });
+    });
+}
+
 function queryActiveTabFacebookAdminStatus() {
     return new Promise(function (resolve) {
         chrome.tabs.query({active: true, currentWindow: true}, function (tabs) {
@@ -375,6 +412,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const openToolsDashboardLink = document.getElementById('openToolsDashboardLink');
     const openToolsDashboardLinkInline = document.getElementById('openToolsDashboardLinkInline');
     const forumLink = document.getElementById('forumLink');
+    const openToolboxBtn = document.getElementById('openToolboxBtn');
     const openOptionsPageBtn = document.getElementById('openOptionsPageBtn');
     const status = document.getElementById('status');
     const testBtn = document.getElementById('testConnectionBtn');
@@ -1288,6 +1326,27 @@ document.addEventListener('DOMContentLoaded', function () {
         debugConsole.textContent = t('common.noLogsYet', {}, 'No logs yet.');
         setStatus(status, t('status.debugConsoleCleared', {}, 'Debug console cleared.'), false);
     });
+
+    if (openToolboxBtn) {
+        openToolboxBtn.addEventListener('click', async function () {
+            setBusyState(true, [openToolboxBtn]);
+            const result = await sendMessageToActiveTab({type: 'OPEN_REPLY_PANEL_FROM_POPUP'});
+            setBusyState(false, [openToolboxBtn]);
+
+            if (!result || !result.ok) {
+                setStatus(status, (result && result.error) || t('status.couldNotOpenToolboxInTab', {}, 'Could not open Toolbox in the active tab.'), true);
+                return;
+            }
+
+            setStatus(
+                status,
+                result.importedSelection
+                    ? t('status.toolboxOpenedWithSelection', {}, 'Toolbox opened in the active tab and imported the current text selection.')
+                    : t('status.toolboxOpened', {}, 'Toolbox opened in the active tab.'),
+                false
+            );
+        });
+    }
 
     if (openOptionsPageBtn) {
         openOptionsPageBtn.addEventListener('click', function () {

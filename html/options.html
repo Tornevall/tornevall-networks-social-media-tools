@@ -411,6 +411,9 @@
                 <p class="helper-note" data-i18n="common.markModeAdvancedHelper">
                     Keep the default compact numbering unless you need richer identifiers. These advanced options only affect the Toolbox mark-mode context and are local to the extension.
                 </p>
+                <p class="helper-note" data-i18n="common.markModeFrameHelper">
+                    If a site keeps the real content inside an iframe or app-like surface, click inside that frame first and choose the whole frame/document mode below to pull in the visible text from that context instead of just one small DOM block.
+                </p>
 
                 <label for="markContextLabelMode" data-i18n="common.markContextLabelMode">Marked block labels:</label>
                 <select id="markContextLabelMode">
@@ -424,6 +427,7 @@
                     <option value="current" data-i18n="option.markContextExpansionMode.current">Current marked block only (default)</option>
                     <option value="parent" data-i18n="option.markContextExpansionMode.parent">Go one parent up</option>
                     <option value="parent-children" data-i18n="option.markContextExpansionMode.parentChildren">Go one parent up + scan direct child blocks</option>
+                    <option value="document" data-i18n="option.markContextExpansionMode.document">Use the whole current frame/document text</option>
                 </select>
             </details>
         </div>

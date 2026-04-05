@@ -17,6 +17,7 @@ This extension provides text selection overlays, fact-checking controls, and AI-
 **Everywhere on the web:**
 - ✅ Select any text and see floating "Verify fact" and "Open Toolbox" buttons
 - ✅ Right-click anywhere to access "Open Toolbox" or "Verify fact" context menus
+- ✅ Open Toolbox directly from the popup when right-click/context-menu flow is unreliable on a site
 - ✅ Get AI-powered replies and fact-checking via Tornevall Networks Tools
 - ✅ After a fact-check result appears, continue with the same context using the result-box `Open Toolbox` action
 
@@ -150,6 +151,8 @@ Both surfaces also localize dynamically at runtime, with Swedish selected automa
 
 When you paste or edit the bearer token, the UI now performs a lightweight API validation call and shows an inline spinner plus a success/error confirmation before you run the full **Test Tools → OpenAI** smoke test.
 
+The popup now also includes an **Open Toolbox in active tab** shortcut. If the current page already has a live text selection, the extension imports that selection into Toolbox automatically, which gives you a fallback on pages where the normal context-menu flow is flaky.
+
 The larger **config / options page** now also includes an **Advanced mark-mode context** section for the Toolbox:
 
 - keep the current compact `[1]`, `[2]` style as the default
@@ -157,8 +160,11 @@ The larger **config / options page** now also includes an **Advanced mark-mode c
 - optionally include richer element details in the marked-context headers
 - optionally expand marked context extraction to **one parent up**
 - optionally expand further to **one parent up + direct child scan** when the default marked block is too thin
+- optionally switch to **whole current frame/document text** when the useful text lives inside an iframe or other app-like surface
 
 These advanced mark-mode settings are local to the extension and intentionally do not change the default compact behavior unless you enable them.
+
+The Toolbox panel itself is now draggable from its header, and the text-selection overlay was hardened so short/double-click selections trigger **Open Toolbox** / **Verify fact** more reliably.
 
 ---
 
@@ -221,8 +227,11 @@ Available advanced behaviors:
 - **Current marked block only** — current extraction behavior
 - **Go one parent up** — extracts one DOM level above the marked block
 - **Go one parent up + scan direct child blocks** — keeps the broader parent context and also summarizes nearby direct child blocks
+- **Use the whole current frame/document text** — captures the visible text from the current page/frame document, which is useful when the real content sits inside an iframe or larger app shell
 
 When a richer label mode is enabled, marked elements also get a visible local badge on the page while they are active, which makes it easier to map the marked DOM node back to the context text shown in the Toolbox.
+
+The extension now also runs its content scripts in nested frames (including matching `about:blank` child frames) where Chrome allows it, so mark mode and selection overlays can work inside more iframe-backed surfaces.
 
 ## Local storage
 

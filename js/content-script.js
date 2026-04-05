@@ -1,6 +1,8 @@
 let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null, composerActionButton = null, quickResponseActionButton = null, adminActivitiesControl = null, soundCloudInsightsControl = null;
 let panelAttachedComposer = null;
 let panelContextDirty = false;
+let panelDragState = null;
+let panelManualPosition = null;
 let verifyActionButton = null;
 let verifyActionContext = '';
 let verifyActionAnchor = null;
@@ -45,6 +47,7 @@ let availableToolsModels = [
 let defaultToolsModel = 'gpt-4o-mini';
 let preferredToolsModel = '';
 let modelsCatalogLoading = false;
+let selectionActionButtonTimer = null;
 
 const EDITABLE_SELECTOR = 'textarea,input[type="text"],input:not([type]),[contenteditable=""],[contenteditable="true"],[role="textbox"]';
 const TOOLS_PROD_BASE_URL = 'https://tools.tornevall.net';
@@ -64,7 +67,8 @@ const SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED = false;
 const MAX_RECENT_FACEBOOK_COMMENT_ENTRIES = 200;
 const DEFAULT_REPLY_PROMPT = 'Write text that fits the visible context and can be pasted into the selected field.';
 const MARKED_CONTEXT_LABEL_MODES = ['compact', 'mark-id', 'detailed'];
-const MARKED_CONTEXT_EXPANSION_MODES = ['current', 'parent', 'parent-children'];
+const MARKED_CONTEXT_EXPANSION_MODES = ['current', 'parent', 'parent-children', 'document'];
+const MIN_SELECTION_ACTION_LENGTH = 2;
 const QUICK_REPLY_PRESETS = {
     default: {
         label: 'Balanced default',
@@ -2338,7 +2342,7 @@ function enableFactResultBoxDragging(handle, box) {
     handle.dataset.dragReady = 'true';
 
     handle.addEventListener('pointerdown', function (event) {
-        if (event.button !== 0 || !box.isConnected) {
+        if (event.button !== 0 || !box.isConnected || (event.target && event.target.closest && event.target.closest('#sgpt-close'))) {
             return;
         }
 
@@ -2704,6 +2708,21 @@ function extractFacebookUserName() {
 // ---------------------------------------------
 function findFullContextNode(n) {
     return (n.closest('[data-ad-preview="message"],[data-ad-comet-preview="message"],[role="article"],article,[data-pagelet],.userContentWrapper') || n.closest('form,div') || n.parentElement);
+}
+
+function getEventTargetElement(target) {
+    if (!target) {
+        return null;
+    }
+
+    return target.nodeType === Node.ELEMENT_NODE
+        ? target
+        : (target.parentElement || null);
+}
+
+function isSocialToolsUiElement(target) {
+    const element = getEventTargetElement(target);
+    return !!(element && element.closest && element.closest('#sgpt-panel, #sgpt-factbox, #sgpt-verify-action, #sgpt-selection-toolbox-action, #sgpt-verify-hover, #sgpt-composer-action, #sgpt-quick-response-action, #tn-social-tools-admin-activities, #tn-networks-soundcloud-buffer, #tn-soundcloud-direct-capture-buffer'));
 }
 
 function isEditableTarget(node) {
@@ -3801,6 +3820,7 @@ function getMarkedContextExpansionLabel() {
         current: 'current marked block only',
         parent: 'one parent up',
         'parent-children': 'one parent up + direct child scan',
+        document: window.top === window ? 'current page/document text' : 'current iframe/frame document text',
     }[markedContextExpansionMode] || 'current marked block only';
 }
 
@@ -4052,6 +4072,21 @@ function setActiveComposer(node) {
 
     activeComposer = nextComposer;
     if (panel) {
+        if (isClickMarkingActive) {
+            if (composerChanged) {
+                panelAttachedComposer = activeComposer;
+            }
+            if (!markedElements.length && !panelContextDirty) {
+                refreshPanelContextFromCurrentTarget();
+            } else {
+                positionPanelNearComposer();
+                updatePanelAnchorNote();
+                updatePanelComposerActions();
+            }
+            positionComposerActionButton();
+            return;
+        }
+
         if (composerChanged && panelAttachedComposer !== activeComposer) {
             panelAttachedComposer = activeComposer;
             resetReplyPanelTransientFields({clearMarks: true});
@@ -4496,11 +4531,15 @@ function getSelectionVerificationSource() {
     }
 
     const text = normalizeWhitespace(selection.toString() || '');
-    if (!text || text.length < 12) {
+    if (!text || text.replace(/[^\p{L}\p{N}]+/gu, '').length < MIN_SELECTION_ACTION_LENGTH) {
         return null;
     }
 
-    const rect = range.getBoundingClientRect();
+    const clientRects = range.getClientRects ? Array.from(range.getClientRects()) : [];
+    let rect = clientRects.length ? clientRects[clientRects.length - 1] : range.getBoundingClientRect();
+    if ((!rect || rect.width <= 0 || rect.height <= 0) && commonNode && typeof commonNode.getBoundingClientRect === 'function') {
+        rect = commonNode.getBoundingClientRect();
+    }
     if (!rect || rect.width <= 0 || rect.height <= 0) {
         return null;
     }
@@ -4513,6 +4552,17 @@ function getSelectionVerificationSource() {
         right: Math.round(rect.right),
         top: Math.round(rect.top - 36),
     };
+}
+
+function schedulePositionVerifyActionButton(delayMs) {
+    if (selectionActionButtonTimer) {
+        window.clearTimeout(selectionActionButtonTimer);
+    }
+
+    selectionActionButtonTimer = window.setTimeout(function () {
+        selectionActionButtonTimer = null;
+        positionVerifyActionButton();
+    }, typeof delayMs === 'number' ? delayMs : 30);
 }
 
 function positionVerifyActionButton() {
@@ -4619,15 +4669,132 @@ function positionQuickResponseActionButton() {
     setComposerActionButtonCoordinates(button, left, top);
 }
 
+function setPanelCoordinates(left, top) {
+    if (!panel) {
+        return;
+    }
+
+    const clamped = clampFixedPosition(left, top, panel, 12);
+    panel.style.left = Math.round(clamped.left) + 'px';
+    panel.style.top = Math.round(clamped.top) + 'px';
+    panel.style.right = 'auto';
+    panel.style.bottom = 'auto';
+}
+
+function enableReplyPanelDragging(handle, box) {
+    if (!handle || !box || handle.dataset.dragReady === 'true') {
+        return;
+    }
+
+    handle.dataset.dragReady = 'true';
+
+    handle.addEventListener('pointerdown', function (event) {
+        if (event.button !== 0 || !box.isConnected) {
+            return;
+        }
+
+        const rect = box.getBoundingClientRect();
+        panelDragState = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            offsetX: event.clientX - rect.left,
+            offsetY: event.clientY - rect.top,
+            dragging: false,
+        };
+
+        if (typeof handle.setPointerCapture === 'function') {
+            try {
+                handle.setPointerCapture(event.pointerId);
+            } catch (error) {
+            }
+        }
+    });
+
+    handle.addEventListener('keydown', function (event) {
+        if (event.key !== 'Escape') {
+            return;
+        }
+
+        panelManualPosition = null;
+        positionPanelNearComposer();
+        event.preventDefault();
+    });
+
+    handle.addEventListener('pointermove', function (event) {
+        if (!panelDragState || panelDragState.pointerId !== event.pointerId || !panel || !panel.isConnected) {
+            return;
+        }
+
+        const distance = Math.max(Math.abs(event.clientX - panelDragState.startX), Math.abs(event.clientY - panelDragState.startY));
+        if (!panelDragState.dragging && distance < 4) {
+            return;
+        }
+
+        panelDragState.dragging = true;
+        handle.style.cursor = 'grabbing';
+        setPanelCoordinates(
+            event.clientX - panelDragState.offsetX,
+            event.clientY - panelDragState.offsetY
+        );
+    });
+
+    function finishReplyPanelDrag(event) {
+        if (!panelDragState) {
+            return;
+        }
+
+        if (event && panelDragState.pointerId != null && panelDragState.pointerId !== event.pointerId) {
+            return;
+        }
+
+        if (panelDragState.dragging && panel && panel.isConnected) {
+            const rect = panel.getBoundingClientRect();
+            panelManualPosition = {
+                left: Math.round(rect.left),
+                top: Math.round(rect.top),
+            };
+        }
+
+        if (event && typeof handle.releasePointerCapture === 'function') {
+            try {
+                if (handle.hasPointerCapture && handle.hasPointerCapture(event.pointerId)) {
+                    handle.releasePointerCapture(event.pointerId);
+                }
+            } catch (error) {
+            }
+        }
+
+        handle.style.cursor = 'grab';
+        panelDragState = null;
+        positionPanelNearComposer();
+    }
+
+    handle.addEventListener('pointerup', finishReplyPanelDrag);
+    handle.addEventListener('pointercancel', finishReplyPanelDrag);
+}
+
 function positionPanelNearComposer() {
     if (!panel) return;
+    if (panelDragState && panelDragState.dragging) {
+        return;
+    }
 
     if (!activeComposer || !document.contains(activeComposer)) {
         activeComposer = findEditableTarget(document.activeElement);
     }
 
+    const minMargin = 12;
+    const panelWidth = Math.min(440, Math.max(320, window.innerWidth - (minMargin * 2)));
+    panel.style.width = panelWidth + 'px';
+
+    if (panelManualPosition) {
+        setPanelCoordinates(panelManualPosition.left, panelManualPosition.top);
+        return;
+    }
+
     if (!activeComposer) {
-        panel.style.width = '440px';
+        panel.style.width = panelWidth + 'px';
         panel.style.left = 'auto';
         panel.style.top = 'auto';
         panel.style.right = '16px';
@@ -4637,9 +4804,6 @@ function positionPanelNearComposer() {
 
     const rect = activeComposer.getBoundingClientRect();
     const spacing = 12;
-    const minMargin = 12;
-    const panelWidth = Math.min(440, Math.max(320, window.innerWidth - (minMargin * 2)));
-    panel.style.width = panelWidth + 'px';
 
     const measuredHeight = Math.min(panel.offsetHeight || 420, Math.max(220, window.innerHeight - (minMargin * 2)));
     let left = rect.right + spacing;
@@ -4659,10 +4823,7 @@ function positionPanelNearComposer() {
         top = minMargin;
     }
 
-    panel.style.left = Math.round(left) + 'px';
-    panel.style.top = Math.round(top) + 'px';
-    panel.style.right = 'auto';
-    panel.style.bottom = 'auto';
+    setPanelCoordinates(left, top);
     positionComposerActionButton();
 }
 
@@ -5014,13 +5175,21 @@ function getCurrentPanelContextValue() {
 // ---------------------------------------------
 function getReadableContext(el) {
     const parts = [];
-    const expansionRoot = markedContextExpansionMode === 'current'
-        ? el
-        : ((el && el.parentElement) ? el.parentElement : el);
+    const expansionRoot = markedContextExpansionMode === 'document'
+        ? (document.body || document.documentElement || el)
+        : (markedContextExpansionMode === 'current'
+            ? el
+            : ((el && el.parentElement) ? el.parentElement : el));
     const primaryNode = expansionRoot || el;
     const primaryText = primaryNode ? convertNodeToReadableText(primaryNode.cloneNode(true)) : '';
 
     // 1. Include the selected element or the requested parent-expansion root
+    if (markedContextExpansionMode === 'document') {
+        parts.push(window.top === window ? '[Visible page/document text]' : '[Visible iframe/frame document text]');
+        parts.push(clipText(primaryText, 12000));
+        return parts.join('\n\n');
+    }
+
     parts.push(primaryNode !== el ? clipText(primaryText, 2600) : primaryText);
 
     if (markedContextExpansionMode === 'parent-children' && primaryNode && primaryNode.children && primaryNode.children.length) {
@@ -6263,7 +6432,7 @@ function panelHTML() {
       #sgpt-panel{position:fixed;bottom:16px;right:16px;width:440px;max-width:min(440px,calc(100vw - 24px));max-height:70vh;background:#fff !important;border:1px solid #ccc;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,0.15);z-index:2147483647;display:flex;flex-direction:column;font-family:system-ui,sans-serif !important;font-size:14px;color:#0f172a !important;color-scheme:light;isolation:isolate}
       #sgpt-panel,#sgpt-panel *{box-sizing:border-box}
       #sgpt-panel[data-collapsed="true"]{transform:translateX(calc(100% - 42px));transition:transform .3s}
-      #sgpt-head{display:flex;align-items:center;background:#008CBA;color:#fff;padding:4px 8px;border-top-left-radius:6px;border-top-right-radius:6px}
+      #sgpt-head{display:flex;align-items:center;background:#008CBA;color:#fff;padding:4px 8px;border-top-left-radius:6px;border-top-right-radius:6px;cursor:grab;user-select:none;touch-action:none}
       #sgpt-close{margin-left:auto;background:transparent;border:none;color:#fff;font-size:18px;cursor:pointer}
       #sgpt-body{flex:1;display:flex;flex-direction:column;padding:8px;overflow:hidden}
       #sgpt-body label{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:600;color:#334155 !important}
@@ -6370,6 +6539,13 @@ function createPanel() {
     panel.innerHTML = panelHTML();
     document.body.appendChild(panel);
 
+    const panelHeader = panel.querySelector('#sgpt-head');
+    if (panelHeader) {
+        panelHeader.tabIndex = 0;
+        panelHeader.title = 'Drag to move Toolbox. Press Escape to snap it back near the active field.';
+        enableReplyPanelDragging(panelHeader, panel);
+    }
+
     panel.querySelector('#sgpt-head').addEventListener('dblclick', () => {
         panel.dataset.collapsed = panel.dataset.collapsed === 'true' ? 'false' : 'true';
     });
@@ -6433,6 +6609,8 @@ function closeReplyPanel() {
     clearMarkedContextSelection();
     panel.remove();
     panel = null;
+    panelDragState = null;
+    panelManualPosition = null;
     panelAttachedComposer = null;
     panelContextDirty = false;
     positionComposerActionButton();
@@ -6576,26 +6754,50 @@ function sendGPT(mod, mode) {
 // ---------------------------------------------
 // MARK-MODE CLICK HANDLER
 // ---------------------------------------------
-document.addEventListener('click', e => {
-    if (!isClickMarkingActive) return;
-    if (e.target.closest('#sgpt-panel')) return;
-    const t = findFullContextNode(e.target);
-    if (!t) return;
-    const already = markedElements.includes(t);
+function toggleMarkedContextTarget(target) {
+    if (!target) {
+        return;
+    }
+
+    const already = markedElements.includes(target);
     if (already) {
-        clearMarkedElementPresentation(t);
-        markedElements = markedElements.filter(el => el !== t);
+        clearMarkedElementPresentation(target);
+        markedElements = markedElements.filter(el => el !== target);
     } else {
-        markedElements.push(t);
+        markedElements.push(target);
     }
     refreshMarkedElementPresentation();
     if (panel) {
         setPanelContextValue(getCurrentPanelContextValue());
         updatePanelAnchorNote();
         updatePanelComposerActions();
-        syncPanelMarkModeState();
     }
+}
+
+function resolveMarkModeTarget(eventTarget) {
+    if (isSocialToolsUiElement(eventTarget)) {
+        return null;
+    }
+
+    const element = getEventTargetElement(eventTarget);
+    return element ? findFullContextNode(element) : null;
+}
+
+document.addEventListener('pointerdown', e => {
+    if (!isClickMarkingActive || e.button !== 0) return;
+    const target = resolveMarkModeTarget(e.target);
+    if (!target) return;
+    toggleMarkedContextTarget(target);
     e.preventDefault();
+    e.stopPropagation();
+}, true);
+
+document.addEventListener('click', e => {
+    if (!isClickMarkingActive) return;
+    const target = resolveMarkModeTarget(e.target);
+    if (!target) return;
+    e.preventDefault();
+    e.stopPropagation();
 }, true);
 
 document.addEventListener('focusin', e => {
@@ -6606,7 +6808,19 @@ document.addEventListener('focusin', e => {
 }, true);
 
 document.addEventListener('selectionchange', () => {
-    positionVerifyActionButton();
+    schedulePositionVerifyActionButton(40);
+}, true);
+
+document.addEventListener('mouseup', () => {
+    schedulePositionVerifyActionButton(20);
+}, true);
+
+document.addEventListener('dblclick', () => {
+    schedulePositionVerifyActionButton(24);
+}, true);
+
+document.addEventListener('keyup', () => {
+    schedulePositionVerifyActionButton(24);
 }, true);
 
 document.addEventListener('mouseover', event => {
@@ -6875,6 +7089,19 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
         openReplyPanelWithImportedContext(importedContext, {
             message: 'Context imported from context menu.',
         });
+    } else if (req.type === 'OPEN_REPLY_PANEL_FROM_POPUP') {
+        const selectionSource = getSelectionVerificationSource();
+        if (selectionSource && selectionSource.context) {
+            openReplyPanelWithImportedContext(selectionSource.context, {
+                message: 'Selected text imported from popup.',
+            });
+            sendResponse({ok: true, importedSelection: true});
+            return true;
+        }
+
+        openReplyPanel();
+        sendResponse({ok: true, importedSelection: false});
+        return true;
     } else if (req.type === 'OPEN_REPLY_PANEL') {
         openReplyPanel();
     } else if (req.type === 'START_FACT_VERIFICATION_FROM_CONTEXT_MENU') {

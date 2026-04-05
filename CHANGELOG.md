@@ -11,12 +11,19 @@
 - The stale companion-module wording about `sc4a-insights` was removed from the config page so the page no longer suggests a removed settings direction.
 - Popup and config page UI copy now localize dynamically at runtime, with Swedish automatically used when the browser UI language is Swedish and English kept as fallback.
 - Bearer-token fields in both popup and config page now show an inline validation spinner and a clear accepted/rejected confirmation while the token is checked against Tools.
+- The popup now also includes an **Open Toolbox in active tab** shortcut so Toolbox can be opened even on pages where the normal right-click/context-menu flow is unreliable.
+- If the page already has a live text selection when the popup shortcut is used, the extension now imports that selection directly into Toolbox instead of opening an empty panel.
 - Toolbox mark mode can now stay in the old compact `[1]`, `[2]` format by default while the config page exposes a new advanced section for richer mark labels and broader DOM extraction.
 - Advanced mark-mode users can now add generated mark ids (for example `tn-mark-2`), richer element descriptors, and optional `one parent up` / `one parent up + direct child scan` context expansion without changing the default workflow for everyone else.
+- Advanced mark-mode extraction now also supports pulling in the **whole current frame/document text**, which is especially useful on iframe-backed/app-like pages when one small DOM block is too thin.
 - When a richer mark-label mode is enabled, marked elements now also show a visible on-page badge while they are active, which makes it easier to map a selected DOM block back to the context shown in the Toolbox.
+- The Toolbox panel itself is now draggable from its header instead of always snapping back to the composer edge.
+- Text-selection actions were hardened for double-click and timing-sensitive pages so `Open Toolbox` / `Verify fact` appear more reliably after short direct text selections.
+- Content scripts now run in nested frames too (including matching `about:blank` child frames), improving iframe-heavy page support where Chrome allows injection.
 
 ### Fixed
 - Facebook admin activity handling no longer keeps passively processing admin-log payloads in a tab after the new popup-level feature toggle has been turned off.
+- Mark mode no longer depends on a late page `click` alone; it now captures the target earlier, which reduces the accidental one-click shutdown/blur behavior seen on pages like WhatsApp.
 
 ### Added
 - New lightweight endpoint: `GET /api/social-media-tools/extension/validate-token` for fast bearer-token verification without running an OpenAI smoke test.
