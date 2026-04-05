@@ -512,6 +512,7 @@ const EXTENSION_VERSION = getExtensionVersion();
 
 let adminIngestEnabled = false;
 let adminDebugEnabled = false;
+let adminFeatureEnabled = false;
 let adminActivitiesScanScheduled = false;
 let adminFlushInProgress = false;
 let adminFlushRequestedWhileBusy = false;
@@ -679,9 +680,12 @@ function buildAdminReporterStatusPayload() {
         page_url: location.href,
         is_facebook_page: isFacebookPage(),
         is_admin_page: isFacebookAdminActivitiesPage(),
+        feature_enabled: adminFeatureEnabled,
         ingest_enabled: adminIngestEnabled,
         debug_enabled: adminDebugEnabled,
-        state_text: adminLastStatusText,
+        state_text: adminFeatureEnabled
+            ? adminLastStatusText
+            : 'Facebook admin activity statistics are disabled in the popup. Enable the feature there before using this page.',
         reportable_heading: 'Reportable if enabled',
         reportable_empty_text: 'No reportable admin-log entries detected yet.',
         reportable_entries: reportableEntries.map(function (entry) {
@@ -815,9 +819,34 @@ function renderBootstrapAdminScanDebug(scan, title, emptyText) {
     ].join('');
 }
 
-function syncAdminDebugPreference() {
-    safeStorageSyncGet(['facebookAdminDebugEnabled'], function (data) {
-        adminDebugEnabled = !!(data && data.facebookAdminDebugEnabled);
+function syncAdminRuntimePreferences() {
+    safeStorageSyncGet(['facebookAdminDebugEnabled', 'facebookAdminStatsEnabled'], function (data) {
+        const nextDebugEnabled = !!(data && data.facebookAdminDebugEnabled);
+        const nextFeatureEnabled = !!(data && data.facebookAdminStatsEnabled);
+        const featureWasEnabled = adminFeatureEnabled;
+
+        adminDebugEnabled = nextDebugEnabled;
+        adminFeatureEnabled = nextFeatureEnabled;
+
+        if (!adminFeatureEnabled) {
+            if (adminIngestEnabled) {
+                disableAdminActivityCollection('Facebook admin activity statistics were disabled in the popup. This tab queue was cleared.', {
+                    reason: 'popup-feature-disabled',
+                    auto_disabled: false,
+                });
+            } else {
+                adminLastStatusText = 'Facebook admin activity statistics are disabled in the popup.';
+            }
+            ensureAdminActivitiesControl();
+            return;
+        }
+
+        if (!featureWasEnabled && isFacebookAdminActivitiesPage()) {
+            adminLastStatusText = 'Admin activities page detected. Statistics are disabled until you enable them for this exact Facebook URI.';
+            injectNetworkMonitor();
+            ensureAdminActivitiesControl();
+        }
+
         updateAdminActivitiesControl();
     });
 }
@@ -1158,6 +1187,10 @@ function handleIncomingNetworkPayload(payload) {
     }
 
     if (!isFacebookAdminActivitiesPage()) {
+        return;
+    }
+
+    if (!adminFeatureEnabled) {
         return;
     }
 
@@ -2015,7 +2048,7 @@ function mirrorAdminDetectionsToConsole(entries, networkEntry) {
 
 function getToolsRuntimeSettings() {
     return new Promise(function (resolve) {
-        safeStorageSyncGet(['toolsApiToken', 'devMode', 'soundcloudAutoIngestEnabled'], function (data) {
+        safeStorageSyncGet(['toolsApiToken', 'devMode', 'soundcloudAutoIngestEnabled', 'facebookAdminStatsEnabled'], function (data) {
             if (data && data.toolsApiToken) {
                 resolve(data || {});
                 return;
@@ -4977,11 +5010,12 @@ function updateAdminActivitiesControl() {
 }
 
 function ensureAdminActivitiesControl() {
-    if (!isFacebookAdminActivitiesPage()) {
+    if (!isFacebookAdminActivitiesPage() || !adminFeatureEnabled) {
         if (adminActivitiesControl) {
-            adminDebugConsoleInfo('[TN Social Tools] Removing admin_activities overlay because the current route no longer matches.', {
+            adminDebugConsoleInfo('[TN Social Tools] Removing admin_activities overlay because the route no longer matches or the feature is disabled.', {
                 version: EXTENSION_VERSION,
                 url: location.href,
+                feature_enabled: adminFeatureEnabled,
             });
             adminActivitiesControl.remove();
             adminActivitiesControl = null;
@@ -5088,6 +5122,10 @@ function injectNetworkMonitor() {
         return;
     }
 
+    if (platform.id === 'facebook' && !adminFeatureEnabled) {
+        return;
+    }
+
     if (platform.id === 'soundcloud' && typeof platform.isSupportedPage === 'function' && !platform.isSupportedPage(location)) {
         setSoundCloudStatusText('Current SoundCloud page is not a supported insights / for-artists view.');
         reportSoundCloudPageStatus();
@@ -5179,6 +5217,11 @@ function handleLocationChange(reason) {
             reason: reason,
             url: location.href,
         });
+        return;
+    }
+
+    if (!adminFeatureEnabled) {
+        adminLastStatusText = 'Facebook admin activity statistics are disabled in the popup.';
         return;
     }
 
@@ -6710,10 +6753,10 @@ ensureVerifyActionButton();
 ensureAdminActivitiesControl();
 ensureSoundCloudInsightsControl();
 syncSoundCloudRuntimePreference();
-syncAdminDebugPreference();
+syncAdminRuntimePreferences();
 safeAddStorageChangeListener(function (changes, areaName) {
-    if (areaName === 'sync' && changes.facebookAdminDebugEnabled) {
-        syncAdminDebugPreference();
+    if (areaName === 'sync' && (changes.facebookAdminDebugEnabled || changes.facebookAdminStatsEnabled)) {
+        syncAdminRuntimePreferences();
     }
 
     if (areaName === 'sync' && (changes.soundcloudAutoIngestEnabled || changes.toolsApiToken)) {

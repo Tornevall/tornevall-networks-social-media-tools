@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8"/>
-    <title>Tornevall Networks Social Media Tools</title>
+    <title data-i18n="page.popup.title">Tornevall Networks Social Media Tools</title>
     <link rel="stylesheet" href="../css/styles.css"/>
     <style>
         body {
@@ -22,7 +22,7 @@
             margin-top: 12px
         }
 
-        input, textarea, select {
+        input:not([type="checkbox"]), textarea, select {
             width: 100%;
             margin-top: 4px;
             margin-bottom: 12px;
@@ -61,6 +61,20 @@
             margin-bottom: 12px;
         }
 
+        .checkbox-inline input[type="checkbox"] {
+            width: auto;
+            margin: 0;
+            padding: 0;
+            flex: 0 0 auto;
+        }
+
+        .checkbox-inline label {
+            display: block;
+            margin: 0;
+            font-weight: 600;
+            flex: 1 1 auto;
+        }
+
         .endpoint-note {
             font-size: 12px;
             line-height: 1.45;
@@ -75,6 +89,59 @@
             border: 1px solid #ddd;
             padding: 8px;
             margin: 0 0 12px 0;
+        }
+
+        .token-validation {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: -6px 0 12px 0;
+            font-size: 12px;
+            line-height: 1.4;
+            color: #475569;
+        }
+
+        .token-validation[hidden] {
+            display: none;
+        }
+
+        .token-validation[data-state="success"] {
+            color: #166534;
+        }
+
+        .token-validation[data-state="error"] {
+            color: #b91c1c;
+        }
+
+        .token-validation-spinner {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            border: 2px solid rgba(148, 163, 184, 0.35);
+            border-top-color: #0f172a;
+            animation: token-spin 0.75s linear infinite;
+            flex: 0 0 auto;
+            display: none;
+        }
+
+        .token-validation[data-state="checking"] .token-validation-spinner {
+            display: inline-block;
+        }
+
+        .token-validation-icon {
+            display: none;
+            flex: 0 0 auto;
+            font-weight: 700;
+        }
+
+        .token-validation[data-state="success"] .token-validation-icon,
+        .token-validation[data-state="error"] .token-validation-icon {
+            display: inline-block;
+        }
+
+        @keyframes token-spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
         }
 
         .button-row {
@@ -112,174 +179,137 @@
             margin-top: 8px;
         }
 
-        .status-card {
-            margin: 0 0 14px 0;
-            border: 1px solid #dbe4f0;
-            background: #f8fbff;
-            border-radius: 10px;
-            padding: 10px;
-        }
-
-        .status-card h2 {
-            margin: 0 0 6px 0;
-            font-size: 14px;
-        }
-
-        .status-card .status-line {
-            font-size: 12px;
-            line-height: 1.45;
-            margin: 0 0 6px 0;
-            color: #334155;
-        }
-
-        .status-card .status-muted {
-            color: #64748b;
-        }
-
-        .status-card .status-list {
-            display: grid;
-            gap: 8px;
-            margin-top: 8px;
-        }
-
-        .status-card .status-item {
-            border-top: 1px solid #e2e8f0;
-            padding-top: 8px;
-            font-size: 12px;
-            line-height: 1.4;
-        }
-
-        .status-card .status-item:first-child {
-            border-top: none;
-            padding-top: 0;
-        }
-
-        .status-card .status-pill {
-            display: inline-block;
-            border-radius: 999px;
-            background: #dbeafe;
-            color: #1d4ed8;
-            padding: 2px 8px;
-            font-size: 11px;
-            font-weight: 700;
-            margin-right: 6px;
-        }
     </style>
 </head>
 <body>
-<h1>Tornevall Networks Social Media Tools</h1>
-<p class="endpoint-note">
+<h1 data-i18n="page.popup.heading">Tornevall Networks Social Media Tools</h1>
+<p class="endpoint-note" data-i18n="page.popup.intro">
     Browser companion for Tornevall Networks social media workflows, server-side AI assistance, fact-checking, and admin/statistics tooling.
 </p>
 <p class="endpoint-note" id="endpointNote">
     Requests are sent through <code>https://tools.tornevall.net/api/ai/socialgpt/respond</code> using your Tools bearer token.
 </p>
-<p class="helper-note">
+<p class="helper-note" data-i18n-html="page.popup.registerTokenHtml">
     Register at <strong>tools.tornevall.net</strong> and generate a <strong>personal bearer token</strong> there to use this extension.
 </p>
-<p class="helper-note">
+<p class="helper-note" data-i18n-html="page.popup.moreSettingsHtml">
     More settings and platform-specific tools live in Tools.
     For more info, <a id="openToolsDashboardLink" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">open dashboard</a>.
     You can also <a id="forumLink" href="https://forum.tornevall.net" target="_blank" rel="noopener noreferrer">open the forum</a>.
 </p>
 
 <div class="button-row" style="margin-bottom:12px;">
-    <button id="openOptionsPageBtn" type="button">Open config page</button>
+    <button id="openOptionsPageBtn" type="button" data-i18n="common.openConfigPage">Open config page</button>
 </div>
 
 <div class="checkbox-inline">
     <input type="checkbox" id="devMode">
-    <label for="devMode">Use dev / beta server (<code>tools.tornevall.com</code>)</label>
+    <label for="devMode" data-i18n-html="common.devModeHtml">Use dev / beta server (<code>tools.tornevall.com</code>)</label>
 </div>
+
+<div class="checkbox-inline">
+    <input type="checkbox" id="facebookAdminStatsEnabled">
+    <label for="facebookAdminStatsEnabled" data-i18n="common.facebookAdminStats">Enable Facebook admin activity statistics</label>
+</div>
+<p class="helper-note" style="margin-top:-6px;" data-i18n-html="common.facebookAdminStatsHelperHtml">
+    When this is off, Facebook <code>admin_activities</code> pages stay quiet and no statistics overlay is shown.
+    When this is on, you still have to enable reporting separately on each Facebook page before anything is submitted.
+</p>
 
 <div class="checkbox-inline">
     <input type="checkbox" id="facebookAdminDebugEnabled">
-    <label for="facebookAdminDebugEnabled">Enable Facebook admin debug diagnostics</label>
+    <label for="facebookAdminDebugEnabled" data-i18n="common.facebookAdminDebug">Enable Facebook admin debug diagnostics</label>
 </div>
 
-<label for="apiKey">Tools API Bearer Token:</label>
-<input type="text" id="apiKey" placeholder="Paste your personal Tools token here" />
+<label for="apiKey" data-i18n="common.apiKey">Tools API Bearer Token:</label>
+<input type="text" id="apiKey" placeholder="Paste your personal Tools token here" data-i18n-placeholder="common.apiKeyPlaceholder" />
+<div class="token-validation" id="tokenValidation" data-state="idle" hidden aria-live="polite">
+    <span class="token-validation-spinner" aria-hidden="true"></span>
+    <span class="token-validation-icon" id="tokenValidationIcon" aria-hidden="true"></span>
+    <span id="tokenValidationText"></span>
+</div>
 
-<label for="responderName">Responder name:</label>
-<input type="text" id="responderName" placeholder="Who are you?" />
+<label for="responderName" data-i18n="common.responderName">Responder name:</label>
+<input type="text" id="responderName" placeholder="Who are you?" data-i18n-placeholder="common.responderNamePlaceholder" />
 
 <div class="checkbox-inline">
     <input type="checkbox" id="autoDetectName">
-    <label for="autoDetectName">Auto detect Facebook name</label>
+    <label for="autoDetectName" data-i18n="common.autoDetectName">Auto detect Facebook name</label>
 </div>
 
-<label for="responseLanguage">Answer language:</label>
+<label for="responseLanguage" data-i18n="common.responseLanguage">Answer language:</label>
 <select id="responseLanguage">
-    <option value="auto">Same as the prompt/context</option>
-    <option value="sv">Swedish</option>
-    <option value="en">English</option>
-    <option value="da">Danish</option>
-    <option value="no">Norwegian</option>
-    <option value="de">German</option>
-    <option value="fr">French</option>
-    <option value="es">Spanish</option>
+    <option value="auto" data-i18n="option.language.autoPrompt">Same as the prompt/context</option>
+    <option value="sv" data-i18n="option.language.sv">Swedish</option>
+    <option value="en" data-i18n="option.language.en">English</option>
+    <option value="da" data-i18n="option.language.da">Danish</option>
+    <option value="no" data-i18n="option.language.no">Norwegian</option>
+    <option value="de" data-i18n="option.language.de">German</option>
+    <option value="fr" data-i18n="option.language.fr">French</option>
+    <option value="es" data-i18n="option.language.es">Spanish</option>
 </select>
 
-<label for="verifyFactLanguage">Verify-fact language:</label>
+<label for="verifyFactLanguage" data-i18n="common.verifyFactLanguage">Verify-fact language:</label>
 <select id="verifyFactLanguage">
-    <option value="auto">Same as the selected content/context</option>
-    <option value="sv">Swedish</option>
-    <option value="en">English</option>
-    <option value="da">Danish</option>
-    <option value="no">Norwegian</option>
-    <option value="de">German</option>
-    <option value="fr">French</option>
-    <option value="es">Spanish</option>
+    <option value="auto" data-i18n="option.language.autoContext">Same as the selected content/context</option>
+    <option value="sv" data-i18n="option.language.sv">Swedish</option>
+    <option value="en" data-i18n="option.language.en">English</option>
+    <option value="da" data-i18n="option.language.da">Danish</option>
+    <option value="no" data-i18n="option.language.no">Norwegian</option>
+    <option value="de" data-i18n="option.language.de">German</option>
+    <option value="fr" data-i18n="option.language.fr">French</option>
+    <option value="es" data-i18n="option.language.es">Spanish</option>
 </select>
 
-<label for="factCheckModel">Fact-check model:</label>
+<label for="factCheckModel" data-i18n="common.factCheckModel">Fact-check model:</label>
 <select id="factCheckModel"></select>
-<p class="helper-note" style="margin-top:-6px;">
+<p class="helper-note" style="margin-top:-6px;" data-i18n-html="common.factCheckModelHelperHtml">
     Used by <strong>Verify fact</strong>. If the chosen model returns an empty/failed fact-check, the extension will retry once with <code>gpt-4o</code>. <strong>Dig deeper</strong> will still prefer a reasoning/thinking-capable model.
 </p>
 
-<label for="quickReplyPreset">Default quick-reply style:</label>
+<label for="quickReplyPreset" data-i18n="common.quickReplyPreset">Default quick-reply style:</label>
 <select id="quickReplyPreset">
-    <option value="default">Balanced default</option>
-    <option value="empathetic">Empathetic and human</option>
-    <option value="factual">Calm and factual</option>
-    <option value="deescalate">De-escalate tension</option>
+    <option value="default" data-i18n="option.quickReply.default">Balanced default</option>
+    <option value="empathetic" data-i18n="option.quickReply.empathetic">Empathetic and human</option>
+    <option value="factual" data-i18n="option.quickReply.factual">Calm and factual</option>
+    <option value="deescalate" data-i18n="option.quickReply.deescalate">De-escalate tension</option>
 </select>
 
-<label for="quickReplyInstruction">Extra quick-reply instruction (optional):</label>
-<textarea id="quickReplyInstruction" rows="3" placeholder="Example: Keep it kind, short, and suitable for public replies."></textarea>
+<label for="quickReplyInstruction" data-i18n="common.quickReplyInstruction">Extra quick-reply instruction (optional):</label>
+<textarea id="quickReplyInstruction" rows="3" placeholder="Example: Keep it kind, short, and suitable for public replies." data-i18n-placeholder="common.quickReplyInstructionPlaceholder"></textarea>
 
-<label for="systemPrompt">Responder profile / about the person (stored in Tools):</label>
-<textarea id="systemPrompt" rows="5">You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.</textarea>
-<p class="helper-note" style="margin-top: -6px;">
+<label for="systemPrompt" data-i18n="common.systemPrompt">Responder profile / about the person (stored in Tools):</label>
+<textarea id="systemPrompt" rows="5" data-i18n-value="defaults.personaProfile">You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.</textarea>
+<p class="helper-note" style="margin-top: -6px;" data-i18n-html="common.customInstructionsHelperHtml">
     For <strong>custom instructions</strong>, use
     <a id="openToolsDashboardLinkInline" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">Tools → Social Media Tools → Facebook</a>.
 </p>
 
-<label for="testQuestion">Test question (Tools → OpenAI):</label>
-<textarea id="testQuestion" rows="3" placeholder="Ask something that should reflect your Tools personalization.">Reply in one short sentence that shows which responder name, profile, and custom instructions you received from Tools.</textarea>
+<label for="testQuestion" data-i18n="common.testQuestion">Test question (Tools → OpenAI):</label>
+<textarea id="testQuestion" rows="3" placeholder="Ask something that should reflect your Tools personalization." data-i18n-placeholder="common.testQuestionPlaceholder" data-i18n-value="common.testQuestionDefault">Reply in one short sentence that shows which responder name, profile, and custom instructions you received from Tools.</textarea>
 
 <div class="button-row">
-    <button id="testConnectionBtn" type="button">Test Tools → OpenAI</button>
-    <button id="resetPromptBtn" type="button">Reset Prompt</button>
+    <button id="testConnectionBtn" type="button" data-i18n="common.testToolsOpenAi">Test Tools → OpenAI</button>
+    <button id="resetPromptBtn" type="button" data-i18n="common.resetPrompt">Reset Prompt</button>
 </div>
 
-<p class="helper-note" style="margin-top:10px;">
+<p class="helper-note" style="margin-top:10px;" data-i18n="common.autosaveHelper">
     Changes autosave locally. Tools-backed responder settings sync automatically when a personal bearer token is present.
 </p>
 
 <p id="status"></p>
 
 <details class="debug-console" id="debugConsoleWrap" hidden>
-    <summary>Dev debug console</summary>
+    <summary data-i18n="common.debugConsoleSummary">Dev debug console</summary>
     <div class="button-row" style="margin-top: 8px;">
-        <button id="refreshDebugBtn" type="button">Refresh</button>
-        <button id="copyDebugBtn" type="button">Copy</button>
-        <button id="clearDebugBtn" type="button">Clear</button>
+        <button id="refreshDebugBtn" type="button" data-i18n="common.refresh">Refresh</button>
+        <button id="copyDebugBtn" type="button" data-i18n="common.copy">Copy</button>
+        <button id="clearDebugBtn" type="button" data-i18n="common.clear">Clear</button>
     </div>
-    <pre id="debugConsole">No logs yet.</pre>
+    <pre id="debugConsole" data-i18n="common.noLogsYet">No logs yet.</pre>
 </details>
 <script src="../js/shared/extension-links.js"></script>
+<script src="../js/shared/i18n.js"></script>
 <script src="../js/popup.js"></script>
 </body>
 </html>

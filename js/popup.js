@@ -1,5 +1,6 @@
 const PROD_BASE_URL = 'https://tools.tornevall.net';
 const DEV_BASE_URL = 'https://tools.tornevall.com';
+const VALIDATE_TOKEN_PATH = '/api/social-media-tools/extension/validate-token';
 const SETTINGS_PATH = '/api/social-media-tools/extension/settings';
 const MODELS_PATH = '/api/social-media-tools/extension/models';
 const FACEBOOK_OUTCOME_CONFIG_PATH = '/api/social-media-tools/facebook/outcome-config';
@@ -8,9 +9,20 @@ const AI_PATH = '/api/ai/socialgpt/respond';
 const DEBUG_LOG_REQUEST = 'GET_DEBUG_LOGS';
 const DEBUG_CLEAR_REQUEST = 'CLEAR_DEBUG_LOGS';
 const RETRYABLE_REDIRECT_STATUSES = [301, 302, 303, 307, 308];
+const extensionI18n = window.TNNetworksExtensionI18n || {
+    t: function (key, params, fallback) {
+        return typeof fallback !== 'undefined' ? fallback : key;
+    },
+    applyTranslations: function () {
+    },
+    locale: 'en'
+};
+const t = function (key, params, fallback) {
+    return extensionI18n.t(key, params, fallback);
+};
 const DEFAULT_MOOD = 'Neutral and formal';
-const DEFAULT_PERSONA_PROFILE = 'You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.';
-const DEFAULT_TEST_QUESTION = 'A Facebook user writes: "Hi, what does this tool help you with?" Reply in one short sentence in your configured tone and style.';
+const DEFAULT_PERSONA_PROFILE = t('defaults.personaProfile', {}, 'You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.');
+const DEFAULT_TEST_QUESTION = t('defaults.testQuestion', {}, 'A Facebook user writes: "Hi, what does this tool help you with?" Reply in one short sentence in your configured tone and style.');
 const DEFAULT_RESPONSE_LANGUAGE = 'auto';
 const DEFAULT_VERIFY_FACT_LANGUAGE = 'auto';
 const DEFAULT_FACT_CHECK_MODEL = 'gpt-4o';
@@ -105,6 +117,25 @@ function excerptText(value, maxLength) {
     }
 
     return text.slice(0, Math.max(0, maxLength - 1)).trim() + '…';
+}
+
+function formatPopupTestStatus(question, smokeTest, backend, openAi, user, settingsSource) {
+    const answer = ((smokeTest.response || '').trim()
+        || excerptText(smokeTest.response_excerpt || '', 180)
+        || t('status.emptyResponse', {}, '(empty response)'));
+    const globalKeyLine = openAi.global_key_ready ? '' : '\nGlobal OpenAI key ready: ' + t('status.no', {}, 'no');
+
+    return t('status.popupTestCompleted', {
+        question: question,
+        answer: answer,
+        source: backend.handler || t('status.backendDefault', {}, 'tools_backend'),
+        openaiCalled: backend.openai_called ? t('status.yes', {}, 'yes') : t('status.no', {}, 'no'),
+        user: user.name || t('status.unknown', {}, 'Unknown'),
+        responder: settingsSource.responder_name || t('status.anonymous', {}, 'Anonymous'),
+        profile: settingsSource.persona_profile_excerpt ? t('status.yes', {}, 'yes') : t('status.no', {}, 'no'),
+        tone: settingsSource.applied_tone || '-',
+        globalKeyLine: globalKeyLine
+    });
 }
 
 function escapeHtml(value) {
@@ -256,7 +287,7 @@ function queryActiveTabFacebookAdminStatus() {
 
             var tab = Array.isArray(tabs) && tabs.length ? tabs[0] : null;
             if (!tab || typeof tab.id !== 'number') {
-                resolve({ok: false, error: 'No active tab is available.'});
+                resolve({ok: false, error: t('status.noActiveTab', {}, 'No active tab is available.')});
                 return;
             }
 
@@ -271,7 +302,7 @@ function queryActiveTabFacebookAdminStatus() {
 
                 resolve(response && response.ok ? {ok: true, status: response} : {
                     ok: false,
-                    error: response && response.error ? response.error : 'No Facebook admin reporting status is available for the active tab.',
+                    error: response && response.error ? response.error : t('status.noFacebookAdminStatus', {}, 'No Facebook admin reporting status is available for the active tab.'),
                 });
             });
         });
@@ -322,6 +353,8 @@ function queryActiveTabSoundCloudStatus() {
 }
 
 document.addEventListener('DOMContentLoaded', function () {
+    extensionI18n.applyTranslations(document);
+
     const apiKeyInput = document.getElementById('apiKey');
     const responderNameInput = document.getElementById('responderName');
     const autoDetectCheckbox = document.getElementById('autoDetectName');
@@ -333,6 +366,7 @@ document.addEventListener('DOMContentLoaded', function () {
     const systemPromptInput = document.getElementById('systemPrompt');
     const devModeCheckbox = document.getElementById('devMode');
     const facebookAdminDebugCheckbox = document.getElementById('facebookAdminDebugEnabled');
+    const facebookAdminStatsCheckbox = document.getElementById('facebookAdminStatsEnabled');
     const endpointNote = document.getElementById('endpointNote');
     const openToolsDashboardLink = document.getElementById('openToolsDashboardLink');
     const openToolsDashboardLinkInline = document.getElementById('openToolsDashboardLinkInline');
@@ -347,11 +381,105 @@ document.addEventListener('DOMContentLoaded', function () {
     const refreshDebugBtn = document.getElementById('refreshDebugBtn');
     const copyDebugBtn = document.getElementById('copyDebugBtn');
     const clearDebugBtn = document.getElementById('clearDebugBtn');
+    const tokenValidation = document.getElementById('tokenValidation');
+    const tokenValidationIcon = document.getElementById('tokenValidationIcon');
+    const tokenValidationText = document.getElementById('tokenValidationText');
     let popupReady = false;
     let remoteAutosaveTimer = null;
     let remoteSaveInFlight = false;
     let remoteSaveQueued = false;
     let queuedRemoteAutosaveOptions = null;
+    let tokenValidationTimer = null;
+    let tokenValidationSequence = 0;
+    let tokenValidationCompletedSequence = 0;
+
+    function setTokenValidationState(state, message) {
+        if (!tokenValidation || !tokenValidationText) {
+            return;
+        }
+
+        if (!state || state === 'idle') {
+            tokenValidation.hidden = true;
+            tokenValidation.setAttribute('data-state', 'idle');
+            tokenValidationText.textContent = '';
+            if (tokenValidationIcon) {
+                tokenValidationIcon.textContent = '';
+            }
+            return;
+        }
+
+        tokenValidation.hidden = false;
+        tokenValidation.setAttribute('data-state', state);
+        tokenValidationText.textContent = message || '';
+
+        if (tokenValidationIcon) {
+            tokenValidationIcon.textContent = state === 'success' ? '✓' : (state === 'error' ? '✕' : '');
+        }
+    }
+
+    async function validateBearerTokenNow() {
+        const token = apiKeyInput ? apiKeyInput.value.trim() : '';
+        const baseUrl = getBaseUrl(devModeCheckbox && devModeCheckbox.checked);
+        const requestId = ++tokenValidationSequence;
+
+        if (tokenValidationTimer) {
+            window.clearTimeout(tokenValidationTimer);
+            tokenValidationTimer = null;
+        }
+
+        if (!token) {
+            setTokenValidationState('idle', '');
+            return {ok: false, skipped: true, reason: 'empty_token'};
+        }
+
+        setTokenValidationState('checking', t('status.validatingToken', {}, 'Checking bearer token…'));
+
+        const result = await apiRequest(baseUrl, token, VALIDATE_TOKEN_PATH, {
+            method: 'GET'
+        });
+
+        if (requestId < tokenValidationSequence || requestId < tokenValidationCompletedSequence) {
+            return {ok: false, skipped: true, reason: 'stale_result'};
+        }
+
+        tokenValidationCompletedSequence = requestId;
+
+        if (result.ok && result.data && result.data.valid !== false) {
+            const user = result.data.user || {};
+            const userLabel = String(user.name || user.email || '').trim();
+            setTokenValidationState(
+                'success',
+                userLabel
+                    ? t('status.tokenAcceptedForUser', {user: userLabel}, 'Bearer token accepted for ' + userLabel + '.')
+                    : t('status.tokenAccepted', {}, 'Bearer token accepted.')
+            );
+            return result;
+        }
+
+        setTokenValidationState(
+            'error',
+            extractApiMessage(result.data, t('status.tokenValidationFailed', {}, 'Could not validate bearer token.'))
+                || t('status.tokenRejected', {}, 'Bearer token rejected.')
+        );
+        return result;
+    }
+
+    function scheduleBearerTokenValidation(delayMs) {
+        if (tokenValidationTimer) {
+            window.clearTimeout(tokenValidationTimer);
+        }
+
+        const token = apiKeyInput ? apiKeyInput.value.trim() : '';
+        if (!token) {
+            setTokenValidationState('idle', '');
+            return;
+        }
+
+        tokenValidationTimer = window.setTimeout(function () {
+            tokenValidationTimer = null;
+            validateBearerTokenNow();
+        }, typeof delayMs === 'number' ? delayMs : 650);
+    }
 
     function renderFacebookAdminStatus(result) {
         if (!facebookAdminStatusState || !facebookAdminStatusCounters || !facebookAdminReportableList || !facebookAdminLastSubmission) {
@@ -360,10 +488,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (!result || !result.ok || !result.status) {
             facebookAdminStatusState.textContent = (result && result.error)
-                ? ('Could not read Facebook admin reporting status from the active tab: ' + result.error)
-                : 'Could not read Facebook admin reporting status from the active tab.';
-            facebookAdminStatusCounters.textContent = 'Open a Facebook group admin activities page to inspect reportable entries and batch totals.';
-            facebookAdminReportableList.innerHTML = '<div class="status-line status-muted">No reportable admin-log entries detected yet.</div>';
+                ? (t('status.couldNotReadFacebookStatus', {}, 'Could not read Facebook admin reporting status from the active tab.') + ': ' + result.error)
+                : t('status.couldNotReadFacebookStatus', {}, 'Could not read Facebook admin reporting status from the active tab.');
+            facebookAdminStatusCounters.textContent = t('status.openFacebookAdminPage', {}, 'Open a Facebook group admin activities page to inspect reportable entries and batch totals.');
+            facebookAdminReportableList.innerHTML = '<div class="status-line status-muted">' + escapeHtml(t('status.noReportableEntries', {}, 'No reportable admin-log entries detected yet.')) + '</div>';
             facebookAdminLastSubmission.textContent = '';
             return;
         }
@@ -372,13 +500,15 @@ document.addEventListener('DOMContentLoaded', function () {
         var counters = statusPayload.counters || {};
         var entries = Array.isArray(statusPayload.reportable_entries) ? statusPayload.reportable_entries : [];
         var pageStatePrefix = statusPayload.is_admin_page
-            ? 'Active tab is on a Facebook admin activities page.'
+            ? t('status.activeOnAdminPage', {}, 'Active tab is on a Facebook admin activities page.')
             : (statusPayload.is_facebook_page
-                ? 'Active tab is on Facebook, but not on an admin activities page.'
-                : 'Active tab is not on Facebook admin activities.');
-        var ingestState = statusPayload.ingest_enabled
-            ? ' Reporting is enabled.'
-            : ' Reporting is disabled, but detections below are still reportable if enabled.';
+                ? t('status.activeOnFacebookNotAdmin', {}, 'Active tab is on Facebook, but not on an admin activities page.')
+                : t('status.activeNotFacebook', {}, 'Active tab is not on Facebook admin activities.'));
+        var ingestState = statusPayload.feature_enabled === false
+            ? t('status.reportingDisabledPopup', {}, ' Reporting is disabled in the popup. Enable the feature there before the page overlay can appear.')
+            : (statusPayload.ingest_enabled
+                ? t('status.reportingEnabled', {}, ' Reporting is enabled.')
+                : t('status.reportingDisabledReportable', {}, ' Reporting is disabled, but detections below are still reportable if enabled.'));
 
         facebookAdminStatusState.textContent = statusPayload.state_text || (pageStatePrefix + ingestState);
         facebookAdminStatusCounters.textContent = pageStatePrefix + ingestState
@@ -391,7 +521,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (!entries.length) {
             facebookAdminReportableList.innerHTML = '<div class="status-line status-muted">'
-                + (statusPayload.reportable_empty_text || 'No reportable admin-log entries detected yet.')
+                + escapeHtml(statusPayload.reportable_empty_text || t('status.noReportableEntries', {}, 'No reportable admin-log entries detected yet.'))
                 + '</div>';
         } else {
             facebookAdminReportableList.innerHTML = entries.map(function (entry) {
@@ -424,9 +554,9 @@ document.addEventListener('DOMContentLoaded', function () {
         }
 
         if (!result || !result.ok) {
-            soundCloudStatusState.textContent = 'Could not read SoundCloud status from the active tab.';
-            soundCloudStatusCounters.textContent = result && result.error ? result.error : 'No SoundCloud diagnostics are available yet.';
-            soundCloudRecentCaptureList.innerHTML = '<div class="status-line status-muted">No supported SoundCloud captures detected yet.</div>';
+            soundCloudStatusState.textContent = t('status.couldNotReadSoundCloudStatus', {}, 'Could not read SoundCloud status from the active tab.');
+            soundCloudStatusCounters.textContent = result && result.error ? result.error : t('status.noSoundCloudDiagnostics', {}, 'No SoundCloud diagnostics are available yet.');
+            soundCloudRecentCaptureList.innerHTML = '<div class="status-line status-muted">' + escapeHtml(t('status.noSupportedSoundCloudCaptures', {}, 'No supported SoundCloud captures detected yet.')) + '</div>';
             return;
         }
 
@@ -449,7 +579,7 @@ document.addEventListener('DOMContentLoaded', function () {
             + ' · ' + formatSoundCloudIngestResult(latestSendState);
 
         if (!recentEvents.length) {
-            soundCloudRecentCaptureList.innerHTML = '<div class="status-line status-muted">No supported SoundCloud captures detected yet.</div>';
+            soundCloudRecentCaptureList.innerHTML = '<div class="status-line status-muted">' + escapeHtml(t('status.noSupportedSoundCloudCaptures', {}, 'No supported SoundCloud captures detected yet.')) + '</div>';
             return;
         }
 
@@ -476,7 +606,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function renderEndpointNote() {
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
-        endpointNote.innerHTML = 'AI requests are sent through <code>' + baseUrl + AI_PATH + '</code> using your Tools bearer token.';
+        endpointNote.innerHTML = t('common.endpointNoteHtml', {url: baseUrl + AI_PATH}, 'Requests are sent through <code>' + baseUrl + AI_PATH + '</code> using your Tools bearer token.');
         if (openToolsDashboardLink) {
             openToolsDashboardLink.href = baseUrl + TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH;
         }
@@ -530,7 +660,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function formatDebugLogs(logs) {
         if (!Array.isArray(logs) || !logs.length) {
-            return 'No logs yet.';
+            return t('common.noLogsYet', {}, 'No logs yet.');
         }
 
         return logs.map(function (entry) {
@@ -547,7 +677,7 @@ document.addEventListener('DOMContentLoaded', function () {
     async function refreshDebugConsole() {
         const result = await sendRuntimeMessage({type: DEBUG_LOG_REQUEST});
         if (!result.ok) {
-            debugConsole.textContent = result.error || 'Could not load debug logs.';
+            debugConsole.textContent = result.error || t('status.couldNotLoadDebugLogs', {}, 'Could not load debug logs.');
             return;
         }
 
@@ -574,6 +704,7 @@ document.addEventListener('DOMContentLoaded', function () {
             toolsApiToken: apiKeyInput.value.trim(),
             devMode: devModeCheckbox.checked,
             facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
+            facebookAdminStatsEnabled: facebookAdminStatsCheckbox.checked,
             responderName: responderNameInput.value.trim(),
             chatGptSystemPrompt: systemPromptInput.value.trim(),
             autoDetectResponder: autoDetectCheckbox.checked,
@@ -614,7 +745,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (!token) {
             if (config.requireToken) {
-                setStatus(status, config.missingTokenMessage || 'Register at tools.tornevall.net and generate a personal bearer token there before syncing settings.', true);
+                setStatus(status, config.missingTokenMessage || t('status.registerBeforeSync', {}, 'Register at tools.tornevall.net and generate a personal bearer token there before syncing settings.'), true);
                 return {ok: false, skipped: true, reason: 'missing_token'};
             }
 
@@ -640,7 +771,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         if (!result.ok) {
             remoteSaveInFlight = false;
-            setStatus(status, extractApiMessage(result.data, config.errorMessage || 'Could not save settings to Tools.'), true);
+            setStatus(status, extractApiMessage(result.data, config.errorMessage || t('status.couldNotSaveSettings', {}, 'Could not save settings to Tools.')), true);
             return {ok: false, data: result.data};
         }
 
@@ -658,7 +789,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
 
         if (!config.suppressSuccessStatus) {
-            setStatus(status, config.successMessage || ('Settings autosaved to ' + baseUrl + '.'), false);
+            setStatus(status, config.successMessage || t('status.settingsAutosaved', {baseUrl: baseUrl}, 'Settings autosaved to ' + baseUrl + '.'), false);
         }
 
         if (config.refreshDebugConsole && devModeCheckbox.checked) {
@@ -679,8 +810,8 @@ document.addEventListener('DOMContentLoaded', function () {
 
     function scheduleRemoteAutosave(options) {
         const config = Object.assign({
-            successMessage: 'Settings autosaved to ' + getBaseUrl(devModeCheckbox.checked) + '.',
-            localOnlyMessage: 'Saved locally. Add your personal bearer token to sync these settings to Tools.',
+            successMessage: t('status.settingsAutosaved', {baseUrl: getBaseUrl(devModeCheckbox.checked)}, 'Settings autosaved to ' + getBaseUrl(devModeCheckbox.checked) + '.'),
+            localOnlyMessage: t('status.savedLocallyNeedToken', {}, 'Saved locally. Add your personal bearer token to sync these settings to Tools.'),
         }, options || {});
 
         persistLocalSettings();
@@ -833,7 +964,7 @@ document.addEventListener('DOMContentLoaded', function () {
             await appendPopupDebugLog({
                 level: 'warning',
                 category: 'popup-api',
-                message: 'Could not sync Facebook outcome config from Tools. Using local extension fallback rules.',
+                message: t('status.couldNotSyncFacebookOutcomeConfig', {}, 'Could not sync Facebook outcome config from Tools. Using local extension fallback rules.'),
                 meta: {
                     baseUrl: baseUrl,
                     error: extractApiMessage(result.data, 'Unknown outcome-config error.'),
@@ -859,7 +990,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const baseUrl = getBaseUrl(devModeCheckbox.checked);
         const result = await apiRequest(baseUrl, token, SETTINGS_PATH);
         if (!result.ok || !result.data || !result.data.settings) {
-            setStatus(status, extractApiMessage(result.data, 'Could not load settings from Tools.'), true);
+            setStatus(status, extractApiMessage(result.data, t('status.couldNotLoadSettings', {}, 'Could not load settings from Tools.')), true);
             return;
         }
 
@@ -899,7 +1030,7 @@ document.addEventListener('DOMContentLoaded', function () {
         );
         await syncRemoteFacebookOutcomeConfig(token, baseUrl);
 
-        setStatus(status, 'Settings loaded from ' + baseUrl + '.', false);
+        setStatus(status, t('status.settingsLoaded', {baseUrl: baseUrl}, 'Settings loaded from ' + baseUrl + '.'), false);
 
         if (devModeCheckbox.checked) {
             await refreshDebugConsole();
@@ -910,6 +1041,7 @@ document.addEventListener('DOMContentLoaded', function () {
         'toolsApiToken',
         'devMode',
         'facebookAdminDebugEnabled',
+        'facebookAdminStatsEnabled',
         'responderName',
         'chatGptSystemPrompt',
         'autoDetectResponder',
@@ -935,11 +1067,15 @@ document.addEventListener('DOMContentLoaded', function () {
         quickReplyInstructionInput.value = data.defaultQuickReplyCustomInstruction || DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
         devModeCheckbox.checked = !!data.devMode;
         facebookAdminDebugCheckbox.checked = !!data.facebookAdminDebugEnabled;
+        facebookAdminStatsCheckbox.checked = !!data.facebookAdminStatsEnabled;
         renderEndpointNote();
         renderDebugConsoleVisibility();
 
         if (data.toolsApiToken) {
-            await loadRemoteSettings();
+            const validationResult = await validateBearerTokenNow();
+            if (validationResult.ok) {
+                await loadRemoteSettings();
+            }
         } else if (devModeCheckbox.checked) {
             await refreshDebugConsole();
         }
@@ -950,9 +1086,12 @@ document.addEventListener('DOMContentLoaded', function () {
         renderEndpointNote();
         renderDebugConsoleVisibility();
         persistLocalSettings(async function () {
-            setStatus(status, 'Environment changed to ' + getBaseUrl(devModeCheckbox.checked) + '.', false);
+            setStatus(status, t('status.environmentChanged', {baseUrl: getBaseUrl(devModeCheckbox.checked)}, 'Environment changed to ' + getBaseUrl(devModeCheckbox.checked) + '.'), false);
             if (apiKeyInput.value.trim()) {
-                await loadRemoteSettings();
+                const validationResult = await validateBearerTokenNow();
+                if (validationResult.ok) {
+                    await loadRemoteSettings();
+                }
             } else if (devModeCheckbox.checked) {
                 await refreshDebugConsole();
             }
@@ -961,23 +1100,43 @@ document.addEventListener('DOMContentLoaded', function () {
 
     facebookAdminDebugCheckbox.addEventListener('change', function () {
         scheduleLocalAutosave(facebookAdminDebugCheckbox.checked
-            ? 'Facebook admin debug diagnostics enabled.'
-            : 'Facebook admin debug diagnostics disabled.');
+            ? t('status.facebookDebugEnabled', {}, 'Facebook admin debug diagnostics enabled.')
+            : t('status.facebookDebugDisabled', {}, 'Facebook admin debug diagnostics disabled.'));
+    });
+
+    facebookAdminStatsCheckbox.addEventListener('change', function () {
+        scheduleLocalAutosave(facebookAdminStatsCheckbox.checked
+            ? t('status.facebookStatsEnabled', {}, 'Facebook admin activity statistics feature enabled. Page reporting still stays off until you enable it on each Facebook admin page.')
+            : t('status.facebookStatsDisabled', {}, 'Facebook admin activity statistics feature disabled. Facebook admin pages will stay quiet until you enable it again.'));
     });
 
 
-    [apiKeyInput, quickReplyInstructionInput].forEach(function (field) {
-        field.addEventListener('input', function () {
-            scheduleLocalAutosave('Local extension preferences autosaved.');
+    if (apiKeyInput) {
+        apiKeyInput.addEventListener('input', function () {
+            scheduleLocalAutosave(t('status.localPrefsAutosaved', {}, 'Local extension preferences autosaved.'));
+            scheduleBearerTokenValidation(650);
         });
-        field.addEventListener('change', function () {
-            scheduleLocalAutosave('Local extension preferences autosaved.');
+        apiKeyInput.addEventListener('change', function () {
+            scheduleLocalAutosave(t('status.localPrefsAutosaved', {}, 'Local extension preferences autosaved.'));
+            validateBearerTokenNow();
         });
-    });
+        apiKeyInput.addEventListener('blur', function () {
+            validateBearerTokenNow();
+        });
+    }
+
+    if (quickReplyInstructionInput) {
+        quickReplyInstructionInput.addEventListener('input', function () {
+            scheduleLocalAutosave(t('status.localPrefsAutosaved', {}, 'Local extension preferences autosaved.'));
+        });
+        quickReplyInstructionInput.addEventListener('change', function () {
+            scheduleLocalAutosave(t('status.localPrefsAutosaved', {}, 'Local extension preferences autosaved.'));
+        });
+    }
 
     [factCheckModelSelect, quickReplyPresetSelect].forEach(function (field) {
         field.addEventListener('change', function () {
-            scheduleLocalAutosave('Local extension preferences autosaved.');
+            scheduleLocalAutosave(t('status.localPrefsAutosaved', {}, 'Local extension preferences autosaved.'));
         });
     });
 
@@ -1003,19 +1162,19 @@ document.addEventListener('DOMContentLoaded', function () {
         const busyElements = [testBtn, resetBtn, apiKeyInput, responderNameInput, responseLanguageSelect, verifyFactLanguageSelect, factCheckModelSelect, quickReplyPresetSelect, quickReplyInstructionInput, systemPromptInput, testQuestionInput, devModeCheckbox, facebookAdminDebugCheckbox, autoDetectCheckbox];
 
         if (!token) {
-            setStatus(status, 'Paste a personal bearer token first, then test the connection.', true);
+            setStatus(status, t('status.pasteTokenFirst', {}, 'Paste a personal bearer token first, then test the connection.'), true);
             return;
         }
 
         setBusyState(true, busyElements);
-        setStatus(status, '⏳ Testing via Tools → OpenAI, please wait...', false);
+        setStatus(status, t('status.testingPleaseWait', {}, '⏳ Testing via Tools → OpenAI, please wait...'), false);
 
         persistLocalSettings();
 
         const saveResult = await flushScheduledRemoteAutosave({
             requireToken: true,
-            missingTokenMessage: 'Paste a personal bearer token first, then test the connection.',
-            errorMessage: 'Could not save settings to Tools before testing.',
+            missingTokenMessage: t('status.pasteTokenFirst', {}, 'Paste a personal bearer token first, then test the connection.'),
+            errorMessage: t('status.couldNotSaveBeforeTesting', {}, 'Could not save settings to Tools before testing.'),
             suppressSuccessStatus: true,
         });
 
@@ -1032,7 +1191,7 @@ document.addEventListener('DOMContentLoaded', function () {
             },
         });
         if (!result.ok) {
-            setStatus(status, extractApiMessage(result.data, 'Test failed.'), true);
+            setStatus(status, extractApiMessage(result.data, t('status.testFailed', {}, 'Test failed.')), true);
             setBusyState(false, busyElements);
             return;
         }
@@ -1042,20 +1201,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const settingsSource = result.data.settings_source || {};
         const smokeTest = result.data.smoke_test || {};
         const backend = result.data.backend || {};
-        setStatus(
-            status,
-            '✅ Tools → OpenAI test complete\n'
-            + 'Question: ' + question + '\n\n'
-            + 'Answer:\n' + ((smokeTest.response || '').trim() || excerptText(smokeTest.response_excerpt || '', 180) || '(empty response)') + '\n\n'
-            + 'Source: ' + (backend.handler || 'tools_backend')
-            + ' | OpenAI called=' + (backend.openai_called ? 'yes' : 'no')
-            + ' | User=' + (user.name || 'Unknown') + '\n'
-            + 'Tools settings used: responder=' + (settingsSource.responder_name || 'Anonymous')
-            + ', profile=' + (settingsSource.persona_profile_excerpt ? 'yes' : 'no')
-            + ', tone=' + (settingsSource.applied_tone || '-')
-            + (openAi.global_key_ready ? '' : '\nGlobal OpenAI key ready: no'),
-            !openAi.global_key_ready
-        );
+        setStatus(status, formatPopupTestStatus(question, smokeTest, backend, openAi, user, settingsSource), !openAi.global_key_ready);
 
         await appendPopupDebugLog({
             level: 'info',
@@ -1085,36 +1231,36 @@ document.addEventListener('DOMContentLoaded', function () {
         quickReplyPresetSelect.value = DEFAULT_QUICK_REPLY_PRESET;
         quickReplyInstructionInput.value = DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
         testQuestionInput.value = DEFAULT_TEST_QUESTION;
-        scheduleLocalAutosave('Local extension preferences reset to defaults.');
+        scheduleLocalAutosave(t('status.localPrefsReset', {}, 'Local extension preferences reset to defaults.'));
         flushScheduledRemoteAutosave({
-            successMessage: 'Responder profile reset and autosaved to ' + getBaseUrl(devModeCheckbox.checked) + '.',
-            localOnlyMessage: 'Responder profile reset locally. Add your personal bearer token to sync it to Tools.',
+            successMessage: t('status.responderResetRemote', {baseUrl: getBaseUrl(devModeCheckbox.checked)}, 'Responder profile reset and autosaved to ' + getBaseUrl(devModeCheckbox.checked) + '.'),
+            localOnlyMessage: t('status.responderResetLocal', {}, 'Responder profile reset locally. Add your personal bearer token to sync it to Tools.'),
         });
     });
 
     refreshDebugBtn.addEventListener('click', async function () {
         await refreshDebugConsole();
-        setStatus(status, 'Debug console refreshed.', false);
+        setStatus(status, t('status.debugConsoleRefreshed', {}, 'Debug console refreshed.'), false);
     });
 
     copyDebugBtn.addEventListener('click', async function () {
         try {
             await navigator.clipboard.writeText(debugConsole.textContent || '');
-            setStatus(status, 'Debug console copied to clipboard.', false);
+            setStatus(status, t('status.debugConsoleCopied', {}, 'Debug console copied to clipboard.'), false);
         } catch (error) {
-            setStatus(status, 'Could not copy debug console.', true);
+            setStatus(status, t('status.couldNotCopyDebugConsole', {}, 'Could not copy debug console.'), true);
         }
     });
 
     clearDebugBtn.addEventListener('click', async function () {
         const result = await sendRuntimeMessage({type: DEBUG_CLEAR_REQUEST});
         if (!result.ok) {
-            setStatus(status, result.error || 'Could not clear debug console.', true);
+            setStatus(status, result.error || t('status.couldNotClearDebugConsole', {}, 'Could not clear debug console.'), true);
             return;
         }
 
-        debugConsole.textContent = 'No logs yet.';
-        setStatus(status, 'Debug console cleared.', false);
+        debugConsole.textContent = t('common.noLogsYet', {}, 'No logs yet.');
+        setStatus(status, t('status.debugConsoleCleared', {}, 'Debug console cleared.'), false);
     });
 
     if (openOptionsPageBtn) {

@@ -69,7 +69,7 @@ This is identical to:
 1. Visit **https://tools.tornevall.net**
 2. Create an account
 3. Generate a **personal bearer token**
-4. Paste it into the extension popup
+4. Paste it into the extension popup or the full config page
 
 ---
 
@@ -138,6 +138,18 @@ Both `<all_urls>` entries are REQUIRED and intentional.
 - **Platform Integrations**: Facebook admin stats, SoundCloud insights
 - **Dev Mode**: Debug console and connection testing
 
+## Configuration surfaces
+
+The extension now has two equivalent settings surfaces:
+
+- **Popup** — the compact quick editor for day-to-day changes
+- **Config page / options page** — a larger, clearer layout that mirrors the same settings and autosave behavior
+
+Both surfaces read/write the same extension storage keys and trigger the same Tools-backed autosave logic when a personal bearer token is configured.
+Both surfaces also localize dynamically at runtime, with Swedish selected automatically when the browser UI prefers Swedish and English used as fallback.
+
+When you paste or edit the bearer token, the UI now performs a lightweight API validation call and shows an inline spinner plus a success/error confirmation before you run the full **Test Tools → OpenAI** smoke test.
+
 ---
 
 ## 📞 Support
@@ -154,6 +166,7 @@ Both `<all_urls>` entries are REQUIRED and intentional.
 
 On Facebook group `admin_activities` pages, the extension can:
 
+- stay completely inactive unless **Enable Facebook admin activity statistics** is turned on in the popup
 - observe relevant page activity in the current tab
 - show a single inline control for enabling activity statistics
 - extract detected activity rows directly from Facebook XHR / GraphQL responses
@@ -161,8 +174,11 @@ On Facebook group `admin_activities` pages, the extension can:
 - keep the page overlay draggable so it does not block Facebook UI elements
 - show a local preview of reportable admin-log entries before statistics submission is enabled
 
-The Facebook-side monitor starts when the page is loaded so the extension can detect relevant `admin_activities` data in the open tab.
-Detected rows may be collected locally for the current page session, but no statistics are submitted to Tools unless the user explicitly enables statistics submission from the inline page control.
+The popup toggle is the global master switch for this feature.
+If it is turned off, Facebook `admin_activities` pages stay quiet and no admin-statistics overlay is shown.
+
+When the popup toggle is turned on, the Facebook-side monitor can activate on matching pages so the extension can detect relevant `admin_activities` data in the open tab.
+Even then, no statistics are submitted to Tools unless the user explicitly enables statistics submission from the inline page control on that exact Facebook page.
 
 Statistics submission is disabled by default on each page load.
 If the Facebook page is reloaded or reopened, submission must be explicitly enabled again.
@@ -190,6 +206,7 @@ Stored locally in Chrome:
 
 - bearer token
 - current environment flag (`devMode`)
+- Facebook admin statistics feature flag (`facebookAdminStatsEnabled`)
 - last synced responder values for UI fallback
 - temporary in-session admin activity data pending optional submission
 
@@ -204,6 +221,12 @@ If **Enable Facebook admin debug diagnostics** is enabled in the popup:
 - Facebook `admin_activities` pages can show extra diagnostics
 - interesting page events can be mirrored to Chrome DevTools console with the `TN Social Tools` prefix
 - detected admin-log entries can also be mirrored to the console before a bulk upload is sent
+
+If **Enable Facebook admin activity statistics** is disabled in the popup:
+
+- Facebook `admin_activities` pages do not show the admin-statistics overlay
+- admin-log detections are not processed in that tab
+- you can re-enable the feature later from the popup and then opt in again on the current Facebook page
 
 The injected network monitor skips unsafe direct `responseText` reads for binary XHR response types such as `arraybuffer` and `blob`, so Facebook background traffic should no longer crash the page monitor while text/JSON admin-log payloads remain readable.
 

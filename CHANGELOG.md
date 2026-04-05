@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.2.14 - 2026-04-05
+
+### Changed
+- Facebook admin statistics now require a new popup-level master toggle before any `admin_activities` overlay can appear on Facebook pages.
+- The page-local `Enable activity statistics` button still exists, but it now only becomes available after the popup-level feature toggle has been turned on.
+- Popup copy now explains the difference between the global Facebook admin statistics feature switch and the separate debug-diagnostics switch.
+- The extension options/config page now mirrors the same editable settings as the popup instead of staying a scaffold with placeholder notes.
+- The three main cards on the config page now expose the same token, environment, Facebook toggles, responder defaults, test question, reset flow, and dev debug console behavior as the popup.
+- The stale companion-module wording about `sc4a-insights` was removed from the config page so the page no longer suggests a removed settings direction.
+- Popup and config page UI copy now localize dynamically at runtime, with Swedish automatically used when the browser UI language is Swedish and English kept as fallback.
+- Bearer-token fields in both popup and config page now show an inline validation spinner and a clear accepted/rejected confirmation while the token is checked against Tools.
+
+### Fixed
+- Facebook admin activity handling no longer keeps passively processing admin-log payloads in a tab after the new popup-level feature toggle has been turned off.
+
+### Added
+- New lightweight endpoint: `GET /api/social-media-tools/extension/validate-token` for fast bearer-token verification without running an OpenAI smoke test.
+
+## 1.2.13 - 2026-04-05
+
+### Changed
+- Facebook `admin_activities` overlay was simplified to one page-local `Enable activity statistics` control instead of exposing the noisy diagnostics by default.
+- Facebook admin debug diagnostics got their own explicit popup opt-in instead of piggybacking on dev / beta mode.
+- Facebook `admin_activities` route detection was hardened for SPA-style URL changes so the overlay can appear more reliably when Facebook navigates without a full page reload.
+
+### Notes
+- This entry is backfilled to keep the release history chronological between `1.2.14` and `1.2.12`.
+
 ## 1.2.12 - 2026-04-03
 
 ### ⭐ MAJOR: Chrome Web Store Compliance Update

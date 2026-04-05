@@ -1420,6 +1420,7 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
             'toolsApiToken',
             'devMode',
             'soundcloudAutoIngestEnabled',
+            'facebookAdminStatsEnabled',
             'facebookAdminDebugEnabled',
             'defaultToolsModel',
             'preferredFactCheckModel'

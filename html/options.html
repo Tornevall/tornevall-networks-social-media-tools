@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8"/>
-    <title>Tornevall Networks Social Media Tools · Configuration</title>
+    <title data-i18n="page.options.title">Tornevall Networks Social Media Tools · Configuration</title>
+    <link rel="stylesheet" href="../css/styles.css">
     <style>
         body {
             font-family: system-ui, sans-serif;
@@ -20,6 +21,11 @@
         h1 {
             margin: 0 0 8px 0;
             font-size: 28px;
+        }
+
+        h2 {
+            margin: 0 0 12px 0;
+            font-size: 20px;
         }
 
         p {
@@ -40,7 +46,9 @@
         }
 
         .actions,
-        .grid {
+        .grid,
+        .button-row,
+        .field-grid {
             display: grid;
             gap: 12px;
         }
@@ -52,6 +60,76 @@
 
         .grid {
             grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        }
+
+        .field-grid.two {
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        }
+
+        label {
+            display: block;
+            font-weight: 700;
+            margin-top: 12px;
+        }
+
+        input:not([type="checkbox"]), textarea, select {
+            width: 100%;
+            margin-top: 4px;
+            margin-bottom: 12px;
+            padding: 10px 12px;
+            box-sizing: border-box;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            border: 1px solid #cbd5e1;
+            border-radius: 10px;
+            background: #fff;
+        }
+
+        textarea {
+            resize: vertical;
+            min-height: 88px;
+        }
+
+        button {
+            background: #0f172a;
+            color: #fff;
+            border: none;
+            padding: 10px 14px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 700;
+        }
+
+        button:hover {
+            background: #1e293b;
+        }
+
+        .button-row {
+            grid-template-columns: repeat(auto-fit, minmax(180px, max-content));
+            align-items: start;
+            margin-top: 8px;
+        }
+
+        .checkbox-inline {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: normal;
+            margin-top: 4px;
+            margin-bottom: 12px;
+        }
+
+        .checkbox-inline input[type="checkbox"] {
+            width: auto;
+            margin: 0;
+            padding: 0;
+            flex: 0 0 auto;
+        }
+
+        .checkbox-inline label {
+            display: block;
+            margin: 0;
+            font-weight: 600;
+            flex: 1 1 auto;
         }
 
         .action,
@@ -77,6 +155,111 @@
             color: #64748b;
         }
 
+        .helper-note,
+        .endpoint-note,
+        #status {
+            font-size: 14px;
+            line-height: 1.55;
+        }
+
+        .endpoint-note {
+            opacity: 0.88;
+            margin: 0 0 10px 0;
+        }
+
+        .helper-note {
+            background: #f8fafc;
+            border: 1px solid #dbe4f0;
+            padding: 10px 12px;
+            margin: 0 0 12px 0;
+            border-radius: 10px;
+        }
+
+        .token-validation {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: -6px 0 12px 0;
+            font-size: 14px;
+            line-height: 1.45;
+            color: #475569;
+        }
+
+        .token-validation[hidden] {
+            display: none;
+        }
+
+        .token-validation[data-state="success"] {
+            color: #166534;
+        }
+
+        .token-validation[data-state="error"] {
+            color: #b91c1c;
+        }
+
+        .token-validation-spinner {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid rgba(148, 163, 184, 0.35);
+            border-top-color: #0f172a;
+            animation: token-spin 0.75s linear infinite;
+            flex: 0 0 auto;
+            display: none;
+        }
+
+        .token-validation[data-state="checking"] .token-validation-spinner {
+            display: inline-block;
+        }
+
+        .token-validation-icon {
+            display: none;
+            flex: 0 0 auto;
+            font-weight: 700;
+        }
+
+        .token-validation[data-state="success"] .token-validation-icon,
+        .token-validation[data-state="error"] .token-validation-icon {
+            display: inline-block;
+        }
+
+        @keyframes token-spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        #status {
+            margin-top: 8px;
+            white-space: pre-wrap;
+            min-height: 24px;
+        }
+
+        .debug-console {
+            margin-top: 16px;
+            border: 1px solid #dbe4f0;
+            background: #f8fafc;
+            border-radius: 12px;
+            padding: 12px;
+        }
+
+        .debug-console summary {
+            cursor: pointer;
+            font-weight: 700;
+        }
+
+        .debug-console pre {
+            font-size: 12px;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            max-height: 320px;
+            overflow: auto;
+            background: #fff;
+            border: 1px solid #dbe4f0;
+            border-radius: 10px;
+            padding: 12px;
+            margin-top: 10px;
+        }
+
         ul {
             margin: 10px 0 0 18px;
             padding: 0;
@@ -93,52 +276,154 @@
 <body>
 <main>
     <section class="hero">
-        <h1>Configuration page</h1>
-        <p>
-            This page is prepared as the larger settings surface for Tornevall Networks Social Media Tools.
-            The popup remains the active day-to-day settings UI for now, while this page becomes the future home for platform-specific modules,
-            troubleshooting, and longer-form configuration help.
+        <h1 data-i18n="page.options.heading">Configuration page</h1>
+        <p data-i18n="page.options.intro">
+            This is the larger, easier-to-read settings surface for Tornevall Networks Social Media Tools.
+            It now mirrors the same settings and autosave behavior as the small popup, but with more room for reading, troubleshooting, and longer explanations.
         </p>
-        <p class="muted">
-            Current focus: keep popup workflows intact, reduce confusing/duplicate popup status, and make it easier to expand SoundCloud + Facebook tooling later.
+        <p class="endpoint-note muted" id="endpointNote">
+            Requests are sent through <code>https://tools.tornevall.net/api/ai/socialgpt/respond</code> using your Tools bearer token.
         </p>
         <div class="actions">
-            <a class="action secondary" id="openToolsDashboardLink" href="#" target="_blank" rel="noopener noreferrer">Open Tools dashboard</a>
-            <a class="action" id="forumLink" href="#" target="_blank" rel="noopener noreferrer">Open forum</a>
+            <a class="action secondary" id="openToolsDashboardLink" href="#" target="_blank" rel="noopener noreferrer" data-i18n="common.openToolsDashboard">Open Tools dashboard</a>
+            <a class="action" id="forumLink" href="#" target="_blank" rel="noopener noreferrer" data-i18n="common.openForum">Open forum</a>
         </div>
     </section>
 
     <section class="grid">
         <div class="panel">
-            <h2 style="margin-top:0;">Planned sections</h2>
-            <ul>
-                <li>General extension identity, tokens, and responder profile</li>
-                <li>Facebook-specific reporting and diagnostics</li>
-                <li>Companion-module guidance for platform-specific add-ons when a separate module is the cleaner place for experimental capture work</li>
-                <li>Per-platform visibility rules for in-page tools</li>
-                <li>Future troubleshooting / debug section</li>
-            </ul>
-        </div>
-        <div class="panel">
-            <h2 style="margin-top:0;">Current notes</h2>
-            <ul>
-                <li>The popup is still the active settings editor.</li>
-                <li>In-page Facebook overlays are still the primary live-status surface inside this extension.</li>
-                <li>Experimental SoundCloud insights capture can live in a dedicated companion module such as <code>sc4a-insights</code> instead of staying fully exposed here.</li>
-                <li>Forum/community links are centralized through a shared constant for easier future subforum moves.</li>
-            </ul>
-        </div>
-        <div class="panel">
-            <h2 style="margin-top:0;">Next expansion target</h2>
-            <p class="muted" style="margin-bottom:0;">
-                When this page grows beyond a scaffold, it should become the home for the settings that do not fit well in the popup,
-                especially longer explanations of what the main extension stores versus what belongs in separate companion modules.
+            <h2 data-i18n="common.optionsConnectionHeading">Connection & platform controls</h2>
+            <p class="helper-note" data-i18n="page.options.connectionHelper">
+                Save your personal Tools bearer token here. These settings sync through the same storage keys and autosave behavior as the popup.
             </p>
+
+            <div class="checkbox-inline">
+                <input type="checkbox" id="devMode">
+                <label for="devMode" data-i18n-html="common.devModeHtml">Use dev / beta server (<code>tools.tornevall.com</code>)</label>
+            </div>
+
+            <div class="checkbox-inline">
+                <input type="checkbox" id="facebookAdminStatsEnabled">
+                <label for="facebookAdminStatsEnabled" data-i18n="common.facebookAdminStats">Enable Facebook admin activity statistics</label>
+            </div>
+            <p class="helper-note" style="margin-top:-4px;" data-i18n-html="common.facebookAdminStatsHelperHtml">
+                When this is off, Facebook <code>admin_activities</code> pages stay quiet and no statistics overlay is shown.
+                When this is on, you still have to enable reporting separately on each Facebook page before anything is submitted.
+            </p>
+
+            <div class="checkbox-inline">
+                <input type="checkbox" id="facebookAdminDebugEnabled">
+                <label for="facebookAdminDebugEnabled" data-i18n="common.facebookAdminDebug">Enable Facebook admin debug diagnostics</label>
+            </div>
+
+            <label for="apiKey" data-i18n="common.apiKey">Tools API Bearer Token:</label>
+            <input type="text" id="apiKey" placeholder="Paste your personal Tools token here" data-i18n-placeholder="common.apiKeyPlaceholder" />
+            <div class="token-validation" id="tokenValidation" data-state="idle" hidden aria-live="polite">
+                <span class="token-validation-spinner" aria-hidden="true"></span>
+                <span class="token-validation-icon" id="tokenValidationIcon" aria-hidden="true"></span>
+                <span id="tokenValidationText"></span>
+            </div>
+        </div>
+
+        <div class="panel">
+            <h2 data-i18n="common.optionsResponderHeading">Responder & reply defaults</h2>
+            <label for="responderName" data-i18n="common.responderName">Responder name:</label>
+            <input type="text" id="responderName" placeholder="Who are you?" data-i18n-placeholder="common.responderNamePlaceholder" />
+
+            <div class="checkbox-inline">
+                <input type="checkbox" id="autoDetectName">
+                <label for="autoDetectName" data-i18n="common.autoDetectName">Auto detect Facebook name</label>
+            </div>
+
+            <div class="field-grid two">
+                <div>
+                    <label for="responseLanguage" data-i18n="common.responseLanguage">Answer language:</label>
+                    <select id="responseLanguage">
+                        <option value="auto" data-i18n="option.language.autoPrompt">Same as the prompt/context</option>
+                        <option value="sv" data-i18n="option.language.sv">Swedish</option>
+                        <option value="en" data-i18n="option.language.en">English</option>
+                        <option value="da" data-i18n="option.language.da">Danish</option>
+                        <option value="no" data-i18n="option.language.no">Norwegian</option>
+                        <option value="de" data-i18n="option.language.de">German</option>
+                        <option value="fr" data-i18n="option.language.fr">French</option>
+                        <option value="es" data-i18n="option.language.es">Spanish</option>
+                    </select>
+                </div>
+                <div>
+                    <label for="verifyFactLanguage" data-i18n="common.verifyFactLanguage">Verify-fact language:</label>
+                    <select id="verifyFactLanguage">
+                        <option value="auto" data-i18n="option.language.autoContext">Same as the selected content/context</option>
+                        <option value="sv" data-i18n="option.language.sv">Swedish</option>
+                        <option value="en" data-i18n="option.language.en">English</option>
+                        <option value="da" data-i18n="option.language.da">Danish</option>
+                        <option value="no" data-i18n="option.language.no">Norwegian</option>
+                        <option value="de" data-i18n="option.language.de">German</option>
+                        <option value="fr" data-i18n="option.language.fr">French</option>
+                        <option value="es" data-i18n="option.language.es">Spanish</option>
+                    </select>
+                </div>
+            </div>
+
+            <label for="factCheckModel" data-i18n="common.factCheckModel">Fact-check model:</label>
+            <select id="factCheckModel"></select>
+            <p class="helper-note" style="margin-top:-4px;" data-i18n-html="common.factCheckModelHelperHtml">
+                Used by <strong>Verify fact</strong>. If the chosen model returns an empty/failed fact-check, the extension retries once with <code>gpt-4o</code>. <strong>Dig deeper</strong> still prefers a reasoning-capable model.
+            </p>
+
+            <label for="quickReplyPreset" data-i18n="common.quickReplyPreset">Default quick-reply style:</label>
+            <select id="quickReplyPreset">
+                <option value="default" data-i18n="option.quickReply.default">Balanced default</option>
+                <option value="empathetic" data-i18n="option.quickReply.empathetic">Empathetic and human</option>
+                <option value="factual" data-i18n="option.quickReply.factual">Calm and factual</option>
+                <option value="deescalate" data-i18n="option.quickReply.deescalate">De-escalate tension</option>
+            </select>
+
+            <label for="quickReplyInstruction" data-i18n="common.quickReplyInstruction">Extra quick-reply instruction (optional):</label>
+            <textarea id="quickReplyInstruction" rows="3" placeholder="Example: Keep it kind, short, and suitable for public replies." data-i18n-placeholder="common.quickReplyInstructionPlaceholder"></textarea>
+
+            <label for="systemPrompt" data-i18n="common.systemPrompt">Responder profile / about the person (stored in Tools):</label>
+            <textarea id="systemPrompt" rows="5" data-i18n-value="defaults.personaProfile">You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.</textarea>
+            <p class="helper-note" style="margin-top:-4px;" data-i18n-html="common.customInstructionsHelperHtml">
+                For <strong>custom instructions</strong>, use
+                <a id="openToolsDashboardLinkInline" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">Tools → Social Media Tools → Facebook</a>.
+            </p>
+        </div>
+
+        <div class="panel">
+            <h2 data-i18n="common.optionsTestingHeading">Testing, reset & diagnostics</h2>
+            <p class="helper-note" data-i18n="page.options.testingHelper">
+                This page now uses the same autosave flow as the popup. Use it when you want the exact same settings in a larger and clearer layout.
+            </p>
+
+            <label for="testQuestion" data-i18n="common.testQuestion">Test question (Tools → OpenAI):</label>
+            <textarea id="testQuestion" rows="3" placeholder="Ask something that should reflect your Tools personalization." data-i18n-placeholder="common.testQuestionPlaceholder" data-i18n-value="common.testQuestionDefault">Reply in one short sentence that shows which responder name, profile, and custom instructions you received from Tools.</textarea>
+
+            <div class="button-row">
+                <button id="testConnectionBtn" type="button" data-i18n="common.testToolsOpenAi">Test Tools → OpenAI</button>
+                <button id="resetPromptBtn" type="button" data-i18n="common.resetPrompt">Reset Prompt</button>
+            </div>
+
+            <p class="helper-note" style="margin-top:12px;" data-i18n="common.autosaveHelper">
+                Changes autosave locally. Tools-backed responder settings sync automatically when a personal bearer token is present.
+            </p>
+
+            <p id="status"></p>
+
+            <details class="debug-console" id="debugConsoleWrap" hidden>
+                <summary data-i18n="common.debugConsoleSummary">Dev debug console</summary>
+                <div class="button-row" style="margin-top: 10px;">
+                    <button id="refreshDebugBtn" type="button" data-i18n="common.refresh">Refresh</button>
+                    <button id="copyDebugBtn" type="button" data-i18n="common.copy">Copy</button>
+                    <button id="clearDebugBtn" type="button" data-i18n="common.clear">Clear</button>
+                </div>
+                <pre id="debugConsole" data-i18n="common.noLogsYet">No logs yet.</pre>
+            </details>
         </div>
     </section>
 </main>
 <script src="../js/shared/extension-links.js"></script>
-<script src="../js/options.js"></script>
+<script src="../js/shared/i18n.js"></script>
+<script src="../js/popup.js"></script>
 </body>
 </html>
 
