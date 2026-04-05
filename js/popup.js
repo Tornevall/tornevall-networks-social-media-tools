@@ -28,6 +28,8 @@ const DEFAULT_VERIFY_FACT_LANGUAGE = 'auto';
 const DEFAULT_FACT_CHECK_MODEL = 'gpt-4o';
 const DEFAULT_QUICK_REPLY_PRESET = 'default';
 const DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION = '';
+const DEFAULT_MARKED_CONTEXT_LABEL_MODE = 'compact';
+const DEFAULT_MARKED_CONTEXT_EXPANSION_MODE = 'current';
 const REMOTE_AUTOSAVE_DELAY_MS = 700;
 const FORUM_URL = (window.TNNetworksExtensionLinks && window.TNNetworksExtensionLinks.FORUM_URL) || 'https://forum.tornevall.net';
 const TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH = (window.TNNetworksExtensionLinks && window.TNNetworksExtensionLinks.TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH) || '/admin/social-media-tools/facebook';
@@ -364,6 +366,8 @@ document.addEventListener('DOMContentLoaded', function () {
     const quickReplyPresetSelect = document.getElementById('quickReplyPreset');
     const quickReplyInstructionInput = document.getElementById('quickReplyInstruction');
     const systemPromptInput = document.getElementById('systemPrompt');
+    const markedContextLabelModeSelect = document.getElementById('markContextLabelMode');
+    const markedContextExpansionModeSelect = document.getElementById('markContextExpansionMode');
     const devModeCheckbox = document.getElementById('devMode');
     const facebookAdminDebugCheckbox = document.getElementById('facebookAdminDebugEnabled');
     const facebookAdminStatsCheckbox = document.getElementById('facebookAdminStatsEnabled');
@@ -715,6 +719,8 @@ document.addEventListener('DOMContentLoaded', function () {
             preferredFactCheckModel: factCheckModelSelect ? (factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL) : DEFAULT_FACT_CHECK_MODEL,
             defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
             defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
+            markedContextLabelMode: markedContextLabelModeSelect ? (markedContextLabelModeSelect.value || DEFAULT_MARKED_CONTEXT_LABEL_MODE) : DEFAULT_MARKED_CONTEXT_LABEL_MODE,
+            markedContextExpansionMode: markedContextExpansionModeSelect ? (markedContextExpansionModeSelect.value || DEFAULT_MARKED_CONTEXT_EXPANSION_MODE) : DEFAULT_MARKED_CONTEXT_EXPANSION_MODE,
         };
     }
 
@@ -1053,7 +1059,9 @@ document.addEventListener('DOMContentLoaded', function () {
         'defaultToolsModel',
         'preferredFactCheckModel',
         'defaultQuickReplyPreset',
-        'defaultQuickReplyCustomInstruction'
+        'defaultQuickReplyCustomInstruction',
+        'markedContextLabelMode',
+        'markedContextExpansionMode'
     ], async function (data) {
         if (data.toolsApiToken) apiKeyInput.value = data.toolsApiToken;
         if (data.responderName) responderNameInput.value = data.responderName;
@@ -1065,6 +1073,12 @@ document.addEventListener('DOMContentLoaded', function () {
         populateFactCheckModelOptions(data.availableToolsModels || [], data.defaultToolsModel || DEFAULT_FACT_CHECK_MODEL, data.preferredFactCheckModel || DEFAULT_FACT_CHECK_MODEL);
         quickReplyPresetSelect.value = data.defaultQuickReplyPreset || DEFAULT_QUICK_REPLY_PRESET;
         quickReplyInstructionInput.value = data.defaultQuickReplyCustomInstruction || DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
+        if (markedContextLabelModeSelect) {
+            markedContextLabelModeSelect.value = data.markedContextLabelMode || DEFAULT_MARKED_CONTEXT_LABEL_MODE;
+        }
+        if (markedContextExpansionModeSelect) {
+            markedContextExpansionModeSelect.value = data.markedContextExpansionMode || DEFAULT_MARKED_CONTEXT_EXPANSION_MODE;
+        }
         devModeCheckbox.checked = !!data.devMode;
         facebookAdminDebugCheckbox.checked = !!data.facebookAdminDebugEnabled;
         facebookAdminStatsCheckbox.checked = !!data.facebookAdminStatsEnabled;
@@ -1135,6 +1149,12 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     [factCheckModelSelect, quickReplyPresetSelect].forEach(function (field) {
+        field.addEventListener('change', function () {
+            scheduleLocalAutosave(t('status.localPrefsAutosaved', {}, 'Local extension preferences autosaved.'));
+        });
+    });
+
+    [markedContextLabelModeSelect, markedContextExpansionModeSelect].filter(Boolean).forEach(function (field) {
         field.addEventListener('change', function () {
             scheduleLocalAutosave(t('status.localPrefsAutosaved', {}, 'Local extension preferences autosaved.'));
         });
@@ -1230,6 +1250,12 @@ document.addEventListener('DOMContentLoaded', function () {
         populateFactCheckModelOptions([], DEFAULT_FACT_CHECK_MODEL, DEFAULT_FACT_CHECK_MODEL);
         quickReplyPresetSelect.value = DEFAULT_QUICK_REPLY_PRESET;
         quickReplyInstructionInput.value = DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
+        if (markedContextLabelModeSelect) {
+            markedContextLabelModeSelect.value = DEFAULT_MARKED_CONTEXT_LABEL_MODE;
+        }
+        if (markedContextExpansionModeSelect) {
+            markedContextExpansionModeSelect.value = DEFAULT_MARKED_CONTEXT_EXPANSION_MODE;
+        }
         testQuestionInput.value = DEFAULT_TEST_QUESTION;
         scheduleLocalAutosave(t('status.localPrefsReset', {}, 'Local extension preferences reset to defaults.'));
         flushScheduledRemoteAutosave({

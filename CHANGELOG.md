@@ -11,6 +11,9 @@
 - The stale companion-module wording about `sc4a-insights` was removed from the config page so the page no longer suggests a removed settings direction.
 - Popup and config page UI copy now localize dynamically at runtime, with Swedish automatically used when the browser UI language is Swedish and English kept as fallback.
 - Bearer-token fields in both popup and config page now show an inline validation spinner and a clear accepted/rejected confirmation while the token is checked against Tools.
+- Toolbox mark mode can now stay in the old compact `[1]`, `[2]` format by default while the config page exposes a new advanced section for richer mark labels and broader DOM extraction.
+- Advanced mark-mode users can now add generated mark ids (for example `tn-mark-2`), richer element descriptors, and optional `one parent up` / `one parent up + direct child scan` context expansion without changing the default workflow for everyone else.
+- When a richer mark-label mode is enabled, marked elements now also show a visible on-page badge while they are active, which makes it easier to map a selected DOM block back to the context shown in the Toolbox.
 
 ### Fixed
 - Facebook admin activity handling no longer keeps passively processing admin-log payloads in a tab after the new popup-level feature toggle has been turned off.

@@ -150,6 +150,16 @@ Both surfaces also localize dynamically at runtime, with Swedish selected automa
 
 When you paste or edit the bearer token, the UI now performs a lightweight API validation call and shows an inline spinner plus a success/error confirmation before you run the full **Test Tools → OpenAI** smoke test.
 
+The larger **config / options page** now also includes an **Advanced mark-mode context** section for the Toolbox:
+
+- keep the current compact `[1]`, `[2]` style as the default
+- optionally add a generated mark id such as `tn-mark-2`
+- optionally include richer element details in the marked-context headers
+- optionally expand marked context extraction to **one parent up**
+- optionally expand further to **one parent up + direct child scan** when the default marked block is too thin
+
+These advanced mark-mode settings are local to the extension and intentionally do not change the default compact behavior unless you enable them.
+
 ---
 
 ## 📞 Support
@@ -197,6 +207,22 @@ On Facebook comment/reply fields, the reply panel tries to build a cleaner threa
 
 Reply generation and reply-assistance features are user-initiated.
 The extension does not post or submit replies automatically.
+
+## Advanced mark mode context
+
+When you use **Mark context** inside the Toolbox, the extension still defaults to compact numbered sections such as `[1]` and `[2]`.
+If you need more traceability on visually noisy pages, open the **config / options page** and expand **Advanced mark-mode context**.
+
+Available advanced behaviors:
+
+- **Compact numbering only** — current default, keeps the existing minimal headers
+- **Numbering + generated mark id** — adds a stable local marker such as `tn-mark-1`
+- **Numbering + mark id + element details** — also shows a short CSS-like element descriptor and a name/text hint when available
+- **Current marked block only** — current extraction behavior
+- **Go one parent up** — extracts one DOM level above the marked block
+- **Go one parent up + scan direct child blocks** — keeps the broader parent context and also summarizes nearby direct child blocks
+
+When a richer label mode is enabled, marked elements also get a visible local badge on the page while they are active, which makes it easier to map the marked DOM node back to the context text shown in the Toolbox.
 
 ## Local storage
 

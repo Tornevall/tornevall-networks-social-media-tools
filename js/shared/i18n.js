@@ -81,6 +81,10 @@
                 quickReplyInstructionPlaceholder: 'Example: Keep it kind, short, and suitable for public replies.',
                 systemPrompt: 'Responder profile / about the person (stored in Tools):',
                 customInstructionsHelperHtml: 'For <strong>custom instructions</strong>, use <a id="openToolsDashboardLinkInline" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">Tools → Social Media Tools → Facebook</a>.',
+                markModeAdvancedHeading: 'Advanced mark-mode context',
+                markModeAdvancedHelper: 'Keep the default compact numbering unless you need richer identifiers. These advanced options only affect the Toolbox mark-mode context and stay local in the extension.',
+                markContextLabelMode: 'Marked block labels:',
+                markContextExpansionMode: 'Marked context extraction:',
                 testQuestion: 'Test question (Tools → OpenAI):',
                 testQuestionPlaceholder: 'Ask something that should reflect your Tools personalization.',
                 testQuestionDefault: 'Reply in one short sentence that shows which responder name, profile, and custom instructions you received from Tools.',
@@ -113,6 +117,16 @@
                     empathetic: 'Empathetic and human',
                     factual: 'Calm and factual',
                     deescalate: 'De-escalate tension'
+                },
+                markContextLabelMode: {
+                    compact: 'Compact numbering only ([1], [2], ...)',
+                    markId: 'Numbering + generated mark id',
+                    detailed: 'Numbering + mark id + element details'
+                },
+                markContextExpansionMode: {
+                    current: 'Current marked block only (default)',
+                    parent: 'Go one parent up',
+                    parentChildren: 'Go one parent up + scan direct child blocks'
                 }
             },
             defaults: {
@@ -214,6 +228,10 @@
                 quickReplyInstructionPlaceholder: 'Exempel: Håll det vänligt, kort och lämpligt för publika svar.',
                 systemPrompt: 'Svararprofil / om personen (lagras i Tools):',
                 customInstructionsHelperHtml: 'För <strong>egna instruktioner</strong>, använd <a id="openToolsDashboardLinkInline" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">Tools → Social Media Tools → Facebook</a>.',
+                markModeAdvancedHeading: 'Avancerad kontext för mark-läge',
+                markModeAdvancedHelper: 'Behåll standardläget med kompakt numrering om du inte behöver rikare identifiering. De här avancerade valen påverkar bara Toolboxens mark-lägeskontext och lagras lokalt i tillägget.',
+                markContextLabelMode: 'Etiketter för markerade block:',
+                markContextExpansionMode: 'Kontextextraktion för markering:',
                 testQuestion: 'Testfråga (Tools → OpenAI):',
                 testQuestionPlaceholder: 'Fråga något som borde spegla din Tools-personalisering.',
                 testQuestionDefault: 'Svara i en kort mening som visar vilket svararnamn, vilken profil och vilka egna instruktioner du fick från Tools.',
@@ -246,6 +264,16 @@
                     empathetic: 'Empatisk och mänsklig',
                     factual: 'Lugn och saklig',
                     deescalate: 'Trappa ned spänningen'
+                },
+                markContextLabelMode: {
+                    compact: 'Endast kompakt numrering ([1], [2], ...)',
+                    markId: 'Numrering + genererat mark-id',
+                    detailed: 'Numrering + mark-id + elementdetaljer'
+                },
+                markContextExpansionMode: {
+                    current: 'Endast aktuellt markerat block (standard)',
+                    parent: 'Gå en nivå upp till parent',
+                    parentChildren: 'Gå en nivå upp till parent + skanna direkta child-block'
                 }
             },
             defaults: {

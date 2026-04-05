@@ -175,6 +175,24 @@
             border-radius: 10px;
         }
 
+        .advanced-settings {
+            margin-top: 16px;
+            border: 1px solid #dbe4f0;
+            border-radius: 12px;
+            background: #f8fafc;
+            padding: 12px 14px;
+        }
+
+        .advanced-settings summary {
+            cursor: pointer;
+            font-weight: 700;
+            color: #0f172a;
+        }
+
+        .advanced-settings[open] summary {
+            margin-bottom: 12px;
+        }
+
         .token-validation {
             display: flex;
             align-items: center;
@@ -387,6 +405,27 @@
                 For <strong>custom instructions</strong>, use
                 <a id="openToolsDashboardLinkInline" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">Tools → Social Media Tools → Facebook</a>.
             </p>
+
+            <details class="advanced-settings">
+                <summary data-i18n="common.markModeAdvancedHeading">Advanced mark-mode context</summary>
+                <p class="helper-note" data-i18n="common.markModeAdvancedHelper">
+                    Keep the default compact numbering unless you need richer identifiers. These advanced options only affect the Toolbox mark-mode context and are local to the extension.
+                </p>
+
+                <label for="markContextLabelMode" data-i18n="common.markContextLabelMode">Marked block labels:</label>
+                <select id="markContextLabelMode">
+                    <option value="compact" data-i18n="option.markContextLabelMode.compact">Compact numbering only ([1], [2], ...)</option>
+                    <option value="mark-id" data-i18n="option.markContextLabelMode.markId">Numbering + generated mark id</option>
+                    <option value="detailed" data-i18n="option.markContextLabelMode.detailed">Numbering + mark id + element details</option>
+                </select>
+
+                <label for="markContextExpansionMode" data-i18n="common.markContextExpansionMode">Marked context extraction:</label>
+                <select id="markContextExpansionMode">
+                    <option value="current" data-i18n="option.markContextExpansionMode.current">Current marked block only (default)</option>
+                    <option value="parent" data-i18n="option.markContextExpansionMode.parent">Go one parent up</option>
+                    <option value="parent-children" data-i18n="option.markContextExpansionMode.parentChildren">Go one parent up + scan direct child blocks</option>
+                </select>
+            </details>
         </div>
 
         <div class="panel">

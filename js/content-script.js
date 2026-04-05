@@ -30,6 +30,8 @@ let defaultVerifyFactLanguage = 'auto';
 let preferredFactCheckModel = 'gpt-4o';
 let defaultQuickReplyPreset = 'default';
 let defaultQuickReplyCustomInstruction = '';
+let markedContextLabelMode = 'compact';
+let markedContextExpansionMode = 'current';
 let pendingAiRequestMode = null;
 let lastVerificationRequest = null;
 let availableToolsModels = [
@@ -61,6 +63,8 @@ const SOUND_CLOUD_DIRECT_BUFFER_ELEMENT_ID = 'tn-soundcloud-direct-capture-buffe
 const SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED = false;
 const MAX_RECENT_FACEBOOK_COMMENT_ENTRIES = 200;
 const DEFAULT_REPLY_PROMPT = 'Write text that fits the visible context and can be pasted into the selected field.';
+const MARKED_CONTEXT_LABEL_MODES = ['compact', 'mark-id', 'detailed'];
+const MARKED_CONTEXT_EXPANSION_MODES = ['current', 'parent', 'parent-children'];
 const QUICK_REPLY_PRESETS = {
     default: {
         label: 'Balanced default',
@@ -313,6 +317,20 @@ function normalizeQuickReplyPresetChoice(value) {
         : 'default';
 }
 
+function normalizeMarkedContextLabelMode(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return MARKED_CONTEXT_LABEL_MODES.indexOf(normalized) !== -1
+        ? normalized
+        : 'compact';
+}
+
+function normalizeMarkedContextExpansionMode(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return MARKED_CONTEXT_EXPANSION_MODES.indexOf(normalized) !== -1
+        ? normalized
+        : 'current';
+}
+
 function normalizeModelOption(option) {
     const id = option && option.id ? normalizeWhitespace(option.id) : '';
     if (!id) {
@@ -460,7 +478,7 @@ async function refreshAvailableModelsForPanel(forceRefresh) {
     }
 }
 
-safeStorageSyncGet(['defaultResponseLanguage', 'defaultVerifyFactLanguage', 'preferredFactCheckModel', 'defaultQuickReplyPreset', 'defaultQuickReplyCustomInstruction', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel'], function (data) {
+safeStorageSyncGet(['defaultResponseLanguage', 'defaultVerifyFactLanguage', 'preferredFactCheckModel', 'defaultQuickReplyPreset', 'defaultQuickReplyCustomInstruction', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel', 'markedContextLabelMode', 'markedContextExpansionMode'], function (data) {
     defaultResponseLanguage = normalizeResponseLanguageChoice(data.defaultResponseLanguage || 'auto');
     defaultVerifyFactLanguage = normalizeResponseLanguageChoice(data.defaultVerifyFactLanguage || defaultResponseLanguage || 'auto');
     preferredFactCheckModel = resolvePreferredFactCheckModel(data.preferredFactCheckModel || 'gpt-4o');
@@ -470,6 +488,9 @@ safeStorageSyncGet(['defaultResponseLanguage', 'defaultVerifyFactLanguage', 'pre
     defaultToolsModel = resolveDefaultToolsModel(availableToolsModels, data.defaultToolsModel || defaultToolsModel);
     preferredToolsModel = resolveDefaultToolsModel(availableToolsModels, data.preferredToolsModel || defaultToolsModel);
     preferredFactCheckModel = resolvePreferredFactCheckModel(data.preferredFactCheckModel || preferredFactCheckModel);
+    markedContextLabelMode = normalizeMarkedContextLabelMode(data.markedContextLabelMode || markedContextLabelMode);
+    markedContextExpansionMode = normalizeMarkedContextExpansionMode(data.markedContextExpansionMode || markedContextExpansionMode);
+    refreshMarkedElementPresentation();
 });
 
 safeAddStorageChangeListener(function (changes, areaName) {
@@ -492,6 +513,12 @@ safeAddStorageChangeListener(function (changes, areaName) {
     if (changes.defaultQuickReplyCustomInstruction) {
         defaultQuickReplyCustomInstruction = normalizeWhitespace(changes.defaultQuickReplyCustomInstruction.newValue || '');
     }
+    if (changes.markedContextLabelMode) {
+        markedContextLabelMode = normalizeMarkedContextLabelMode(changes.markedContextLabelMode.newValue || 'compact');
+    }
+    if (changes.markedContextExpansionMode) {
+        markedContextExpansionMode = normalizeMarkedContextExpansionMode(changes.markedContextExpansionMode.newValue || 'current');
+    }
     if (changes.availableToolsModels) {
         availableToolsModels = normalizeAvailableToolsModels(changes.availableToolsModels.newValue || availableToolsModels);
         preferredFactCheckModel = resolvePreferredFactCheckModel(preferredFactCheckModel);
@@ -505,6 +532,10 @@ safeAddStorageChangeListener(function (changes, areaName) {
     if (changes.preferredToolsModel) {
         preferredToolsModel = resolveDefaultToolsModel(availableToolsModels, changes.preferredToolsModel.newValue || preferredToolsModel || defaultToolsModel);
         populatePanelModelOptions(preferredToolsModel);
+    }
+
+    if (changes.markedContextLabelMode || changes.markedContextExpansionMode) {
+        handleMarkedContextSettingsChanged();
     }
 });
 
@@ -3628,11 +3659,163 @@ function pasteTextIntoActiveComposer(text, options) {
 
 function clearMarkedContextSelection() {
     markedElements.forEach(function (el) {
-        el.classList.remove('socialgpt-marked');
+        clearMarkedElementPresentation(el);
     });
     markedElements = [];
     isClickMarkingActive = false;
     safeSendRuntimeMessage({type: 'RESET_MARK_MODE'});
+}
+
+function getMarkedElementPublicId(index) {
+    return 'tn-mark-' + (index + 1);
+}
+
+function clearMarkedElementPresentation(el) {
+    if (!el || !el.classList) {
+        return;
+    }
+
+    el.classList.remove('socialgpt-marked');
+    el.removeAttribute('data-tn-social-mark-id');
+    el.removeAttribute('data-tn-social-mark-badge');
+    el.removeAttribute('data-tn-social-mark-mode');
+}
+
+function pruneMarkedElements() {
+    markedElements = markedElements.filter(function (el) {
+        return !!(el && document.contains(el));
+    });
+    return markedElements;
+}
+
+function buildElementCssDescriptor(el) {
+    if (!el || !el.tagName) {
+        return '';
+    }
+
+    const tag = String(el.tagName || '').toLowerCase();
+    const idPart = el.id ? ('#' + normalizeWhitespace(el.id).replace(/\s+/g, '-')) : '';
+    const classPart = Array.from(el.classList || [])
+        .map(function (className) {
+            return normalizeWhitespace(className || '').replace(/\s+/g, '-');
+        })
+        .filter(Boolean)
+        .slice(0, 3)
+        .map(function (className) {
+            return '.' + className;
+        })
+        .join('');
+    const role = normalizeWhitespace(el.getAttribute && el.getAttribute('role'));
+    return tag + idPart + classPart + (role ? ('[role=' + role + ']') : '');
+}
+
+function findMarkedElementIdentityText(el) {
+    if (!el || !el.querySelectorAll) {
+        return '';
+    }
+
+    const ownCandidates = [
+        el.getAttribute && el.getAttribute('aria-label'),
+        el.getAttribute && el.getAttribute('title'),
+        el.getAttribute && el.getAttribute('name'),
+        el.getAttribute && el.getAttribute('data-testid'),
+        el.getAttribute && el.getAttribute('data-pagelet'),
+        el.getAttribute && el.getAttribute('alt'),
+    ];
+
+    for (let index = 0; index < ownCandidates.length; index += 1) {
+        const candidate = normalizeWhitespace(ownCandidates[index] || '');
+        if (candidate && candidate.length >= 3) {
+            return clipText(candidate, 80);
+        }
+    }
+
+    const nodes = el.querySelectorAll('h1,h2,h3,h4,h5,h6,strong,b,[aria-label],[title],[alt],a,button,span,div,p');
+    for (let index = 0; index < nodes.length; index += 1) {
+        const node = nodes[index];
+        const candidate = normalizeWhitespace(node.innerText || node.textContent || node.getAttribute && node.getAttribute('aria-label') || '');
+        if (candidate && candidate.length >= 4) {
+            return clipText(candidate, 80);
+        }
+    }
+
+    const fallback = normalizeWhitespace(el.innerText || el.textContent || '');
+    return fallback ? clipText(fallback, 80) : '';
+}
+
+function buildMarkedElementBadge(el, index) {
+    const parts = ['#' + (index + 1)];
+    if (markedContextLabelMode !== 'compact') {
+        parts.push(getMarkedElementPublicId(index));
+    }
+    if (markedContextLabelMode === 'detailed') {
+        const identity = findMarkedElementIdentityText(el);
+        if (identity) {
+            parts.push(clipText(identity, 32));
+        }
+    }
+    return parts.join(' · ');
+}
+
+function buildMarkedContextHeader(el, index) {
+    const parts = [String(index + 1)];
+    if (markedContextLabelMode === 'compact') {
+        return '[' + parts[0] + ']';
+    }
+
+    parts.push(getMarkedElementPublicId(index));
+    if (markedContextLabelMode === 'detailed') {
+        const descriptor = buildElementCssDescriptor(el);
+        const identity = findMarkedElementIdentityText(el);
+        if (descriptor) {
+            parts.push(descriptor);
+        }
+        if (identity) {
+            parts.push(identity);
+        }
+    }
+
+    return '[' + parts.join(' · ') + ']';
+}
+
+function refreshMarkedElementPresentation() {
+    pruneMarkedElements();
+    markedElements.forEach(function (el, index) {
+        if (!el || !el.classList) {
+            return;
+        }
+
+        el.classList.add('socialgpt-marked');
+        el.setAttribute('data-tn-social-mark-id', getMarkedElementPublicId(index));
+        el.setAttribute('data-tn-social-mark-mode', markedContextLabelMode);
+        if (markedContextLabelMode === 'compact') {
+            el.removeAttribute('data-tn-social-mark-badge');
+        } else {
+            el.setAttribute('data-tn-social-mark-badge', buildMarkedElementBadge(el, index));
+        }
+    });
+}
+
+function getMarkedContextExpansionLabel() {
+    return {
+        current: 'current marked block only',
+        parent: 'one parent up',
+        'parent-children': 'one parent up + direct child scan',
+    }[markedContextExpansionMode] || 'current marked block only';
+}
+
+function handleMarkedContextSettingsChanged() {
+    refreshMarkedElementPresentation();
+
+    if (!panel) {
+        return;
+    }
+
+    if (markedElements.length) {
+        setPanelContextValue(getCurrentPanelContextValue());
+    }
+    updatePanelAnchorNote();
+    updatePanelComposerActions();
 }
 
 function setPanelContextValue(value, options) {
@@ -3931,8 +4114,19 @@ function updatePanelAnchorNote() {
         return;
     }
 
-    if (markedElements.length) {
-        note.textContent = 'Using ' + markedElements.length + ' marked block' + (markedElements.length === 1 ? '' : 's') + ' as context.';
+    const activeMarks = pruneMarkedElements();
+
+    if (activeMarks.length) {
+        let message = 'Using ' + activeMarks.length + ' marked block' + (activeMarks.length === 1 ? '' : 's') + ' as context.';
+        if (markedContextLabelMode !== 'compact') {
+            message += ' IDs: ' + activeMarks.map(function (_, index) {
+                return getMarkedElementPublicId(index);
+            }).join(', ') + '.';
+        }
+        if (markedContextExpansionMode !== 'current') {
+            message += ' Extraction: ' + getMarkedContextExpansionLabel() + '.';
+        }
+        note.textContent = message;
         return;
     }
 
@@ -4780,9 +4974,19 @@ function buildGenericReplyContextFromComposer(node) {
 }
 
 function getCurrentPanelContextValue() {
-    if (markedElements.length) {
-        activeReplyContextMeta = {source: 'marked', markedCount: markedElements.length};
-        return markedElements.map((el, i) => `[${i + 1}]\n${getReadableContext(el)}`).join('\n\n---\n\n');
+    const activeMarks = pruneMarkedElements();
+    refreshMarkedElementPresentation();
+
+    if (activeMarks.length) {
+        activeReplyContextMeta = {
+            source: 'marked',
+            markedCount: activeMarks.length,
+            markedLabelMode: markedContextLabelMode,
+            markedExpansionMode: markedContextExpansionMode,
+        };
+        return activeMarks.map(function (el, i) {
+            return buildMarkedContextHeader(el, i) + '\n' + getReadableContext(el);
+        }).join('\n\n---\n\n');
     }
 
     if (isFacebookPage() && activeComposer && document.contains(activeComposer)) {
@@ -4810,12 +5014,46 @@ function getCurrentPanelContextValue() {
 // ---------------------------------------------
 function getReadableContext(el) {
     const parts = [];
+    const expansionRoot = markedContextExpansionMode === 'current'
+        ? el
+        : ((el && el.parentElement) ? el.parentElement : el);
+    const primaryNode = expansionRoot || el;
+    const primaryText = primaryNode ? convertNodeToReadableText(primaryNode.cloneNode(true)) : '';
 
-    // 1. Include the selected element
-    parts.push(convertNodeToReadableText(el.cloneNode(true)));
+    // 1. Include the selected element or the requested parent-expansion root
+    parts.push(primaryNode !== el ? clipText(primaryText, 2600) : primaryText);
+
+    if (markedContextExpansionMode === 'parent-children' && primaryNode && primaryNode.children && primaryNode.children.length) {
+        const siblingSummaries = [];
+        const children = Array.from(primaryNode.children);
+        for (let index = 0; index < children.length; index += 1) {
+            const child = children[index];
+            if (!child || child === el || child.closest && child.closest('#sgpt-panel, #sgpt-factbox, #sgpt-verify-action, #sgpt-verify-hover')) {
+                continue;
+            }
+
+            const childText = normalizeWhitespace(convertNodeToReadableText(child.cloneNode(true)));
+            if (!childText) {
+                continue;
+            }
+
+            const childDescriptor = buildElementCssDescriptor(child);
+            siblingSummaries.push((childDescriptor ? (childDescriptor + ': ') : '') + clipText(childText, 220));
+            if (siblingSummaries.length >= 4) {
+                break;
+            }
+        }
+
+        if (siblingSummaries.length) {
+            parts.push('[Nearby child blocks]');
+            parts.push(siblingSummaries.map(function (entry) {
+                return '- ' + entry;
+            }).join('\n'));
+        }
+    }
 
     // 2. Look for outer container used by Facebook
-    const fbContainer = el.closest('[data-ad-preview="message"]');
+    const fbContainer = primaryNode && primaryNode.closest ? primaryNode.closest('[data-ad-preview="message"]') : null;
     if (fbContainer && fbContainer.parentElement) {
         const siblings = Array.from(fbContainer.parentElement.children);
         let found = false;
@@ -4833,7 +5071,7 @@ function getReadableContext(el) {
     }
 
     // 3. Background-image elements
-    const bgImages = extractBackgroundImagesAround(el);
+    const bgImages = extractBackgroundImagesAround(primaryNode || el);
     if (bgImages.length > 0) {
         parts.push('[Background images]');
         parts.push(...bgImages);
@@ -6054,6 +6292,9 @@ function panelHTML() {
       .sgpt-inline-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
       .sgpt-inline-actions button{padding:3px 8px;border:1px solid #94a3b8;border-radius:999px;background:#fff;color:#0f172a;cursor:pointer;font:12px/1.2 Arial,sans-serif !important}
       .sgpt-inline-actions button[data-active="true"]{background:#0ea5e9;color:#fff;border-color:#0284c7}
+      .socialgpt-marked[data-tn-social-mark-mode="mark-id"],.socialgpt-marked[data-tn-social-mark-mode="detailed"]{outline:2px solid rgba(14,165,233,.9) !important;outline-offset:2px !important;position:relative !important;box-shadow:0 0 0 3px rgba(14,165,233,.18) !important}
+      .socialgpt-marked[data-tn-social-mark-badge]::after{content:attr(data-tn-social-mark-badge);position:absolute;top:0;left:0;transform:translate(6px,-70%);max-width:min(320px,calc(100% - 12px));padding:3px 8px;border-radius:999px;background:#0f172a;color:#fff;font:11px/1.2 Arial,sans-serif !important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 6px 18px rgba(15,23,42,.24);pointer-events:none;z-index:2147483646}
+      .socialgpt-marked[data-tn-social-mark-mode="compact"]::after{background:#0284c7}
     </style>
     <div id="sgpt-head">Tornevall Networks Social Media Tools ↔ <button id="sgpt-close">×</button></div>
     <div id="sgpt-body">
@@ -6342,12 +6583,12 @@ document.addEventListener('click', e => {
     if (!t) return;
     const already = markedElements.includes(t);
     if (already) {
-        t.classList.remove('socialgpt-marked');
+        clearMarkedElementPresentation(t);
         markedElements = markedElements.filter(el => el !== t);
     } else {
-        t.classList.add('socialgpt-marked');
         markedElements.push(t);
     }
+    refreshMarkedElementPresentation();
     if (panel) {
         setPanelContextValue(getCurrentPanelContextValue());
         updatePanelAnchorNote();
