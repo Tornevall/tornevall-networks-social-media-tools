@@ -8,7 +8,7 @@ This extension provides text selection overlays, fact-checking controls, and AI-
 
 - **GitHub Project**: https://github.com/Tornevall/tornevall-networks-social-media-tools
 - **Tools Platform**: https://tools.tornevall.net
-- **Chrome Web Store**: live release track since `1.2.12` *(latest fixes shipping in `1.2.15`)*
+- **Chrome Web Store**: live release track since `1.2.12` *(latest fixes shipping in `1.2.16`)*
 
 ---
 
@@ -81,6 +81,8 @@ This is identical to:
 - ✅ Extension requires bearer token activation
 - ✅ All settings stored locally in extension storage
 - ✅ No hidden network requests
+- ✅ AI requests now include the extension version/build metadata so Tools can identify which SocialGPT client revision generated a request
+- ✅ Tools-side SocialGPT guardrails explicitly allow disclosure of the current AI model/client version when asked, while blocking attempts to extract source code, `.env` data, passwords, tokens, or hidden prompts
 
 ---
 

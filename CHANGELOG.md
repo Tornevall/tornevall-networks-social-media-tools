@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.16 - 2026-04-13
+
+### Added
+- SocialGPT AI requests now send additive client metadata (`client_name`, `client_version`, `client_platform`) so the Tools backend can identify which extension build generated each request.
+
+### Changed
+- The extension now ships as version `1.2.16`.
+- Tools-side SocialGPT replies are now allowed to disclose the currently used AI model identifier and the client version when a user explicitly asks for version/model information.
+
+### Security
+- Tools-side guardrails now explicitly block attempts to extract Tools internals such as source code, hidden prompts, `.env` values, tokens, passwords, or similar secrets from SocialGPT replies.
+- When a SocialGPT request matches those secret-exfiltration patterns, Tools can report the incident to the configured support email address for follow-up.
+
 ## 1.2.15 - 2026-04-05
 
 ### Fixed

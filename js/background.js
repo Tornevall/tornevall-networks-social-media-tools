@@ -64,6 +64,26 @@ function getToolsBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
 }
 
+function getExtensionClientMeta() {
+    try {
+        var manifest = chrome.runtime && typeof chrome.runtime.getManifest === 'function'
+            ? chrome.runtime.getManifest()
+            : null;
+
+        return {
+            client_name: manifest && (manifest.name || manifest.short_name) ? String(manifest.name || manifest.short_name).trim() : 'socialgpt-chrome',
+            client_version: manifest && manifest.version ? String(manifest.version).trim() : 'unknown',
+            client_platform: 'chrome_extension',
+        };
+    } catch (error) {
+        return {
+            client_name: 'socialgpt-chrome',
+            client_version: 'unknown',
+            client_platform: 'chrome_extension',
+        };
+    }
+}
+
 function safeContextMenuCreate(details) {
     chrome.contextMenus.create(details, function () {
         // Ignore duplicate/ephemeral context menu errors during reloads.
@@ -460,6 +480,7 @@ async function callToolsSocialGpt(apiToken, baseUrl, payload) {
             baseUrl: baseUrl,
             model: payload.model,
             request_mode: payload.request_mode,
+            client_version: payload.client_version || '',
         }
     });
 
@@ -1509,6 +1530,7 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
             }
 
             var baseUrl = getToolsBaseUrl(!!data.devMode);
+            var clientMeta = getExtensionClientMeta();
             var payload = {
                 context: req.context.trim(),
                 user_prompt: req.userPrompt.trim(),
@@ -1521,6 +1543,9 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
                 responder_name_override: req.responderName || '',
                 request_mode: req.requestMode || 'reply',
                 response_language: req.responseLanguage || 'auto',
+                client_name: clientMeta.client_name,
+                client_version: clientMeta.client_version,
+                client_platform: clientMeta.client_platform,
             };
 
             var toolsResponse = await executeToolsRequestWithFactFallback(data.toolsApiToken, baseUrl, payload);
