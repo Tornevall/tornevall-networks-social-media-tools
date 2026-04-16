@@ -166,6 +166,8 @@ As of `1.2.15`, localized UI defaults no longer overwrite your responder profile
 
 The popup now also includes an **Open Toolbox in active tab** shortcut. If the current page already has a live text selection, the extension imports that selection into Toolbox automatically, which gives you a fallback on pages where the normal context-menu flow is flaky.
 
+As of `1.2.16`, the popup shortcut plus the right-click **Open Toolbox** / **Verify fact** actions are also routed frame-aware through the background worker. That means the extension now tries to target the most relevant injected frame (existing Toolbox frame, selected-text frame, focused editable frame, otherwise the top frame) instead of depending on whichever frame answers first on iframe-heavy pages.
+
 The larger **config / options page** now also includes an **Advanced mark-mode context** section for the Toolbox:
 
 - keep the current compact `[1]`, `[2]` style as the default

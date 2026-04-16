@@ -1423,7 +1423,7 @@ document.addEventListener('DOMContentLoaded', function () {
     if (openToolboxBtn) {
         openToolboxBtn.addEventListener('click', async function () {
             setBusyState(true, [openToolboxBtn]);
-            const result = await sendMessageToActiveTab({type: 'OPEN_REPLY_PANEL_FROM_POPUP'});
+            const result = await sendRuntimeMessage({type: 'OPEN_TOOLBOX_IN_ACTIVE_TAB'});
             setBusyState(false, [openToolboxBtn]);
 
             if (!result || !result.ok) {

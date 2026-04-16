@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.2.16 - 2026-04-13
+## 1.2.16 - 2026-04-15
 
 ### Added
 - SocialGPT AI requests now send additive client metadata (`client_name`, `client_version`, `client_platform`) so the Tools backend can identify which extension build generated each request.
@@ -8,6 +8,10 @@
 ### Changed
 - The extension now ships as version `1.2.16`.
 - Tools-side SocialGPT replies are now allowed to disclose the currently used AI model identifier and the client version when a user explicitly asks for version/model information.
+
+### Fixed
+- Popup **Open Toolbox in active tab** is now frame-aware again: instead of relying on whichever content-script frame answered first, the background worker now inspects all injected frames and routes the request to the most relevant one (existing Toolbox frame, selected-text frame, focused editable frame, otherwise top frame).
+- Right-click **Open Toolbox** and **Verify fact** actions now use the same frame-aware routing, which makes them much more reliable on iframe-heavy or app-like pages where the useful editor/selection is not in the top document.
 
 ### Security
 - Tools-side guardrails now explicitly block attempts to extract Tools internals such as source code, hidden prompts, `.env` values, tokens, passwords, or similar secrets from SocialGPT replies.

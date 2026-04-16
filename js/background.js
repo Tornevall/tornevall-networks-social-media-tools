@@ -93,6 +93,177 @@ function safeContextMenuCreate(details) {
     });
 }
 
+function inspectToolboxFrameState() {
+    var selectedText = '';
+    var hasSelection = false;
+    try {
+        if (window.getSelection) {
+            selectedText = String(window.getSelection().toString() || '').trim();
+            hasSelection = !!selectedText;
+        }
+    } catch (error) {
+    }
+
+    var activeElement = document.activeElement;
+    var hasFocusedEditable = false;
+    try {
+        hasFocusedEditable = !!(activeElement && (
+            activeElement.isContentEditable
+            || (typeof activeElement.matches === 'function' && activeElement.matches('textarea,input[type="text"],input:not([type]),[contenteditable=""],[contenteditable="true"],[role="textbox"]'))
+        ));
+    } catch (error) {
+    }
+
+    return {
+        href: String(location.href || ''),
+        isTop: window.top === window,
+        visibilityState: document.visibilityState || 'visible',
+        hasSelection: hasSelection,
+        selectionLength: selectedText.length,
+        hasFocusedEditable: hasFocusedEditable,
+        hasPanel: !!document.getElementById('sgpt-panel'),
+    };
+}
+
+function scoreToolboxFrameResult(frameResult) {
+    var result = frameResult && frameResult.result ? frameResult.result : {};
+    var score = 0;
+
+    if (result.hasPanel) {
+        score += 3000;
+    }
+    if (result.hasSelection) {
+        score += 2000 + Math.min(Number(result.selectionLength) || 0, 500);
+    }
+    if (result.hasFocusedEditable) {
+        score += 1000;
+    }
+    if (result.isTop) {
+        score += 100;
+    }
+    if (result.visibilityState === 'visible') {
+        score += 50;
+    }
+
+    return score;
+}
+
+function chooseBestToolboxFrameResult(results, preferredFrameId) {
+    var available = Array.isArray(results) ? results.filter(function (entry) {
+        return entry && typeof entry.frameId === 'number';
+    }) : [];
+
+    if (typeof preferredFrameId === 'number') {
+        var preferred = available.find(function (entry) {
+            return entry.frameId === preferredFrameId;
+        });
+        if (preferred) {
+            return preferred;
+        }
+    }
+
+    if (!available.length) {
+        return null;
+    }
+
+    available.sort(function (left, right) {
+        var scoreDiff = scoreToolboxFrameResult(right) - scoreToolboxFrameResult(left);
+        if (scoreDiff !== 0) {
+            return scoreDiff;
+        }
+        if ((left.result && left.result.isTop) && !(right.result && right.result.isTop)) {
+            return -1;
+        }
+        if ((right.result && right.result.isTop) && !(left.result && left.result.isTop)) {
+            return 1;
+        }
+        return left.frameId - right.frameId;
+    });
+
+    return available[0];
+}
+
+function sendMessageToTabFrame(tabId, message, frameId) {
+    return new Promise(function (resolve) {
+        var options = typeof frameId === 'number' ? {frameId: frameId} : {};
+        chrome.tabs.sendMessage(tabId, message, options, function (response) {
+            if (chrome.runtime.lastError) {
+                resolve({ok: false, error: chrome.runtime.lastError.message});
+                return;
+            }
+
+            resolve(response || {ok: false, error: 'The target frame did not return a response.'});
+        });
+    });
+}
+
+async function resolveBestToolboxFrame(tabId, preferredFrameId) {
+    if (typeof preferredFrameId === 'number') {
+        return preferredFrameId;
+    }
+
+    if (!chrome.scripting || typeof chrome.scripting.executeScript !== 'function') {
+        return 0;
+    }
+
+    try {
+        var results = await chrome.scripting.executeScript({
+            target: {tabId: tabId, allFrames: true},
+            func: inspectToolboxFrameState,
+        });
+        var best = chooseBestToolboxFrameResult(results, preferredFrameId);
+        return best && typeof best.frameId === 'number' ? best.frameId : 0;
+    } catch (error) {
+        await appendDebugLog({
+            level: 'warning',
+            category: 'ui',
+            message: 'Could not inspect frame state before routing Toolbox message. Falling back to the top frame.',
+            meta: {
+                tabId: tabId,
+                error: error && error.message ? error.message : String(error),
+            }
+        });
+        return 0;
+    }
+}
+
+async function routeToolboxMessage(tabId, message, preferredFrameId) {
+    var frameId = await resolveBestToolboxFrame(tabId, preferredFrameId);
+    var response = await sendMessageToTabFrame(tabId, message, frameId);
+
+    if ((!response || !response.ok) && typeof preferredFrameId === 'number') {
+        var fallbackFrameId = await resolveBestToolboxFrame(tabId);
+        if (typeof fallbackFrameId === 'number' && fallbackFrameId !== frameId) {
+            frameId = fallbackFrameId;
+            response = await sendMessageToTabFrame(tabId, message, frameId);
+        }
+    }
+
+    return {
+        frameId: frameId,
+        response: response,
+    };
+}
+
+function getActiveTab() {
+    return new Promise(function (resolve) {
+        chrome.tabs.query({active: true, currentWindow: true}, function (tabs) {
+            if (chrome.runtime.lastError) {
+                resolve({ok: false, error: chrome.runtime.lastError.message, tab: null});
+                return;
+            }
+
+            var tab = Array.isArray(tabs) && tabs.length ? tabs[0] : null;
+            if (!tab || typeof tab.id !== 'number') {
+                resolve({ok: false, error: 'No active tab is available.', tab: null});
+                return;
+            }
+
+            resolve({ok: true, tab: tab});
+        });
+    });
+}
+
 function setupExtensionContextMenus() {
     if (!chrome.contextMenus || typeof chrome.contextMenus.removeAll !== 'function') {
         return;
@@ -437,18 +608,48 @@ chrome.contextMenus.onClicked.addListener(function (info, tab) {
     }
 
     if (info.menuItemId === CONTEXT_MENU_OPEN_TOOLBOX_ID) {
-        chrome.tabs.sendMessage(tab.id, {
+        routeToolboxMessage(tab.id, {
             type: 'OPEN_TOOLBOX_FROM_CONTEXT_MENU',
             contextText: info && typeof info.selectionText === 'string' ? info.selectionText.trim() : '',
+        }, info && typeof info.frameId === 'number' ? info.frameId : undefined).then(function (result) {
+            if (result && result.response && result.response.ok) {
+                return;
+            }
+
+            appendDebugLog({
+                level: 'warning',
+                category: 'ui',
+                message: 'Context-menu Toolbox open could not be routed cleanly.',
+                meta: {
+                    tabId: tab.id,
+                    frameId: result ? result.frameId : null,
+                    error: result && result.response ? result.response.error || '' : '',
+                }
+            });
         });
         return;
     }
 
     if (info.menuItemId === CONTEXT_MENU_VERIFY_ID) {
-        chrome.tabs.sendMessage(tab.id, {
+        routeToolboxMessage(tab.id, {
             type: 'START_FACT_VERIFICATION_FROM_CONTEXT_MENU',
             contextText: buildVerificationContextFromMenuInfo(info),
             sourceLabel: 'Context menu verify',
+        }, info && typeof info.frameId === 'number' ? info.frameId : undefined).then(function (result) {
+            if (result && result.response && result.response.ok) {
+                return;
+            }
+
+            appendDebugLog({
+                level: 'warning',
+                category: 'ui',
+                message: 'Context-menu fact verification could not be routed cleanly.',
+                meta: {
+                    tabId: tab.id,
+                    frameId: result ? result.frameId : null,
+                    error: result && result.response ? result.response.error || '' : '',
+                }
+            });
         });
     }
 });
@@ -1486,6 +1687,36 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
             'preferredFactCheckModel'
         ], function (data) {
             sendResponse({ok: true, settings: data || {}});
+        });
+        return true;
+    }
+
+    if (req.type === 'OPEN_TOOLBOX_IN_ACTIVE_TAB') {
+        getActiveTab().then(async function (activeTabResult) {
+            if (!activeTabResult.ok || !activeTabResult.tab) {
+                sendResponse({ok: false, error: activeTabResult.error || 'No active tab is available.'});
+                return;
+            }
+
+            var routed = await routeToolboxMessage(activeTabResult.tab.id, {
+                type: 'OPEN_REPLY_PANEL_FROM_POPUP'
+            });
+
+            if (!routed.response || !routed.response.ok) {
+                sendResponse({
+                    ok: false,
+                    error: routed.response && routed.response.error
+                        ? routed.response.error
+                        : 'Could not open Toolbox in the selected frame.',
+                    frameId: routed.frameId,
+                });
+                return;
+            }
+
+            sendResponse(Object.assign({
+                ok: true,
+                frameId: routed.frameId,
+            }, routed.response));
         });
         return true;
     }
