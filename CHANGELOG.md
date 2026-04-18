@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- A new build-time packaging script now creates browser-specific release archives for Chrome, Edge, Opera, and Firefox from the same `socialgpt-chrome` source tree.
+
+### Changed
+- `projects/socialgpt.sh` no longer zips the raw source tree directly; it now calls the multi-browser builder and writes artifacts to `projects/socialgpt-chrome/dist/`.
+- The root `manifest.json` remains the Chrome-first source manifest used for development and first-pass testing.
+- Firefox packages now receive their `browser_specific_settings.gecko` metadata only at build time, so the source manifest can stay Chrome-oriented in the repository.
+- SocialGPT client metadata is now browser-aware and reports `chrome_extension`, `edge_extension`, `opera_extension`, or `firefox_extension` depending on the current build/runtime.
+
 ## 1.2.16 - 2026-04-15
 
 ### Added

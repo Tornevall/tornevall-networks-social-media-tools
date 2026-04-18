@@ -64,6 +64,40 @@ function getToolsBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
 }
 
+function detectExtensionBrowserPlatform(manifest) {
+    try {
+        if (manifest && manifest.browser_specific_settings && manifest.browser_specific_settings.gecko) {
+            return 'firefox_extension';
+        }
+    } catch (error) {
+    }
+
+    var userAgent = '';
+    try {
+        if (navigator.userAgentData && Array.isArray(navigator.userAgentData.brands)) {
+            userAgent = navigator.userAgentData.brands.map(function (brand) {
+                return brand && brand.brand ? String(brand.brand) : '';
+            }).join(' ').toLowerCase();
+        }
+        if (!userAgent && navigator.userAgent) {
+            userAgent = String(navigator.userAgent).toLowerCase();
+        }
+    } catch (error) {
+    }
+
+    if (userAgent.indexOf('firefox') !== -1) {
+        return 'firefox_extension';
+    }
+    if (userAgent.indexOf('edg/') !== -1 || userAgent.indexOf('edge/') !== -1) {
+        return 'edge_extension';
+    }
+    if (userAgent.indexOf('opr/') !== -1 || userAgent.indexOf('opera') !== -1) {
+        return 'opera_extension';
+    }
+
+    return 'chrome_extension';
+}
+
 function getExtensionClientMeta() {
     try {
         var manifest = chrome.runtime && typeof chrome.runtime.getManifest === 'function'
@@ -73,7 +107,7 @@ function getExtensionClientMeta() {
         return {
             client_name: manifest && (manifest.name || manifest.short_name) ? String(manifest.name || manifest.short_name).trim() : 'socialgpt-chrome',
             client_version: manifest && manifest.version ? String(manifest.version).trim() : 'unknown',
-            client_platform: 'chrome_extension',
+            client_platform: detectExtensionBrowserPlatform(manifest),
         };
     } catch (error) {
         return {

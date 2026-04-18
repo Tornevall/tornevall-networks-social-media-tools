@@ -1,6 +1,6 @@
 # Tornevall Networks Social Media Tools
 
-**A browser-wide AI assistant and fact-checking companion for Chrome.**
+**A browser-wide AI assistant and fact-checking companion with a Chrome-first source manifest and release packaging for Chrome, Edge, Opera, and Firefox.**
 
 This extension provides text selection overlays, fact-checking controls, and AI-assisted replies on ANY website you visit. It's powered by the Tornevall Networks Tools platform.
 
@@ -9,6 +9,7 @@ This extension provides text selection overlays, fact-checking controls, and AI-
 - **GitHub Project**: https://github.com/Tornevall/tornevall-networks-social-media-tools
 - **Tools Platform**: https://tools.tornevall.net
 - **Chrome Web Store**: live release track since `1.2.12` *(latest fixes shipping in `1.2.16`)*
+- **Browser package builds**: generated locally via `../socialgpt.sh`
 
 ---
 
@@ -33,11 +34,14 @@ This extension provides text selection overlays, fact-checking controls, and AI-
 **This extension REQUIRES `<all_urls>` in BOTH places:**
 
 ```json
-"host_permissions": ["<all_urls>"],
-"content_scripts": [{
-  "matches": ["<all_urls>"],
-  ...
-}]
+{
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
 ```
 
 **Why?** The extension's core feature is a browser-wide AI assistant. Users need to:
@@ -65,6 +69,31 @@ This is identical to:
 3. Enable "Developer mode" (top right)
 4. Click "Load unpacked" and select this folder
 
+The root `manifest.json` in this folder is intentionally the **Chrome-first** source manifest. Day-to-day development and first-pass testing continue to use that file directly in Chrome.
+
+### Build browser packages
+
+Use the packaging entrypoint in `projects/socialgpt.sh` when you want browser-specific release archives:
+
+```bash
+cd /mnt/k/Apps/wamp64/www/tornevall.com/tools.tornevall.com/projects
+./socialgpt.sh
+```
+
+This creates separate archives in `projects/socialgpt-chrome/dist/`:
+
+- `tornevall-networks-social-media-tools.zip` *(legacy Chrome alias)*
+- `tornevall-networks-social-media-tools-chrome.zip`
+- `tornevall-networks-social-media-tools-edge.zip`
+- `tornevall-networks-social-media-tools-opera.zip`
+- `tornevall-networks-social-media-tools-firefox.zip`
+
+Packaging behavior:
+
+- **Chrome / Edge / Opera** reuse the Chrome-first manifest as-is.
+- **Firefox** uses the same source tree but gets a build-time manifest patch that adds `browser_specific_settings.gecko` without changing the source `manifest.json` in the repo.
+- The packaging flow does **not** increment the extension version.
+
 ### Get a Bearer Token
 
 1. Visit **https://tools.tornevall.net**
@@ -82,6 +111,7 @@ This is identical to:
 - ✅ All settings stored locally in extension storage
 - ✅ No hidden network requests
 - ✅ AI requests now include the extension version/build metadata so Tools can identify which SocialGPT client revision generated a request
+- ✅ Browser-targeted builds now also report a matching `client_platform` (`chrome_extension`, `edge_extension`, `opera_extension`, `firefox_extension`) when talking to Tools
 - ✅ Tools-side SocialGPT guardrails explicitly allow disclosure of the current AI model/client version when asked, while blocking attempts to extract source code, `.env` data, passwords, tokens, or hidden prompts
 
 ---
@@ -90,10 +120,10 @@ This is identical to:
 
 | File | Purpose |
 |------|---------|
-| **CHROME_WEB_STORE_SUBMISSION.md** | ⭐ Short release + submit guide for Chrome Web Store |
 | **CHROME_WEB_STORE_COMPLIANCE.md** | ⭐ READ THIS before CWS submission |
 | CHANGELOG.md | Version history |
 | manifest.json | Extension configuration |
+| build_packages.py | Multi-browser archive generator used by `../socialgpt.sh` |
 
 ---
 
@@ -111,7 +141,7 @@ This is identical to:
 - Answers to common reviewer questions
 - Full compliance checklist
 
-For packaging and upload steps, use `CHROME_WEB_STORE_SUBMISSION.md`.
+For packaging and upload steps, use `../socialgpt.sh`, which now stages browser-specific manifests and creates separate archives from the same source tree.
 
 ---
 
@@ -120,16 +150,18 @@ For packaging and upload steps, use `CHROME_WEB_STORE_SUBMISSION.md`.
 ```json
 {
   "description": "Browser-wide AI assistant and social media toolkit...",
-  "host_permissions": ["<all_urls>"],          // ← Required for injection
-  "content_scripts": [{
-    "matches": ["<all_urls>"],                 // ← Required for overlay
-    "js": [...],
-    "css": [...]
-  }]
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["js/content-script.js"],
+      "css": ["css/styles.css"]
+    }
+  ]
 }
 ```
 
-Both `<all_urls>` entries are REQUIRED and intentional.
+Both `<all_urls>` entries are REQUIRED and intentional, even though the real manifest contains additional fields beyond this shortened example.
 
 ---
 
