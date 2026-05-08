@@ -1,4 +1,4 @@
-ans# Tornevall Networks Social Media Tools
+# Tornevall Networks Social Media Tools
 
 **A browser-wide AI assistant and fact-checking companion with a Chrome-first source manifest and release packaging for Chrome, Edge, Opera, and Firefox.**
 
@@ -23,7 +23,7 @@ This extension provides text selection overlays, fact-checking controls, and AI-
 - ✅ After a fact-check result appears, continue with the same context using the result-box `Open Toolbox` action
 
 **On specific platforms:**
-- 📘 **Facebook**: Admin activity reporting (with permission)
+- 📘 **Facebook admin activities**: per-tab activity reporting with manual queue controls that can now retry directly to Tools if the extension runtime handoff stalls
 - 🎵 **SoundCloud**: Insights capture and analytics (with permission)
 - 𝕏 **X/Twitter**: Platform-specific tooling
 

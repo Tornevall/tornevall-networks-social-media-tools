@@ -9,6 +9,7 @@ const AI_PATH = '/api/ai/socialgpt/respond';
 const DEBUG_LOG_REQUEST = 'GET_DEBUG_LOGS';
 const DEBUG_CLEAR_REQUEST = 'CLEAR_DEBUG_LOGS';
 const RETRYABLE_REDIRECT_STATUSES = [301, 302, 303, 307, 308];
+const RUNTIME_RESPONSE_TIMEOUT_MS = 15000;
 const extensionI18n = window.TNNetworksExtensionI18n || {
     t: function (key, params, fallback) {
         return typeof fallback !== 'undefined' ? fallback : key;
@@ -322,7 +323,27 @@ async function apiRequest(baseUrl, token, path, options) {
 
 function sendRuntimeMessage(message) {
     return new Promise(function (resolve) {
+        var settled = false;
+        var timeoutId = window.setTimeout(function () {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            resolve({
+                ok: false,
+                error: t('status.runtimeTimedOut', {}, 'The extension did not answer in time. Try again.'),
+            });
+        }, RUNTIME_RESPONSE_TIMEOUT_MS);
+
         chrome.runtime.sendMessage(message, function (response) {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            window.clearTimeout(timeoutId);
+
             if (chrome.runtime.lastError) {
                 resolve({ok: false, error: chrome.runtime.lastError.message});
                 return;
@@ -586,6 +607,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
         var statusPayload = result.status;
         var counters = statusPayload.counters || {};
+        var sendingState = statusPayload.sending_state || {};
         var entries = Array.isArray(statusPayload.reportable_entries) ? statusPayload.reportable_entries : [];
         var pageStatePrefix = statusPayload.is_admin_page
             ? t('status.activeOnAdminPage', {}, 'Active tab is on a Facebook admin activities page.')
@@ -605,7 +627,12 @@ document.addEventListener('DOMContentLoaded', function () {
             + ' · Sending: ' + (counters.sending || 0)
             + ' · Failed: ' + (counters.failed || 0)
             + ' · Submitted: ' + (counters.sent || 0)
-            + ' · Duplicates ignored: ' + (counters.duplicates_ignored || 0);
+            + ' · Duplicates ignored: ' + (counters.duplicates_ignored || 0)
+            + (sendingState && sendingState.active
+                ? (' · Remote: ' + (sendingState.is_stale
+                    ? ('stuck after ' + (sendingState.elapsed_seconds || 0) + 's')
+                    : ('sending for ' + (sendingState.elapsed_seconds || 0) + 's')))
+                : '');
 
         if (!entries.length) {
             facebookAdminReportableList.innerHTML = '<div class="status-line status-muted">'

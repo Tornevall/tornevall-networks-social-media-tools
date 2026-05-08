@@ -25,6 +25,8 @@ const soundCloudTabStatusCache = {};
 const CONTEXT_MENU_OPEN_TOOLBOX_ID = 'tn-social-tools-open-toolbox';
 const CONTEXT_MENU_VERIFY_ID = 'tn-social-tools-verify-fact';
 const RSS_SITE_CACHE_TTL_MS = 5 * 60 * 1000;
+const TAB_MESSAGE_RESPONSE_TIMEOUT_MS = 12000;
+const TOOLS_FETCH_TIMEOUT_MS = 15000;
 const CONTENT_SCRIPT_JS_FILES = [
     'js/shared/i18n.js',
     'js/shared/platform-registry.js',
@@ -329,8 +331,28 @@ function chooseBestToolboxFrameResult(results, preferredFrameId) {
 
 function sendMessageToTabFrame(tabId, message, frameId) {
     return new Promise(function (resolve) {
+        var settled = false;
+        var timeoutId = setTimeout(function () {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            resolve({
+                ok: false,
+                error: 'The page helper did not answer in time.',
+            });
+        }, TAB_MESSAGE_RESPONSE_TIMEOUT_MS);
+
         var options = typeof frameId === 'number' ? {frameId: frameId} : {};
         chrome.tabs.sendMessage(tabId, message, options, function (response) {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            clearTimeout(timeoutId);
+
             if (chrome.runtime.lastError) {
                 resolve({ok: false, error: chrome.runtime.lastError.message});
                 return;
@@ -339,6 +361,25 @@ function sendMessageToTabFrame(tabId, message, frameId) {
             resolve(response || {ok: false, error: 'The target frame did not return a response.'});
         });
     });
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+    var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timerId = null;
+
+    if (controller) {
+        timerId = setTimeout(function () {
+            controller.abort();
+        }, timeoutMs || TOOLS_FETCH_TIMEOUT_MS);
+    }
+
+    try {
+        return await fetch(url, Object.assign({}, options || {}, controller ? {signal: controller.signal} : {}));
+    } finally {
+        if (timerId) {
+            clearTimeout(timerId);
+        }
+    }
 }
 
 function shouldRetryTabMessageWithInjection(errorMessage) {
@@ -1141,7 +1182,7 @@ async function callFacebookAdminIngest(apiToken, baseUrl, payload) {
     });
 
     try {
-        var res = await fetch(baseUrl + FACEBOOK_INGEST_PATH, {
+        var res = await fetchWithTimeout(baseUrl + FACEBOOK_INGEST_PATH, {
             method: 'POST',
             headers: {
                 'Accept': 'application/json',
@@ -1149,7 +1190,7 @@ async function callFacebookAdminIngest(apiToken, baseUrl, payload) {
                 'Authorization': 'Bearer ' + apiToken,
             },
             body: JSON.stringify(payload || {}),
-        });
+        }, TOOLS_FETCH_TIMEOUT_MS);
 
         var data = await res.json().catch(function () {
             return {};
@@ -1192,6 +1233,9 @@ async function callFacebookAdminIngest(apiToken, baseUrl, payload) {
 
         return {ok: true, data: data};
     } catch (e) {
+        var fetchErrorMessage = e && e.name === 'AbortError'
+            ? 'Facebook admin activity ingest timed out before Tools answered.'
+            : 'Error calling Tools API.';
         await appendDebugLog({
             level: 'error',
             category: 'facebook-admin-ingest',
@@ -1201,7 +1245,7 @@ async function callFacebookAdminIngest(apiToken, baseUrl, payload) {
                 error: e && e.message ? e.message : String(e),
             }
         });
-        return {ok: false, error: 'Error calling Tools API.'};
+        return {ok: false, error: fetchErrorMessage};
     }
 }
 

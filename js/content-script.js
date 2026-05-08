@@ -72,6 +72,8 @@ const MARKED_CONTEXT_LABEL_MODES = ['compact', 'mark-id', 'detailed'];
 const MARKED_CONTEXT_EXPANSION_MODES = ['current', 'parent', 'parent-children', 'document'];
 const PANEL_DOCK_MODES = ['auto', 'right', 'left', 'bottom-right', 'bottom-left'];
 const MIN_SELECTION_ACTION_LENGTH = 2;
+const EXTENSION_RUNTIME_RESPONSE_TIMEOUT_MS = 15000;
+const TOOLS_FETCH_TIMEOUT_MS = 15000;
 const extensionI18n = globalThis.TNNetworksExtensionI18n || {
     locale: 'en',
     t: function (key, params, fallback) {
@@ -236,11 +238,31 @@ function safeSendRuntimeMessage(message) {
 
 function safeSendRuntimeMessageWithResponse(message) {
     return new Promise(function (resolve) {
+        let settled = false;
+        const timeoutId = window.setTimeout(function () {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            resolve({
+                ok: false,
+                error: 'The extension runtime timed out before it returned a response.',
+            });
+        }, EXTENSION_RUNTIME_RESPONSE_TIMEOUT_MS);
+
         const sent = safeChromeCall(function () {
             if (!chrome.runtime || typeof chrome.runtime.sendMessage !== 'function') {
                 return false;
             }
             chrome.runtime.sendMessage(message, function (response) {
+                if (settled) {
+                    return;
+                }
+
+                settled = true;
+                window.clearTimeout(timeoutId);
+
                 if (chrome.runtime && chrome.runtime.lastError) {
                     if (isContextInvalidatedError(chrome.runtime.lastError)) {
                         handleExtensionContextInvalidated(chrome.runtime.lastError);
@@ -255,6 +277,12 @@ function safeSendRuntimeMessageWithResponse(message) {
         }, false);
 
         if (!sent) {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            window.clearTimeout(timeoutId);
             resolve({ok: false, error: 'Extension runtime unavailable.'});
         }
     });
@@ -320,6 +348,167 @@ function safeAddStorageChangeListener(handler) {
         chrome.storage.onChanged.addListener(handler);
         return true;
     }, false);
+}
+
+function getRetryToolsBaseUrls(baseUrl) {
+    const normalized = String(baseUrl || '').trim();
+    const candidates = normalized ? [normalized] : [];
+
+    if (normalized === TOOLS_PROD_BASE_URL && candidates.indexOf(TOOLS_DEV_BASE_URL) === -1) {
+        candidates.push(TOOLS_DEV_BASE_URL);
+    }
+
+    return candidates;
+}
+
+function extractToolsApiMessage(data) {
+    if (data && typeof data.error === 'string' && data.error.trim()) {
+        return data.error.trim();
+    }
+
+    if (data && typeof data.message === 'string' && data.message.trim()) {
+        return data.message.trim();
+    }
+
+    return '';
+}
+
+function isAuthFailureStatus(status, data) {
+    if (status === 401) {
+        return true;
+    }
+
+    if (status !== 403) {
+        return false;
+    }
+
+    const message = extractToolsApiMessage(data).toLowerCase();
+
+    return message.indexOf('authentication') !== -1
+        || message.indexOf('unauthenticated') !== -1
+        || message.indexOf('unauthorized') !== -1
+        || message.indexOf('bearer token') !== -1
+        || message.indexOf('forbidden') !== -1
+        || message.indexOf('missing permission') !== -1
+        || message.indexOf('not allowed to use the requested tools feature') !== -1;
+}
+
+function normalizeToolsApiError(status, data) {
+    const apiMessage = extractToolsApiMessage(data);
+
+    if (status === 401) {
+        return apiMessage || 'Authentication failed. Check your personal Tools bearer token.';
+    }
+
+    if (status === 403) {
+        return apiMessage || 'Access denied for this Tools request.';
+    }
+
+    if (status === 503) {
+        return apiMessage || 'Tools is reachable, but the backend could not complete the request right now.';
+    }
+
+    return apiMessage || 'Tools API request failed (' + status + ')';
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    let timeoutId = null;
+
+    if (controller) {
+        timeoutId = window.setTimeout(function () {
+            controller.abort();
+        }, timeoutMs || TOOLS_FETCH_TIMEOUT_MS);
+    }
+
+    try {
+        return await fetch(url, Object.assign({}, options || {}, controller ? {signal: controller.signal} : {}));
+    } finally {
+        if (timeoutId) {
+            window.clearTimeout(timeoutId);
+        }
+    }
+}
+
+function shouldFallbackFacebookIngestToDirectFetch(message) {
+    const normalized = String(message || '').trim().toLowerCase();
+    if (!normalized) {
+        return true;
+    }
+
+    return normalized.indexOf('extension runtime unavailable') !== -1
+        || normalized.indexOf('no response from extension runtime') !== -1
+        || normalized.indexOf('receiving end does not exist') !== -1
+        || normalized.indexOf('could not establish connection') !== -1
+        || normalized.indexOf('message port closed') !== -1;
+}
+
+async function callFacebookAdminIngestDirect(apiToken, baseUrl, payload) {
+    const baseUrls = getRetryToolsBaseUrls(baseUrl);
+    let lastFailure = null;
+
+    for (let index = 0; index < baseUrls.length; index += 1) {
+        const currentBaseUrl = baseUrls[index];
+
+        try {
+            const response = await fetchWithTimeout(currentBaseUrl + FACEBOOK_INGEST_PATH, {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + apiToken,
+                },
+                body: JSON.stringify(payload || {}),
+            }, TOOLS_FETCH_TIMEOUT_MS);
+            const data = await response.json().catch(function () {
+                return {};
+            });
+
+            if ((!response.ok || !data.ok) && response.status >= 300 && response.status < 400 && index < baseUrls.length - 1) {
+                lastFailure = {
+                    status: response.status,
+                    data: data,
+                };
+                continue;
+            }
+
+            if (!response.ok || !data.ok) {
+                const errorMessage = normalizeToolsApiError(response.status, data);
+                if (isAuthFailureStatus(response.status, data)) {
+                    debugLog({
+                        level: 'error',
+                        category: 'facebook-admin-ingest',
+                        message: 'Direct Facebook admin batch fallback hit an auth failure.',
+                        meta: {
+                            baseUrl: currentBaseUrl,
+                            status: response.status,
+                            error: errorMessage,
+                        },
+                    });
+                }
+
+                return {ok: false, error: errorMessage, status: response.status, data: data};
+            }
+
+            return {ok: true, status: response.status, data: data};
+        } catch (error) {
+            lastFailure = {
+                status: 0,
+                data: {
+                    message: error && error.name === 'AbortError'
+                        ? 'Facebook admin activity ingest timed out before Tools answered.'
+                        : (error && error.message ? error.message : 'Error calling Tools API.'),
+                },
+            };
+        }
+    }
+
+    return {
+        ok: false,
+        status: lastFailure && typeof lastFailure.status === 'number' ? lastFailure.status : 0,
+        error: normalizeToolsApiError(lastFailure && typeof lastFailure.status === 'number' ? lastFailure.status : 0, lastFailure ? lastFailure.data : {}),
+        data: lastFailure ? lastFailure.data : {},
+    };
 }
 
 function normalizeResponseLanguageChoice(value) {
@@ -731,13 +920,16 @@ function getAdminReporterSnapshot() {
     return adminActivityReporter.getSnapshot();
 }
 
-function buildAdminLastSubmissionSummary(lastSubmission) {
-    if (!lastSubmission || typeof lastSubmission !== 'object') {
+function buildAdminLastSubmissionSummary(lastSubmission, sendingState) {
+    if ((!lastSubmission || typeof lastSubmission !== 'object') && !(sendingState && sendingState.active)) {
         return '';
     }
 
-    if (lastSubmission.status === 'sending') {
-        return 'Bulk send in progress. Attempting ' + (lastSubmission.attempted || 0) + ' entr' + ((lastSubmission.attempted || 0) === 1 ? 'y' : 'ies') + '.';
+    if (sendingState && sendingState.active && lastSubmission && lastSubmission.status === 'sending') {
+        return 'Bulk send in progress. Attempting ' + (sendingState.attempted || lastSubmission.attempted || 0)
+            + ' entr' + ((sendingState.attempted || lastSubmission.attempted || 0) === 1 ? 'y' : 'ies')
+            + ' · elapsed ' + (sendingState.elapsed_seconds || 0) + 's'
+            + (sendingState.is_stale ? ' · response looks stuck' : '') + '.';
     }
 
     if (lastSubmission.status === 'success') {
@@ -768,6 +960,7 @@ function buildAdminReporterStatusPayload() {
     const snapshot = getAdminReporterSnapshot();
     const reportableEntries = sortAdminEntriesByRecency(snapshot.reportable_entries || []).slice(0, 5);
     const counters = snapshot.totals || {};
+    const sendingState = snapshot.sending_state || null;
 
     return {
         ok: true,
@@ -802,8 +995,9 @@ function buildAdminReporterStatusPayload() {
             pending: counters.pending || 0,
             sent: counters.sent || 0,
         },
+        sending_state: sendingState,
         last_submission: snapshot.last_submission || null,
-        last_submission_text: buildAdminLastSubmissionSummary(snapshot.last_submission),
+        last_submission_text: buildAdminLastSubmissionSummary(snapshot.last_submission, sendingState),
     };
 }
 
@@ -5645,11 +5839,16 @@ function updateAdminActivitiesControl() {
 
     const snapshot = getAdminReporterSnapshot();
     const countersSnapshot = snapshot.totals || {};
+    const sendingState = snapshot.sending_state || {};
+    const hasSendingEntries = (countersSnapshot.sending || 0) > 0;
+    const hasActiveSending = !!sendingState.active && !sendingState.is_stale;
+    const canForceRelease = !!adminIngestEnabled && hasSendingEntries && (!adminFlushInProgress || !!sendingState.is_stale);
 
     const toggle = adminActivitiesControl.querySelector('[data-role="toggle"]');
     const sendNowButton = adminActivitiesControl.querySelector('[data-role="send-now"]');
     const forceReleaseButton = adminActivitiesControl.querySelector('[data-role="force-release"]');
     const state = adminActivitiesControl.querySelector('[data-role="state"]');
+    const progress = adminActivitiesControl.querySelector('[data-role="progress"]');
     const counters = adminActivitiesControl.querySelector('[data-role="counters"]');
     const monitor = adminActivitiesControl.querySelector('[data-role="monitor"]');
     const recent = adminActivitiesControl.querySelector('[data-role="recent"]');
@@ -5664,22 +5863,38 @@ function updateAdminActivitiesControl() {
     }
 
     if (sendNowButton) {
-        sendNowButton.disabled = !adminIngestEnabled || adminFlushInProgress;
-        sendNowButton.textContent = adminFlushInProgress ? 'Sending…' : 'Send queue now';
+        sendNowButton.disabled = !adminIngestEnabled || hasActiveSending;
+        sendNowButton.textContent = hasActiveSending
+            ? ('Sending… ' + Math.max(0, Number(sendingState.elapsed_seconds) || 0) + 's')
+            : 'Send queue now';
         sendNowButton.style.opacity = sendNowButton.disabled ? '0.55' : '1';
         sendNowButton.style.cursor = sendNowButton.disabled ? 'not-allowed' : 'pointer';
     }
 
     if (forceReleaseButton) {
-        const hasSendingEntries = (countersSnapshot.sending || 0) > 0;
-        forceReleaseButton.disabled = !adminIngestEnabled || adminFlushInProgress || !hasSendingEntries;
-        forceReleaseButton.textContent = 'Force release stuck';
+        forceReleaseButton.disabled = !canForceRelease;
+        forceReleaseButton.textContent = sendingState.is_stale
+            ? ('Force release stuck (' + Math.max(0, Number(sendingState.elapsed_seconds) || 0) + 's)')
+            : 'Force release stuck';
         forceReleaseButton.style.opacity = forceReleaseButton.disabled ? '0.55' : '1';
         forceReleaseButton.style.cursor = forceReleaseButton.disabled ? 'not-allowed' : 'pointer';
     }
 
     if (state) {
         state.textContent = adminLastStatusText;
+    }
+
+    if (progress) {
+        if (sendingState.active) {
+            progress.style.display = 'block';
+            progress.textContent = sendingState.is_stale
+                ? ('Waiting on remote reply for ' + (sendingState.elapsed_seconds || 0) + 's. Batch ' + (sendingState.batch_size || sendingState.attempted || 0) + ' now looks stuck and can be released.')
+                : ('Remote send in progress. Batch ' + (sendingState.batch_size || sendingState.attempted || 0) + ' · elapsed ' + (sendingState.elapsed_seconds || 0) + 's · queue after batch ' + (sendingState.queue_remaining_after_batch || 0) + '.');
+            progress.style.color = sendingState.is_stale ? '#9a3412' : '#0f766e';
+        } else {
+            progress.style.display = 'none';
+            progress.textContent = '';
+        }
     }
 
     if (counters) {
@@ -5798,6 +6013,7 @@ function ensureAdminActivitiesControl() {
         '<div style="font-size:11px; color:#64748b;">drag</div>',
         '</div>',
         '<div data-role="state" style="margin-bottom:8px; color:#334155; font-weight:600;">Passive activity detection is ready. Statistics are off.</div>',
+        '<div data-role="progress" style="display:none; margin:-2px 0 8px 0; font-size:11px; line-height:1.35; color:#0f766e;"></div>',
         '<div style="display:flex; gap:8px; flex-wrap:wrap;">',
         '<button type="button" data-role="toggle" style="border:none; border-radius:999px; padding:6px 10px; color:#fff; cursor:pointer;">Enable activity statistics</button>',
         '<button type="button" data-role="send-now" style="border:none; border-radius:999px; padding:6px 10px; color:#fff; background:#0369a1; cursor:pointer;">Send queue now</button>',
@@ -6648,11 +6864,55 @@ async function submitAdminActivityEntriesBatch(entries) {
         entries: entries,
     });
 
-    if (!response.ok) {
-        throw new Error(response.error || response.message || 'Could not submit admin activity batch.');
+    if (response.ok) {
+        return response;
     }
 
-    return response;
+    const runtimeErrorMessage = response.error || response.message || 'Could not submit admin activity batch.';
+    if (!shouldFallbackFacebookIngestToDirectFetch(runtimeErrorMessage)) {
+        throw new Error(runtimeErrorMessage);
+    }
+
+    const settings = await getToolsRuntimeSettings();
+    const apiToken = settings && settings.toolsApiToken ? String(settings.toolsApiToken).trim() : '';
+    if (!apiToken) {
+        throw new Error(runtimeErrorMessage || 'Missing Tools API token. Save it in the extension popup first.');
+    }
+
+    const baseUrl = getToolsBaseUrl(!!(settings && settings.devMode));
+    debugLog({
+        level: 'warning',
+        category: 'facebook-admin-ingest',
+        message: 'Extension runtime handoff failed. Retrying Facebook admin batch directly from the page context.',
+        meta: {
+            baseUrl: baseUrl,
+            runtime_error: runtimeErrorMessage,
+            entry_count: Array.isArray(entries) ? entries.length : 0,
+        },
+    });
+
+    const directResponse = await callFacebookAdminIngestDirect(apiToken, baseUrl, {
+        entries: entries,
+    });
+
+    if (!directResponse.ok) {
+        throw new Error(directResponse.error || directResponse.message || runtimeErrorMessage || 'Could not submit admin activity batch.');
+    }
+
+    debugLog({
+        level: 'info',
+        category: 'facebook-admin-ingest',
+        message: 'Facebook admin batch succeeded through direct Tools API fallback.',
+        meta: {
+            baseUrl: baseUrl,
+            entry_count: Array.isArray(entries) ? entries.length : 0,
+            received: typeof directResponse.data?.received === 'number' ? directResponse.data.received : null,
+            created: typeof directResponse.data?.created === 'number' ? directResponse.data.created : null,
+            updated: typeof directResponse.data?.updated === 'number' ? directResponse.data.updated : null,
+        },
+    });
+
+    return directResponse;
 }
 
 async function flushAdminActivitiesToTools(reason, options) {
@@ -6759,6 +7019,7 @@ async function flushAdminActivitiesToTools(reason, options) {
     } finally {
         adminActiveSendBatch = null;
         adminFlushInProgress = false;
+        updateAdminActivitiesControl();
         if (adminFlushRequestedWhileBusy) {
             adminFlushRequestedWhileBusy = false;
             scheduleAdminActivitiesScan((reason || 'scheduled-scan') + '-followup');
@@ -7492,6 +7753,44 @@ function startFactVerification(contextOverride, options) {
 safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
     if (req.type === 'GET_FACEBOOK_ADMIN_REPORTER_STATUS') {
         sendResponse(buildAdminReporterStatusPayload());
+        return true;
+    }
+
+    if (req.type === 'RUN_FACEBOOK_ADMIN_INGEST_MANUAL') {
+        if (!isFacebookAdminActivitiesPage()) {
+            sendResponse({
+                ok: false,
+                error: 'The active tab is not a supported Facebook admin activity page.',
+                status: buildAdminReporterStatusPayload(),
+            });
+            return true;
+        }
+
+        if (!adminIngestEnabled) {
+            sendResponse({
+                ok: false,
+                error: 'Facebook admin activity statistics are disabled in this tab. Enable them first, then retry the queue send.',
+                status: buildAdminReporterStatusPayload(),
+            });
+            return true;
+        }
+
+        flushAdminActivitiesToTools(req.forceRelease ? 'popup-force-release' : 'popup-send-now', {
+            manualRequested: true,
+            forceReleaseSending: !!(req && req.forceRelease),
+        }).then(function () {
+            sendResponse({
+                ok: true,
+                status: buildAdminReporterStatusPayload(),
+            });
+        }).catch(function (error) {
+            sendResponse({
+                ok: false,
+                error: error && error.message ? error.message : 'Could not run the Facebook admin queue action in this tab.',
+                status: buildAdminReporterStatusPayload(),
+            });
+        });
+
         return true;
     }
 

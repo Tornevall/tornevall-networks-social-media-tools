@@ -13,6 +13,10 @@
 - Firefox packages now receive their `browser_specific_settings.gecko` metadata only at build time, so the source manifest can stay Chrome-oriented in the repository.
 - SocialGPT client metadata is now browser-aware and reports `chrome_extension`, `edge_extension`, `opera_extension`, or `firefox_extension` depending on the current build/runtime.
 
+### Fixed
+- Facebook admin activity **Send queue now** no longer depends only on a fragile background-runtime handoff. If the extension runtime is temporarily unavailable or times out, the page queue now retries the same bulk send directly against Tools with the saved bearer token instead of leaving the batch stuck in pending retry.
+- Facebook admin queue controls now expose clearer remote-send progress/stuck state and use hard timeouts in the popup, content script, and background worker instead of leaving the operator-facing buttons hanging indefinitely while one runtime hop is waiting forever.
+
 ## 1.2.16 - 2026-04-15
 
 ### Added

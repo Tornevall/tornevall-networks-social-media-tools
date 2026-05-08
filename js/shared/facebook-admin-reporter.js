@@ -2,6 +2,7 @@
     var DEFAULT_STORAGE_KEY = 'tn_social_tools_facebook_admin_reporter_v1';
     var DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
     var DEFAULT_MAX_PERSISTED_ENTRIES = 1200;
+    var DEFAULT_SENDING_STALE_MS = 20 * 1000;
 
     function normalizeWhitespace(value) {
         return String(value || '').replace(/\s+/g, ' ').trim();
@@ -182,6 +183,7 @@
             storageKey: DEFAULT_STORAGE_KEY,
             ttlMs: DEFAULT_TTL_MS,
             maxPersistedEntries: DEFAULT_MAX_PERSISTED_ENTRIES,
+            sendingStaleMs: DEFAULT_SENDING_STALE_MS,
             debugEnabled: function () {
                 return false;
             },
@@ -544,6 +546,61 @@
             return getEntriesByState(['queued', 'sending', 'failed']).length;
         }
 
+        function buildSendingState(sendingEntries) {
+            var entries = Array.isArray(sendingEntries) ? sendingEntries.slice() : [];
+            var lastSendingSubmission = lastSubmission && lastSubmission.status === 'sending'
+                ? lastSubmission
+                : null;
+            var batchId = lastSendingSubmission && lastSendingSubmission.batch_id
+                ? lastSendingSubmission.batch_id
+                : (entries.length && entries[0] && entries[0].batch_id ? entries[0].batch_id : null);
+            var batchEntries = batchId
+                ? entries.filter(function (entry) {
+                    return entry && entry.batch_id === batchId;
+                })
+                : entries;
+            var startedAt = lastSendingSubmission && lastSendingSubmission.started_at
+                ? normalizeIsoTimestamp(lastSendingSubmission.started_at)
+                : '';
+
+            if (!startedAt && batchEntries.length) {
+                startedAt = batchEntries.reduce(function (earliest, entry) {
+                    var candidate = normalizeIsoTimestamp(entry && entry.last_state_at ? entry.last_state_at : '');
+                    if (!candidate) {
+                        return earliest;
+                    }
+                    if (!earliest) {
+                        return candidate;
+                    }
+                    return Date.parse(candidate) < Date.parse(earliest) ? candidate : earliest;
+                }, '');
+            }
+
+            var startedAtMs = startedAt ? (Date.parse(startedAt) || 0) : 0;
+            var elapsedMs = startedAtMs ? Math.max(0, Date.now() - startedAtMs) : 0;
+            var staleAfterMs = Math.max(5000, Number(config.sendingStaleMs) || DEFAULT_SENDING_STALE_MS);
+            var active = batchEntries.length > 0;
+            var isStale = active && (!lastSendingSubmission || elapsedMs > staleAfterMs);
+
+            return {
+                active: active,
+                batch_id: batchId || null,
+                batch_size: batchEntries.length,
+                total_sending: entries.length,
+                started_at: startedAt || null,
+                elapsed_ms: elapsedMs,
+                elapsed_seconds: Math.round(elapsedMs / 1000),
+                stale_after_ms: staleAfterMs,
+                is_stale: isStale,
+                attempted: lastSendingSubmission && typeof lastSendingSubmission.attempted === 'number'
+                    ? lastSendingSubmission.attempted
+                    : batchEntries.length,
+                queue_remaining_after_batch: lastSendingSubmission && typeof lastSendingSubmission.queue_remaining === 'number'
+                    ? lastSendingSubmission.queue_remaining
+                    : Math.max(0, getQueueSize() - batchEntries.length),
+            };
+        }
+
         function startNextBatch(maxBatchSize, meta) {
             restoreState();
             var reason = meta && meta.reason ? String(meta.reason) : 'unspecified';
@@ -735,6 +792,7 @@
             var sendingEntries = sortEntriesByRecency(getEntriesByState(['sending']));
             var sentEntries = sortEntriesByRecency(getEntriesByState(['sent']));
             var reportableEntries = sortEntriesByRecency(queuedEntries.concat(failedEntries));
+            var sendingState = buildSendingState(sendingEntries);
 
             return {
                 totals: {
@@ -751,6 +809,7 @@
                 },
                 reportable_entries: reportableEntries.map(cloneEntry),
                 recent_sent_entries: sentEntries.slice(0, 5).map(cloneEntry),
+                sending_state: cloneEntry(sendingState),
                 last_submission: lastSubmission ? cloneEntry(lastSubmission) : null,
                 has_reportable_entries: reportableEntries.length > 0,
             };
