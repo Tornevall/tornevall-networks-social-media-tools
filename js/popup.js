@@ -40,7 +40,7 @@ const LEGACY_LOCALIZED_TEST_QUESTIONS = [
     'Svara i en kort mening som visar vilket svararnamn, vilken profil och vilka egna instruktioner du fick från Tools.'
 ];
 const FORUM_URL = (window.TNNetworksExtensionLinks && window.TNNetworksExtensionLinks.FORUM_URL) || 'https://forum.tornevall.net';
-const TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH = (window.TNNetworksExtensionLinks && window.TNNetworksExtensionLinks.TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH) || '/admin/social-media-tools/facebook';
+const TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH = (window.TNNetworksExtensionLinks && window.TNNetworksExtensionLinks.TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH) || '/admin/social-media-tools';
 
 function getBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
@@ -334,39 +334,20 @@ function sendRuntimeMessage(message) {
 }
 
 function sendMessageToActiveTab(message) {
-    return new Promise(function (resolve) {
-        if (!chrome.tabs || typeof chrome.tabs.query !== 'function') {
-            resolve({ok: false, error: t('status.tabsUnavailable', {}, 'Tab access is not available in this popup context.')});
-            return;
+    return sendRuntimeMessage({
+        type: 'SEND_MESSAGE_TO_ACTIVE_TAB',
+        message: message || {},
+    }).then(function (response) {
+        if (response && response.ok) {
+            return response;
         }
 
-        chrome.tabs.query({active: true, currentWindow: true}, function (tabs) {
-            if (chrome.runtime.lastError) {
-                resolve({ok: false, error: chrome.runtime.lastError.message});
-                return;
-            }
-
-            var tab = Array.isArray(tabs) && tabs.length ? tabs[0] : null;
-            if (!tab || typeof tab.id !== 'number') {
-                resolve({ok: false, error: t('status.noActiveTab', {}, 'No active tab is available.')});
-                return;
-            }
-
-            chrome.tabs.sendMessage(tab.id, message, function (response) {
-                if (chrome.runtime.lastError) {
-                    var rawError = chrome.runtime.lastError.message || '';
-                    resolve({
-                        ok: false,
-                        error: rawError.indexOf('Receiving end does not exist') !== -1
-                            ? t('status.reloadTabAndTryAgain', {}, 'Could not reach the page helper. Reload the tab once and try again.')
-                            : rawError,
-                    });
-                    return;
-                }
-
-                resolve(response || {ok: false, error: t('status.noResponseFromTab', {}, 'The active tab did not return a response.')});
-            });
-        });
+        return {
+            ok: false,
+            error: response && response.error
+                ? response.error
+                : t('status.noResponseFromTab', {}, 'The active tab did not return a response.'),
+        };
     });
 }
 
@@ -461,12 +442,15 @@ document.addEventListener('DOMContentLoaded', function () {
     const devModeCheckbox = document.getElementById('devMode');
     const facebookAdminDebugCheckbox = document.getElementById('facebookAdminDebugEnabled');
     const facebookAdminStatsCheckbox = document.getElementById('facebookAdminStatsEnabled');
+    const facebookAdminActionsWrap = document.getElementById('facebookAdminActionsWrap');
     const endpointNote = document.getElementById('endpointNote');
     const openToolsDashboardLink = document.getElementById('openToolsDashboardLink');
     const openToolsDashboardLinkInline = document.getElementById('openToolsDashboardLinkInline');
     const forumLink = document.getElementById('forumLink');
     const openToolboxBtn = document.getElementById('openToolboxBtn');
     const openOptionsPageBtn = document.getElementById('openOptionsPageBtn');
+    const facebookSendNowBtn = document.getElementById('facebookSendNowBtn');
+    const facebookForceReleaseBtn = document.getElementById('facebookForceReleaseBtn');
     const status = document.getElementById('status');
     const testBtn = document.getElementById('testConnectionBtn');
     const resetBtn = document.getElementById('resetPromptBtn');
@@ -487,6 +471,15 @@ document.addEventListener('DOMContentLoaded', function () {
     let tokenValidationTimer = null;
     let tokenValidationSequence = 0;
     let tokenValidationCompletedSequence = 0;
+    let facebookAdminStatsEnabledValue = false;
+
+    function renderFacebookAdminControlsVisibility() {
+        if (!facebookAdminActionsWrap) {
+            return;
+        }
+
+        facebookAdminActionsWrap.hidden = !facebookAdminStatsEnabledValue;
+    }
 
     function setTokenValidationState(state, message) {
         if (!tokenValidation || !tokenValidationText) {
@@ -600,7 +593,7 @@ document.addEventListener('DOMContentLoaded', function () {
                 ? t('status.activeOnFacebookNotAdmin', {}, 'Active tab is on Facebook, but not on an admin activities page.')
                 : t('status.activeNotFacebook', {}, 'Active tab is not on Facebook admin activities.'));
         var ingestState = statusPayload.feature_enabled === false
-            ? t('status.reportingDisabledPopup', {}, ' Reporting is disabled in the popup. Enable the feature there before the page overlay can appear.')
+            ? t('status.reportingDisabledPopup', {}, ' Reporting is disabled in extension settings. Enable the feature on the config page before the page overlay can appear.')
             : (statusPayload.ingest_enabled
                 ? t('status.reportingEnabled', {}, ' Reporting is enabled.')
                 : t('status.reportingDisabledReportable', {}, ' Reporting is disabled, but detections below are still reportable if enabled.'));
@@ -799,8 +792,8 @@ document.addEventListener('DOMContentLoaded', function () {
         return {
             toolsApiToken: apiKeyInput.value.trim(),
             devMode: devModeCheckbox.checked,
-            facebookAdminDebugEnabled: facebookAdminDebugCheckbox.checked,
-            facebookAdminStatsEnabled: facebookAdminStatsCheckbox.checked,
+            facebookAdminDebugEnabled: facebookAdminDebugCheckbox ? facebookAdminDebugCheckbox.checked : false,
+            facebookAdminStatsEnabled: facebookAdminStatsCheckbox ? facebookAdminStatsCheckbox.checked : facebookAdminStatsEnabledValue,
             responderName: responderNameInput.value.trim(),
             chatGptSystemPrompt: sanitizePersonaProfileValue(systemPromptInput.value),
             autoDetectResponder: autoDetectCheckbox.checked,
@@ -1199,8 +1192,14 @@ document.addEventListener('DOMContentLoaded', function () {
             markedContextExpansionModeSelect.value = data.markedContextExpansionMode || DEFAULT_MARKED_CONTEXT_EXPANSION_MODE;
         }
         devModeCheckbox.checked = !!data.devMode;
-        facebookAdminDebugCheckbox.checked = !!data.facebookAdminDebugEnabled;
-        facebookAdminStatsCheckbox.checked = !!data.facebookAdminStatsEnabled;
+        facebookAdminStatsEnabledValue = !!data.facebookAdminStatsEnabled;
+        if (facebookAdminDebugCheckbox) {
+            facebookAdminDebugCheckbox.checked = !!data.facebookAdminDebugEnabled;
+        }
+        if (facebookAdminStatsCheckbox) {
+            facebookAdminStatsCheckbox.checked = facebookAdminStatsEnabledValue;
+        }
+        renderFacebookAdminControlsVisibility();
         renderEndpointNote();
         renderDebugConsoleVisibility();
 
@@ -1231,17 +1230,23 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 
-    facebookAdminDebugCheckbox.addEventListener('change', function () {
-        scheduleLocalAutosave(facebookAdminDebugCheckbox.checked
-            ? t('status.facebookDebugEnabled', {}, 'Facebook admin debug diagnostics enabled.')
-            : t('status.facebookDebugDisabled', {}, 'Facebook admin debug diagnostics disabled.'));
-    });
+    if (facebookAdminDebugCheckbox) {
+        facebookAdminDebugCheckbox.addEventListener('change', function () {
+            scheduleLocalAutosave(facebookAdminDebugCheckbox.checked
+                ? t('status.facebookDebugEnabled', {}, 'Facebook admin debug diagnostics enabled.')
+                : t('status.facebookDebugDisabled', {}, 'Facebook admin debug diagnostics disabled.'));
+        });
+    }
 
-    facebookAdminStatsCheckbox.addEventListener('change', function () {
-        scheduleLocalAutosave(facebookAdminStatsCheckbox.checked
-            ? t('status.facebookStatsEnabled', {}, 'Facebook admin activity statistics feature enabled. Page reporting still stays off until you enable it on each Facebook admin page.')
-            : t('status.facebookStatsDisabled', {}, 'Facebook admin activity statistics feature disabled. Facebook admin pages will stay quiet until you enable it again.'));
-    });
+    if (facebookAdminStatsCheckbox) {
+        facebookAdminStatsCheckbox.addEventListener('change', function () {
+            facebookAdminStatsEnabledValue = !!facebookAdminStatsCheckbox.checked;
+            renderFacebookAdminControlsVisibility();
+            scheduleLocalAutosave(facebookAdminStatsCheckbox.checked
+                ? t('status.facebookStatsEnabled', {}, 'Facebook admin activity statistics feature enabled. Page reporting still stays off until you enable it on each Facebook admin page.')
+                : t('status.facebookStatsDisabled', {}, 'Facebook admin activity statistics feature disabled. Facebook admin pages will stay quiet until you enable it again.'));
+        });
+    }
 
 
     if (apiKeyInput) {
@@ -1450,6 +1455,64 @@ document.addEventListener('DOMContentLoaded', function () {
 
             if (chrome.tabs && typeof chrome.tabs.create === 'function' && chrome.runtime && typeof chrome.runtime.getURL === 'function') {
                 chrome.tabs.create({url: chrome.runtime.getURL('html/options.html')});
+            }
+        });
+    }
+
+    if (facebookSendNowBtn) {
+        facebookSendNowBtn.addEventListener('click', async function () {
+            setBusyState(true, [facebookSendNowBtn, facebookForceReleaseBtn]);
+            const result = await sendMessageToActiveTab({
+                type: 'RUN_FACEBOOK_ADMIN_INGEST_MANUAL',
+                forceRelease: false,
+            });
+            setBusyState(false, [facebookSendNowBtn, facebookForceReleaseBtn]);
+
+            if (!result || !result.ok) {
+                setStatus(status, (result && result.error) || 'Could not trigger manual Facebook queue send on the active tab.', true);
+                return;
+            }
+
+            const stateText = result.status && result.status.state_text ? result.status.state_text : 'Manual queue send was triggered in the active Facebook tab.';
+            setStatus(status, stateText, false);
+        });
+    }
+
+    if (facebookForceReleaseBtn) {
+        facebookForceReleaseBtn.addEventListener('click', async function () {
+            setBusyState(true, [facebookSendNowBtn, facebookForceReleaseBtn]);
+            const result = await sendMessageToActiveTab({
+                type: 'RUN_FACEBOOK_ADMIN_INGEST_MANUAL',
+                forceRelease: true,
+            });
+            setBusyState(false, [facebookSendNowBtn, facebookForceReleaseBtn]);
+
+            if (!result || !result.ok) {
+                setStatus(status, (result && result.error) || 'Could not force-release stuck Facebook queue entries on the active tab.', true);
+                return;
+            }
+
+            const stateText = result.status && result.status.state_text ? result.status.state_text : 'Forced queue release was triggered in the active Facebook tab.';
+            setStatus(status, stateText, false);
+        });
+    }
+
+    if (chrome.storage && chrome.storage.onChanged && typeof chrome.storage.onChanged.addListener === 'function') {
+        chrome.storage.onChanged.addListener(function (changes, areaName) {
+            if (areaName !== 'sync') {
+                return;
+            }
+
+            if (changes.facebookAdminStatsEnabled) {
+                facebookAdminStatsEnabledValue = !!changes.facebookAdminStatsEnabled.newValue;
+                if (facebookAdminStatsCheckbox) {
+                    facebookAdminStatsCheckbox.checked = facebookAdminStatsEnabledValue;
+                }
+                renderFacebookAdminControlsVisibility();
+            }
+
+            if (changes.facebookAdminDebugEnabled && facebookAdminDebugCheckbox) {
+                facebookAdminDebugCheckbox.checked = !!changes.facebookAdminDebugEnabled.newValue;
             }
         });
     }

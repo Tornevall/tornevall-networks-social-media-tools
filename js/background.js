@@ -4,6 +4,7 @@ const SOCIALGPT_PATH = '/api/ai/socialgpt/respond';
 const MODELS_PATH = '/api/social-media-tools/extension/models';
 const FACEBOOK_INGEST_PATH = '/api/social-media-tools/facebook/ingest';
 const SOUNDCLOUD_INGEST_PATH = '/api/social-media-tools/soundcloud/ingest';
+const RSS_OVERVIEW_PATH = '/api/rss';
 const DEBUG_LOG_KEY = 'tn_networks_debug_logs';
 const MAX_DEBUG_LOGS = 200;
 const MAX_SOUNDCLOUD_RECENT_EVENTS = 5;
@@ -23,6 +24,23 @@ const DEFAULT_FACT_CHECK_MODEL = 'gpt-4o';
 const soundCloudTabStatusCache = {};
 const CONTEXT_MENU_OPEN_TOOLBOX_ID = 'tn-social-tools-open-toolbox';
 const CONTEXT_MENU_VERIFY_ID = 'tn-social-tools-verify-fact';
+const RSS_SITE_CACHE_TTL_MS = 5 * 60 * 1000;
+const CONTENT_SCRIPT_JS_FILES = [
+    'js/shared/i18n.js',
+    'js/shared/platform-registry.js',
+    'js/shared/facebook-admin-reporter.js',
+    'js/shared/soundcloud-page-bridge.js',
+    'js/platforms/facebook.js',
+    'js/platforms/soundcloud.js',
+    'js/platforms/x.js',
+    'js/content-script.js'
+];
+const CONTENT_SCRIPT_CSS_FILES = ['css/styles.css'];
+let rssSiteCatalogCache = {
+    baseUrl: '',
+    fetchedAt: 0,
+    entries: [],
+};
 
 function normalizeExtensionUiLanguage(value) {
     var normalized = String(value || '').trim().toLowerCase();
@@ -62,6 +80,98 @@ function getBackgroundUiText(locale, key) {
 
 function getToolsBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
+}
+
+function parseUrlSafe(value) {
+    try {
+        return new URL(String(value || '').trim());
+    } catch (error) {
+        return null;
+    }
+}
+
+function normalizeHostName(value) {
+    return String(value || '').trim().toLowerCase().replace(/^www\./, '');
+}
+
+function normalizeRssCatalogEntries(payload) {
+    var rows = payload && Array.isArray(payload.urls) ? payload.urls : [];
+    return rows.map(function (row) {
+        var primaryUrl = row && row.url ? String(row.url).trim() : '';
+        var realUrl = row && row.real_url ? String(row.real_url).trim() : '';
+        var parsedPrimary = parseUrlSafe(primaryUrl);
+        var parsedReal = parseUrlSafe(realUrl);
+        var host = normalizeHostName(
+            (parsedReal && parsedReal.hostname)
+            || (parsedPrimary && parsedPrimary.hostname)
+            || ''
+        );
+
+        return {
+            urlid: row && typeof row.urlid !== 'undefined' ? row.urlid : null,
+            title: row && row.title ? String(row.title).trim() : '',
+            category: row && row.category ? String(row.category).trim() : '',
+            url: primaryUrl,
+            realUrl: realUrl,
+            host: host,
+            feedUrl: row && row.feedUrl ? String(row.feedUrl).trim() : '',
+            publicSelector: row && row.publicSelector ? String(row.publicSelector).trim() : '',
+        };
+    }).filter(function (entry) {
+        return !!entry.host;
+    });
+}
+
+async function fetchToolsRssCatalog(baseUrl, forceRefresh) {
+    var now = Date.now();
+    if (!forceRefresh
+        && rssSiteCatalogCache.baseUrl === baseUrl
+        && rssSiteCatalogCache.entries.length
+        && (now - rssSiteCatalogCache.fetchedAt) < RSS_SITE_CACHE_TTL_MS) {
+        return rssSiteCatalogCache.entries;
+    }
+
+    var response = await fetch(baseUrl + RSS_OVERVIEW_PATH, {
+        method: 'GET',
+        headers: {
+            'Accept': 'application/json'
+        }
+    });
+    var data = await response.json().catch(function () {
+        return {};
+    });
+    if (!response.ok) {
+        throw new Error(normalizeToolsApiError(response.status, data));
+    }
+
+    var entries = normalizeRssCatalogEntries(data);
+    rssSiteCatalogCache = {
+        baseUrl: baseUrl,
+        fetchedAt: now,
+        entries: entries,
+    };
+
+    return entries;
+}
+
+function findRssMatchesForPageUrl(pageUrl, catalogEntries) {
+    var parsed = parseUrlSafe(pageUrl);
+    if (!parsed) {
+        return [];
+    }
+
+    var normalizedHost = normalizeHostName(parsed.hostname);
+    if (!normalizedHost) {
+        return [];
+    }
+
+    return (catalogEntries || []).filter(function (entry) {
+        return entry && entry.host && (
+            entry.host === normalizedHost
+            || normalizedHost.indexOf(entry.host + '.') !== -1
+            || entry.host.indexOf(normalizedHost + '.') !== -1
+        );
+    }).slice(0, 6);
 }
 
 function detectExtensionBrowserPlatform(manifest) {
@@ -231,6 +341,96 @@ function sendMessageToTabFrame(tabId, message, frameId) {
     });
 }
 
+function shouldRetryTabMessageWithInjection(errorMessage) {
+    var normalized = String(errorMessage || '').toLowerCase();
+    return normalized.indexOf('receiving end does not exist') !== -1
+        || normalized.indexOf('could not establish connection') !== -1
+        || normalized.indexOf('message port closed') !== -1
+        || normalized.indexOf('the target frame did not return a response') !== -1;
+}
+
+function isScriptableTabUrl(url) {
+    var value = String(url || '').trim().toLowerCase();
+    if (!value) {
+        return false;
+    }
+
+    return value.indexOf('http://') === 0
+        || value.indexOf('https://') === 0
+        || value.indexOf('file://') === 0;
+}
+
+function getTabById(tabId) {
+    return new Promise(function (resolve) {
+        chrome.tabs.get(tabId, function (tab) {
+            if (chrome.runtime.lastError) {
+                resolve({ok: false, error: chrome.runtime.lastError.message, tab: null});
+                return;
+            }
+
+            resolve({ok: true, tab: tab || null});
+        });
+    });
+}
+
+async function ensureExtensionPageHelperInTab(tabId) {
+    if (!chrome.scripting || typeof chrome.scripting.executeScript !== 'function') {
+        return {
+            ok: false,
+            error: 'The extension cannot reattach its page helper in this browser context.',
+        };
+    }
+
+    var tabResult = await getTabById(tabId);
+    if (!tabResult.ok || !tabResult.tab) {
+        return {
+            ok: false,
+            error: tabResult.error || 'Could not inspect the active tab before reinjecting the page helper.',
+        };
+    }
+
+    if (!isScriptableTabUrl(tabResult.tab.url)) {
+        return {
+            ok: false,
+            error: 'This tab does not allow Toolbox injection. Open a normal web page and try again.',
+        };
+    }
+
+    try {
+        if (chrome.scripting.insertCSS && typeof chrome.scripting.insertCSS === 'function') {
+            await chrome.scripting.insertCSS({
+                target: {tabId: tabId, allFrames: true},
+                files: CONTENT_SCRIPT_CSS_FILES,
+            }).catch(function () {
+            });
+        }
+
+        await chrome.scripting.executeScript({
+            target: {tabId: tabId, allFrames: true},
+            files: CONTENT_SCRIPT_JS_FILES,
+        });
+
+        await appendDebugLog({
+            level: 'info',
+            category: 'ui',
+            message: 'Reattached page helper in active tab before retrying the message.',
+            meta: {
+                tabId: tabId,
+                url: tabResult.tab.url || '',
+            }
+        });
+
+        return {ok: true};
+    } catch (error) {
+        return {
+            ok: false,
+            error: error && error.message
+                ? error.message
+                : 'Could not reattach the page helper in the active tab.',
+        };
+    }
+}
+
 async function resolveBestToolboxFrame(tabId, preferredFrameId) {
     if (typeof preferredFrameId === 'number') {
         return preferredFrameId;
@@ -265,6 +465,22 @@ async function routeToolboxMessage(tabId, message, preferredFrameId) {
     var frameId = await resolveBestToolboxFrame(tabId, preferredFrameId);
     var response = await sendMessageToTabFrame(tabId, message, frameId);
 
+    if ((!response || !response.ok) && shouldRetryTabMessageWithInjection(response && response.error)) {
+        var injectionResult = await ensureExtensionPageHelperInTab(tabId);
+        if (!injectionResult.ok) {
+            return {
+                frameId: frameId,
+                response: {
+                    ok: false,
+                    error: injectionResult.error,
+                }
+            };
+        }
+
+        frameId = await resolveBestToolboxFrame(tabId, preferredFrameId);
+        response = await sendMessageToTabFrame(tabId, message, frameId);
+    }
+
     if ((!response || !response.ok) && typeof preferredFrameId === 'number') {
         var fallbackFrameId = await resolveBestToolboxFrame(tabId);
         if (typeof fallbackFrameId === 'number' && fallbackFrameId !== frameId) {
@@ -277,6 +493,61 @@ async function routeToolboxMessage(tabId, message, preferredFrameId) {
         frameId: frameId,
         response: response,
     };
+}
+
+async function sendMessageToActiveTabWithRecovery(message, options) {
+    var config = options || {};
+    var activeTabResult = await getActiveTab();
+    if (!activeTabResult.ok || !activeTabResult.tab) {
+        return {ok: false, error: activeTabResult.error || 'No active tab is available.'};
+    }
+
+    if (config.routeThroughBestFrame) {
+        var routed = await routeToolboxMessage(activeTabResult.tab.id, message, config.preferredFrameId);
+        if (!routed.response || !routed.response.ok) {
+            return {
+                ok: false,
+                error: routed.response && routed.response.error
+                    ? routed.response.error
+                    : 'Could not reach the page helper in the active tab.',
+                frameId: routed.frameId,
+                tabId: activeTabResult.tab.id,
+            };
+        }
+
+        return Object.assign({
+            ok: true,
+            frameId: routed.frameId,
+            tabId: activeTabResult.tab.id,
+        }, routed.response);
+    }
+
+    var response = await sendMessageToTabFrame(activeTabResult.tab.id, message, config.frameId);
+    if ((!response || !response.ok) && shouldRetryTabMessageWithInjection(response && response.error)) {
+        var injectionResult = await ensureExtensionPageHelperInTab(activeTabResult.tab.id);
+        if (!injectionResult.ok) {
+            return {
+                ok: false,
+                error: injectionResult.error,
+                tabId: activeTabResult.tab.id,
+            };
+        }
+
+        response = await sendMessageToTabFrame(activeTabResult.tab.id, message, config.frameId);
+    }
+
+    if (!response || !response.ok) {
+        return {
+            ok: false,
+            error: response && response.error ? response.error : 'Could not reach the page helper in the active tab.',
+            tabId: activeTabResult.tab.id,
+        };
+    }
+
+    return Object.assign({
+        ok: true,
+        tabId: activeTabResult.tab.id,
+    }, response);
 }
 
 function getActiveTab() {
@@ -1725,32 +1996,54 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
         return true;
     }
 
-    if (req.type === 'OPEN_TOOLBOX_IN_ACTIVE_TAB') {
-        getActiveTab().then(async function (activeTabResult) {
-            if (!activeTabResult.ok || !activeTabResult.tab) {
-                sendResponse({ok: false, error: activeTabResult.error || 'No active tab is available.'});
+    if (req.type === 'GET_TOOLS_RSS_MATCHES_FOR_PAGE') {
+        chrome.storage.sync.get(['devMode'], async function (data) {
+            var pageUrl = req && req.pageUrl ? String(req.pageUrl) : '';
+            if (!pageUrl) {
+                sendResponse({ok: false, error: 'Missing page URL.'});
                 return;
             }
 
-            var routed = await routeToolboxMessage(activeTabResult.tab.id, {
-                type: 'OPEN_REPLY_PANEL_FROM_POPUP'
-            });
+            var baseUrl = getToolsBaseUrl(!!(data && data.devMode));
 
-            if (!routed.response || !routed.response.ok) {
+            try {
+                var catalog = await fetchToolsRssCatalog(baseUrl, false);
+                var matches = findRssMatchesForPageUrl(pageUrl, catalog);
+                sendResponse({
+                    ok: true,
+                    baseUrl: baseUrl,
+                    matchedCount: matches.length,
+                    matches: matches,
+                });
+            } catch (error) {
                 sendResponse({
                     ok: false,
-                    error: routed.response && routed.response.error
-                        ? routed.response.error
-                        : 'Could not open Toolbox in the selected frame.',
-                    frameId: routed.frameId,
+                    error: error && error.message ? error.message : 'Could not load Tools RSS catalog.',
+                    matches: [],
                 });
-                return;
             }
+        });
+        return true;
+    }
 
-            sendResponse(Object.assign({
-                ok: true,
-                frameId: routed.frameId,
-            }, routed.response));
+    if (req.type === 'SEND_MESSAGE_TO_ACTIVE_TAB') {
+        sendMessageToActiveTabWithRecovery(req && req.message ? req.message : {}, {
+            routeThroughBestFrame: !!(req && req.routeThroughBestFrame),
+            preferredFrameId: req && typeof req.preferredFrameId === 'number' ? req.preferredFrameId : undefined,
+            frameId: req && typeof req.frameId === 'number' ? req.frameId : undefined,
+        }).then(function (result) {
+            sendResponse(result);
+        });
+        return true;
+    }
+
+    if (req.type === 'OPEN_TOOLBOX_IN_ACTIVE_TAB') {
+        sendMessageToActiveTabWithRecovery({
+            type: 'OPEN_REPLY_PANEL_FROM_POPUP'
+        }, {
+            routeThroughBestFrame: true,
+        }).then(function (result) {
+            sendResponse(result);
         });
         return true;
     }
@@ -1974,6 +2267,11 @@ chrome.storage.onChanged.addListener(function (changes, areaName) {
     }
     if (changes.devMode) {
         shouldTryFlush = true;
+        rssSiteCatalogCache = {
+            baseUrl: '',
+            fetchedAt: 0,
+            entries: [],
+        };
     }
 
     if (!shouldTryFlush) {

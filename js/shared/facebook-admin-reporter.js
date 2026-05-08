@@ -690,6 +690,44 @@
             });
         }
 
+        function releaseSendingEntries(meta) {
+            restoreState();
+            var now = Date.now();
+            var reason = meta && meta.reason ? String(meta.reason) : 'manual-release';
+            var releaseMessage = normalizeWhitespace(meta && meta.message ? meta.message : '')
+                || 'Manual queue release moved in-flight entries back to failed for retry.';
+            var releasedCount = 0;
+
+            getEntriesByState(['sending']).forEach(function (entry) {
+                entry.state = 'failed';
+                entry.failure_count = Math.max(0, Number(entry.failure_count) || 0) + 1;
+                entry.last_error = releaseMessage;
+                entry.last_state_at = new Date(now).toISOString();
+                touchExpiry(entry, now);
+                indexEntry(entry);
+                releasedCount += 1;
+            });
+
+            if (releasedCount) {
+                totals.failed_attempts += releasedCount;
+                lastSubmission = {
+                    status: 'released',
+                    reason: reason,
+                    released: releasedCount,
+                    queue_remaining: getQueueSize(),
+                    completed_at: new Date(now).toISOString(),
+                };
+                persistState();
+                log('facebook-admin-queue', 'Released stuck Facebook admin queue entries.', {
+                    reason: reason,
+                    released: releasedCount,
+                    queue_remaining: getQueueSize(),
+                });
+            }
+
+            return releasedCount;
+        }
+
         function getSnapshot() {
             restoreState();
             var queuedEntries = sortEntriesByRecency(getEntriesByState(['queued']));
@@ -740,6 +778,7 @@
             startNextBatch: startNextBatch,
             markBatchSent: markBatchSent,
             markBatchFailed: markBatchFailed,
+            releaseSendingEntries: releaseSendingEntries,
             getSnapshot: getSnapshot,
             getQueueSize: getQueueSize,
             reset: reset,

@@ -1,4 +1,4 @@
-# Tornevall Networks Social Media Tools
+ans# Tornevall Networks Social Media Tools
 
 **A browser-wide AI assistant and fact-checking companion with a Chrome-first source manifest and release packaging for Chrome, Edge, Opera, and Firefox.**
 
@@ -170,7 +170,7 @@ Both `<all_urls>` entries are REQUIRED and intentional, even though the real man
 - **AI Replies**: Compose AI-powered responses on any page
 - **Fact-Checking**: Select text to instantly verify
 - **Settings Sync**: Preferences sync with Tools platform
-- **Platform Integrations**: Facebook admin stats, SoundCloud insights
+- **Platform Integrations**: SoundCloud insights
 - **Dev Mode**: Debug console and connection testing
 
 ## Configuration surfaces
@@ -213,6 +213,7 @@ These advanced mark-mode settings are local to the extension and intentionally d
 
 The Toolbox panel itself is now draggable from its header, and the text-selection overlay was hardened so short/double-click selections trigger **Open Toolbox** / **Verify fact** more reliably.
 The Toolbox header close button (`×`) now also works again alongside the draggable header behavior.
+Toolbox now also has a **Panel mode** selector so you can keep it in auto mode near the active field or hard-dock it (`Attached right`, `Attached left`, `Bottom right`, `Bottom left`) like a companion panel.
 
 ---
 
@@ -225,30 +226,6 @@ The Toolbox header close button (`×`) now also works again alongside the dragga
 ---
 
 ✅ **Ready for CWS submission? Check CHROME_WEB_STORE_COMPLIANCE.md first.**
-
-## Facebook admin activities
-
-On Facebook group `admin_activities` pages, the extension can:
-
-- stay completely inactive unless **Enable Facebook admin activity statistics** is turned on in the popup
-- observe relevant page activity in the current tab
-- show a single inline control for enabling activity statistics
-- extract detected activity rows directly from Facebook XHR / GraphQL responses
-- queue detected rows locally and submit them to Tools in bulk instead of one request per row
-- keep the page overlay draggable so it does not block Facebook UI elements
-- show a local preview of reportable admin-log entries before statistics submission is enabled
-
-The popup toggle is the global master switch for this feature.
-If it is turned off, Facebook `admin_activities` pages stay quiet and no admin-statistics overlay is shown.
-
-When the popup toggle is turned on, the Facebook-side monitor can activate on matching pages so the extension can detect relevant `admin_activities` data in the open tab.
-Even then, no statistics are submitted to Tools unless the user explicitly enables statistics submission from the inline page control on that exact Facebook page.
-
-Statistics submission is disabled by default on each page load.
-If the Facebook page is reloaded or reopened, submission must be explicitly enabled again.
-
-The point is to keep the Facebook-side workflow simple and page-local.
-The actual Tools submit is performed by the extension runtime, not directly by the Facebook page context, to avoid browser CORS issues.
 
 ## Facebook reply context
 
@@ -290,9 +267,10 @@ Stored locally in Chrome:
 
 - bearer token
 - current environment flag (`devMode`)
-- Facebook admin statistics feature flag (`facebookAdminStatsEnabled`)
 - last synced responder values for UI fallback
-- temporary in-session admin activity data pending optional submission
+- temporary local UI state for active extension features
+
+When Toolbox is open, the extension can also ask Tools in the background whether the current hostname matches known RSS source hosts from `/api/rss`, and then show a compact related-site hint inline in the Toolbox anchor note.
 
 ## Troubleshooting
 
@@ -300,21 +278,6 @@ If **dev / beta mode** is enabled:
 
 - the popup shows a debug console
 
-If **Enable Facebook admin debug diagnostics** is enabled in the popup:
-
-- Facebook `admin_activities` pages can show extra diagnostics
-- interesting page events can be mirrored to Chrome DevTools console with the `TN Social Tools` prefix
-- detected admin-log entries can also be mirrored to the console before a bulk upload is sent
-
-If **Enable Facebook admin activity statistics** is disabled in the popup:
-
-- Facebook `admin_activities` pages do not show the admin-statistics overlay
-- admin-log detections are not processed in that tab
-- you can re-enable the feature later from the popup and then opt in again on the current Facebook page
-
-The injected network monitor skips unsafe direct `responseText` reads for binary XHR response types such as `arraybuffer` and `blob`, so Facebook background traffic should no longer crash the page monitor while text/JSON admin-log payloads remain readable.
-
-If Facebook activity submission returns a server-side 500 error, make sure the Tools server is updated to the matching backend version for the extension workflow.
 
 If you change extension files locally, reload the extension in `chrome://extensions` before testing again.
 

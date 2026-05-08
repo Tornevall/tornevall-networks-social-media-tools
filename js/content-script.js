@@ -3,6 +3,7 @@ let panelAttachedComposer = null;
 let panelContextDirty = false;
 let panelDragState = null;
 let panelManualPosition = null;
+let panelDockMode = 'auto';
 let verifyActionButton = null;
 let verifyActionContext = '';
 let verifyActionAnchor = null;
@@ -69,6 +70,7 @@ const MAX_RECENT_FACEBOOK_COMMENT_ENTRIES = 200;
 const DEFAULT_REPLY_PROMPT = 'Write text that fits the visible context and can be pasted into the selected field.';
 const MARKED_CONTEXT_LABEL_MODES = ['compact', 'mark-id', 'detailed'];
 const MARKED_CONTEXT_EXPANSION_MODES = ['current', 'parent', 'parent-children', 'document'];
+const PANEL_DOCK_MODES = ['auto', 'right', 'left', 'bottom-right', 'bottom-left'];
 const MIN_SELECTION_ACTION_LENGTH = 2;
 const extensionI18n = globalThis.TNNetworksExtensionI18n || {
     locale: 'en',
@@ -367,6 +369,13 @@ function normalizeMarkedContextExpansionMode(value) {
         : 'current';
 }
 
+function normalizePanelDockMode(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return PANEL_DOCK_MODES.indexOf(normalized) !== -1
+        ? normalized
+        : 'auto';
+}
+
 function normalizeModelOption(option) {
     const id = option && option.id ? normalizeWhitespace(option.id) : '';
     if (!id) {
@@ -514,7 +523,7 @@ async function refreshAvailableModelsForPanel(forceRefresh) {
     }
 }
 
-safeStorageSyncGet(['extensionUiLanguage', 'defaultResponseLanguage', 'defaultVerifyFactLanguage', 'preferredFactCheckModel', 'defaultQuickReplyPreset', 'defaultQuickReplyCustomInstruction', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel', 'markedContextLabelMode', 'markedContextExpansionMode'], function (data) {
+safeStorageSyncGet(['extensionUiLanguage', 'defaultResponseLanguage', 'defaultVerifyFactLanguage', 'preferredFactCheckModel', 'defaultQuickReplyPreset', 'defaultQuickReplyCustomInstruction', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel', 'markedContextLabelMode', 'markedContextExpansionMode', 'panelDockMode'], function (data) {
     applyExtensionUiLanguage(data.extensionUiLanguage || extensionUiLanguage);
     defaultResponseLanguage = normalizeResponseLanguageChoice(data.defaultResponseLanguage || 'auto');
     defaultVerifyFactLanguage = normalizeResponseLanguageChoice(data.defaultVerifyFactLanguage || defaultResponseLanguage || 'auto');
@@ -527,6 +536,7 @@ safeStorageSyncGet(['extensionUiLanguage', 'defaultResponseLanguage', 'defaultVe
     preferredFactCheckModel = resolvePreferredFactCheckModel(data.preferredFactCheckModel || preferredFactCheckModel);
     markedContextLabelMode = normalizeMarkedContextLabelMode(data.markedContextLabelMode || markedContextLabelMode);
     markedContextExpansionMode = normalizeMarkedContextExpansionMode(data.markedContextExpansionMode || markedContextExpansionMode);
+    panelDockMode = normalizePanelDockMode(data.panelDockMode || panelDockMode);
     refreshMarkedElementPresentation();
 });
 
@@ -558,6 +568,11 @@ safeAddStorageChangeListener(function (changes, areaName) {
     }
     if (changes.markedContextExpansionMode) {
         markedContextExpansionMode = normalizeMarkedContextExpansionMode(changes.markedContextExpansionMode.newValue || 'current');
+    }
+    if (changes.panelDockMode) {
+        panelDockMode = normalizePanelDockMode(changes.panelDockMode.newValue || panelDockMode);
+        panelManualPosition = null;
+        positionPanelNearComposer();
     }
     if (changes.availableToolsModels) {
         availableToolsModels = normalizeAvailableToolsModels(changes.availableToolsModels.newValue || availableToolsModels);
@@ -611,6 +626,7 @@ let soundCloudBackgroundLastFlush = null;
 let activeReplyContextMeta = null;
 let latestBootstrapAdminScanDebug = null;
 let latestInjectedBootstrapAdminScanDebug = null;
+let latestRssSiteMatches = [];
 const recentAdminNetworkEvents = [];
 const facebookCommentEntryKeys = new Set();
 const recentFacebookCommentEntries = [];
@@ -686,6 +702,7 @@ const adminActivityReporter = typeof TNFacebookAdminReporter !== 'undefined' && 
         startNextBatch: function () { return []; },
         markBatchSent: function () {},
         markBatchFailed: function () {},
+        releaseSendingEntries: function () { return 0; },
         getQueueSize: function () { return 0; },
         reset: function () {},
         getSnapshot: function () {
@@ -738,6 +755,12 @@ function buildAdminLastSubmissionSummary(lastSubmission) {
             + (lastSubmission.error ? ' · ' + lastSubmission.error : '');
     }
 
+    if (lastSubmission.status === 'released') {
+        return 'Manual release moved ' + (lastSubmission.released || 0)
+            + ' entr' + ((lastSubmission.released || 0) === 1 ? 'y' : 'ies')
+            + ' back to retry state. Queue remaining: ' + (lastSubmission.queue_remaining || 0) + '.';
+    }
+
     return '';
 }
 
@@ -756,7 +779,7 @@ function buildAdminReporterStatusPayload() {
         debug_enabled: adminDebugEnabled,
         state_text: adminFeatureEnabled
             ? adminLastStatusText
-            : 'Facebook admin activity statistics are disabled in the popup. Enable the feature there before using this page.',
+            : 'Facebook admin activity statistics are disabled in the config page. Enable the feature there before using this page.',
         reportable_heading: 'Reportable if enabled',
         reportable_empty_text: 'No reportable admin-log entries detected yet.',
         reportable_entries: reportableEntries.map(function (entry) {
@@ -901,12 +924,12 @@ function syncAdminRuntimePreferences() {
 
         if (!adminFeatureEnabled) {
             if (adminIngestEnabled) {
-                disableAdminActivityCollection('Facebook admin activity statistics were disabled in the popup. This tab queue was cleared.', {
+                disableAdminActivityCollection('Facebook admin activity statistics were disabled in the config page. This tab queue was cleared.', {
                     reason: 'popup-feature-disabled',
                     auto_disabled: false,
                 });
             } else {
-                adminLastStatusText = 'Facebook admin activity statistics are disabled in the popup.';
+                adminLastStatusText = 'Facebook admin activity statistics are disabled in the config page.';
             }
             ensureAdminActivitiesControl();
             return;
@@ -1033,6 +1056,23 @@ function refreshLocalizedPanelUi() {
         Array.from(languageField.options).forEach(function (option, index) {
             if (typeof languageLabels[index] !== 'undefined') {
                 option.textContent = languageLabels[index];
+            }
+        });
+    }
+
+    const dockModeField = panel.querySelector('#sgpt-dock-mode');
+    if (dockModeField) {
+        setLabelText(dockModeField.parentElement, ct('contentScript.dockModeLabel', {}, 'Panel mode'));
+        const dockLabels = [
+            ct('contentScript.dockModeAuto', {}, 'Auto near field'),
+            ct('contentScript.dockModeRight', {}, 'Attached right'),
+            ct('contentScript.dockModeLeft', {}, 'Attached left'),
+            ct('contentScript.dockModeBottomRight', {}, 'Bottom right'),
+            ct('contentScript.dockModeBottomLeft', {}, 'Bottom left')
+        ];
+        Array.from(dockModeField.options).forEach(function (option, index) {
+            if (typeof dockLabels[index] !== 'undefined') {
+                option.textContent = dockLabels[index];
             }
         });
     }
@@ -2567,6 +2607,9 @@ function enableFactResultBoxDragging(handle, box) {
 
     handle.addEventListener('pointerdown', function (event) {
         if (event.button !== 0 || !box.isConnected || (event.target && event.target.closest && event.target.closest('#sgpt-close'))) {
+            return;
+        }
+        if (panelDockMode !== 'auto') {
             return;
         }
 
@@ -4371,6 +4414,47 @@ function getActiveComposerContext() {
     return contextNode ? getReadableContext(contextNode) : getEmptyContextPrompt();
 }
 
+async function refreshToolsRssSiteMatches() {
+    const response = await safeSendRuntimeMessageWithResponse({
+        type: 'GET_TOOLS_RSS_MATCHES_FOR_PAGE',
+        pageUrl: location.href,
+    });
+
+    latestRssSiteMatches = response && response.ok && Array.isArray(response.matches)
+        ? response.matches.slice(0, 3)
+        : [];
+    updatePanelAnchorNote();
+}
+
+function buildRssMatchHintText() {
+    if (!Array.isArray(latestRssSiteMatches) || !latestRssSiteMatches.length) {
+        return '';
+    }
+
+    const labels = latestRssSiteMatches.map(function (match) {
+        if (!match || typeof match !== 'object') {
+            return '';
+        }
+
+        return normalizeWhitespace(match.title || match.host || match.url || '');
+    }).filter(Boolean);
+
+    if (!labels.length) {
+        return '';
+    }
+
+    if (labels.length === 1) {
+        return ' ' + ct('contentScript.rssSiteHintSingle', {
+            site: labels[0]
+        }, 'Tools RSS knows this site as ' + labels[0] + '.');
+    }
+
+    return ' ' + ct('contentScript.rssSiteHintMultiple', {
+        count: labels.length,
+        sites: labels.join(', ')
+    }, 'Tools RSS knows this host via ' + labels.join(', ') + '.');
+}
+
 function updatePanelAnchorNote() {
     if (!panel) {
         return;
@@ -4382,6 +4466,7 @@ function updatePanelAnchorNote() {
     }
 
     const activeMarks = pruneMarkedElements();
+    const rssHintSuffix = buildRssMatchHintText();
 
     if (activeMarks.length) {
         let message = ct('contentScript.anchorMarkedBlocks', {
@@ -4414,18 +4499,18 @@ function updatePanelAnchorNote() {
     if (activeReplyContextMeta && activeReplyContextMeta.replyTarget) {
         note.textContent = ct('contentScript.anchorReplyTarget', {
             target: activeReplyContextMeta.replyTarget
-        }, 'Anchored to the current reply field. Reply target detected: ' + activeReplyContextMeta.replyTarget + '.');
+        }, 'Anchored to the current reply field. Reply target detected: ' + activeReplyContextMeta.replyTarget + '.') + rssHintSuffix;
         return;
     }
 
     if (activeReplyContextMeta && activeReplyContextMeta.source === 'generic-thread' && activeReplyContextMeta.threadSize > 1) {
-        note.textContent = ct('contentScript.anchorGenericThread', {}, 'Anchored to the current field with nearby conversation context from visible parent/sibling blocks.');
+        note.textContent = ct('contentScript.anchorGenericThread', {}, 'Anchored to the current field with nearby conversation context from visible parent/sibling blocks.') + rssHintSuffix;
         return;
     }
 
     note.textContent = activeComposer && document.contains(activeComposer)
-        ? ct('contentScript.anchorFocused', {}, 'Anchored to the currently focused text field.')
-        : ct('contentScript.anchorFocusOrMark', {}, 'Focus a text field or mark elements to build context.');
+        ? ct('contentScript.anchorFocused', {}, 'Anchored to the currently focused text field.') + rssHintSuffix
+        : ct('contentScript.anchorFocusOrMark', {}, 'Focus a text field or mark elements to build context.') + rssHintSuffix;
 }
 
 function ensureComposerActionButton() {
@@ -5562,6 +5647,8 @@ function updateAdminActivitiesControl() {
     const countersSnapshot = snapshot.totals || {};
 
     const toggle = adminActivitiesControl.querySelector('[data-role="toggle"]');
+    const sendNowButton = adminActivitiesControl.querySelector('[data-role="send-now"]');
+    const forceReleaseButton = adminActivitiesControl.querySelector('[data-role="force-release"]');
     const state = adminActivitiesControl.querySelector('[data-role="state"]');
     const counters = adminActivitiesControl.querySelector('[data-role="counters"]');
     const monitor = adminActivitiesControl.querySelector('[data-role="monitor"]');
@@ -5574,6 +5661,21 @@ function updateAdminActivitiesControl() {
     if (toggle) {
         toggle.textContent = adminIngestEnabled ? 'Disable activity statistics' : 'Enable activity statistics';
         toggle.style.background = adminIngestEnabled ? '#dc2626' : '#059669';
+    }
+
+    if (sendNowButton) {
+        sendNowButton.disabled = !adminIngestEnabled || adminFlushInProgress;
+        sendNowButton.textContent = adminFlushInProgress ? 'Sending…' : 'Send queue now';
+        sendNowButton.style.opacity = sendNowButton.disabled ? '0.55' : '1';
+        sendNowButton.style.cursor = sendNowButton.disabled ? 'not-allowed' : 'pointer';
+    }
+
+    if (forceReleaseButton) {
+        const hasSendingEntries = (countersSnapshot.sending || 0) > 0;
+        forceReleaseButton.disabled = !adminIngestEnabled || adminFlushInProgress || !hasSendingEntries;
+        forceReleaseButton.textContent = 'Force release stuck';
+        forceReleaseButton.style.opacity = forceReleaseButton.disabled ? '0.55' : '1';
+        forceReleaseButton.style.cursor = forceReleaseButton.disabled ? 'not-allowed' : 'pointer';
     }
 
     if (state) {
@@ -5698,6 +5800,8 @@ function ensureAdminActivitiesControl() {
         '<div data-role="state" style="margin-bottom:8px; color:#334155; font-weight:600;">Passive activity detection is ready. Statistics are off.</div>',
         '<div style="display:flex; gap:8px; flex-wrap:wrap;">',
         '<button type="button" data-role="toggle" style="border:none; border-radius:999px; padding:6px 10px; color:#fff; cursor:pointer;">Enable activity statistics</button>',
+        '<button type="button" data-role="send-now" style="border:none; border-radius:999px; padding:6px 10px; color:#fff; background:#0369a1; cursor:pointer;">Send queue now</button>',
+        '<button type="button" data-role="force-release" style="border:none; border-radius:999px; padding:6px 10px; color:#fff; background:#7c2d12; cursor:pointer;">Force release stuck</button>',
         '</div>',
         '<div style="margin-top:10px; font-weight:600; color:#334155;">Reportable if enabled</div>',
         '<div data-role="detected" style="margin-top:4px; font-size:11px; line-height:1.35; color:#475569; max-height:150px; overflow:auto;">No reportable admin-log entries detected yet.</div>',
@@ -5735,6 +5839,28 @@ function ensureAdminActivitiesControl() {
         debugLog({level: 'info', category: 'facebook-admin-ingest', message: 'Facebook admin ingest toggled.', meta: {enabled: adminIngestEnabled, url: location.href}});
         scheduleAdminActivitiesScan('manual-enable');
         scheduleAdminActivitiesBootstrapWarmup('manual-enable');
+    });
+
+    control.querySelector('[data-role="send-now"]').addEventListener('click', async function () {
+        if (!adminIngestEnabled || adminFlushInProgress) {
+            return;
+        }
+
+        await flushAdminActivitiesToTools('manual-send-now', {
+            manualRequested: true,
+            forceReleaseSending: false,
+        });
+    });
+
+    control.querySelector('[data-role="force-release"]').addEventListener('click', async function () {
+        if (!adminIngestEnabled || adminFlushInProgress) {
+            return;
+        }
+
+        await flushAdminActivitiesToTools('manual-force-release', {
+            manualRequested: true,
+            forceReleaseSending: true,
+        });
     });
 
     document.body.appendChild(control);
@@ -5844,6 +5970,7 @@ function handleLocationChange(reason) {
     }
 
     lastObservedLocationHref = location.href;
+    refreshToolsRssSiteMatches();
     ensureAdminActivitiesControl();
     ensureSoundCloudInsightsControl();
 
@@ -5870,7 +5997,7 @@ function handleLocationChange(reason) {
     }
 
     if (!adminFeatureEnabled) {
-        adminLastStatusText = 'Facebook admin activity statistics are disabled in the popup.';
+        adminLastStatusText = 'Facebook admin activity statistics are disabled in the config page.';
         return;
     }
 
@@ -6528,7 +6655,8 @@ async function submitAdminActivityEntriesBatch(entries) {
     return response;
 }
 
-async function flushAdminActivitiesToTools(reason) {
+async function flushAdminActivitiesToTools(reason, options) {
+    const config = options || {};
     if (adminFlushInProgress) {
         adminFlushRequestedWhileBusy = true;
         return;
@@ -6556,6 +6684,17 @@ async function flushAdminActivitiesToTools(reason) {
 
         updateAdminActivitiesControl();
 
+        if (config.forceReleaseSending && typeof adminActivityReporter.releaseSendingEntries === 'function') {
+            const releasedCount = adminActivityReporter.releaseSendingEntries({
+                reason: reason || 'manual-force-release',
+                message: 'Operator forced manual release of stuck sending entries.',
+            });
+            if (releasedCount > 0) {
+                adminLastStatusText = 'Released ' + releasedCount + ' stuck sending entr' + (releasedCount === 1 ? 'y' : 'ies') + '. Retrying now...';
+                updateAdminActivitiesControl();
+            }
+        }
+
         const initialSnapshot = getAdminReporterSnapshot();
 
         if (!initialSnapshot.totals.pending) {
@@ -6569,6 +6708,11 @@ async function flushAdminActivitiesToTools(reason) {
         let createdThisRun = 0;
         let updatedThisRun = 0;
         let batch = adminActivityReporter.startNextBatch(MAX_ADMIN_BATCH_SIZE, {reason: reason || 'scheduled-scan'});
+        if (!batch.length && (initialSnapshot.totals.sending || 0) > 0) {
+            adminLastStatusText = 'Queue has pending sending entries but no eligible retry batch. Use "Force release stuck" to re-queue them.';
+            updateAdminActivitiesControl();
+            return;
+        }
 
         while (batch.length) {
             adminActiveSendBatch = batch.slice();
@@ -6608,7 +6752,9 @@ async function flushAdminActivitiesToTools(reason) {
                 + ' · Created: ' + createdThisRun
                 + ' · Updated/duplicate-safe: ' + updatedThisRun
                 + ' · Queue remaining: ' + (finalSnapshot.totals.pending || 0)
-            : 'Listening for admin-log changes. No new detected entries to submit right now.';
+            : (config.manualRequested
+                ? 'Manual send completed. No eligible queued entries were waiting right now.'
+                : 'Listening for admin-log changes. No new detected entries to submit right now.');
         updateAdminActivitiesControl();
     } finally {
         adminActiveSendBatch = null;
@@ -6749,7 +6895,7 @@ function panelHTML() {
             <option value="long">${ct('contentScript.lengthLong', {}, 'Extended (whatever is needed)')}</option>
           </select></label>
       </div>
-      <div class="sgpt-quick-settings" style="grid-template-columns:repeat(3,minmax(0,1fr));">
+      <div class="sgpt-quick-settings" style="grid-template-columns:repeat(4,minmax(0,1fr));">
         <label>${ct('contentScript.customMoodLabel', {}, 'Custom mood')}<input type="text" id="sgpt-custom"></label>
         <label>${ct('contentScript.changeRequestLabel', {}, 'Change request')}<input type="text" id="sgpt-modifier" placeholder="${escapeHtml(ct('contentScript.changeRequestPlaceholder', {}, 'Optional: what should change?'))}"></label>
         <label>${ct('contentScript.languageLabel', {}, 'Language')}<select id="sgpt-language">
@@ -6761,6 +6907,13 @@ function panelHTML() {
             <option value="de">${ct('option.language.de', {}, 'German')}</option>
             <option value="fr">${ct('option.language.fr', {}, 'French')}</option>
             <option value="es">${ct('option.language.es', {}, 'Spanish')}</option>
+        </select></label>
+        <label>${ct('contentScript.dockModeLabel', {}, 'Panel mode')}<select id="sgpt-dock-mode">
+            <option value="auto">${ct('contentScript.dockModeAuto', {}, 'Auto near field')}</option>
+            <option value="right">${ct('contentScript.dockModeRight', {}, 'Attached right')}</option>
+            <option value="left">${ct('contentScript.dockModeLeft', {}, 'Attached left')}</option>
+            <option value="bottom-right">${ct('contentScript.dockModeBottomRight', {}, 'Bottom right')}</option>
+            <option value="bottom-left">${ct('contentScript.dockModeBottomLeft', {}, 'Bottom left')}</option>
         </select></label>
       </div>
       <div class="sgpt-inline-tools"><span>${ct('contentScript.contextLabel', {}, 'Context')}</span><div class="sgpt-inline-actions"><button type="button" id="sgpt-context-mark" aria-pressed="false">${ct('contentScript.markContext', {}, 'Mark context')}</button><button type="button" id="sgpt-context-import">${ct('contentScript.import', {}, 'Import')}</button><button type="button" id="sgpt-context-clear">${ct('contentScript.clear', {}, 'Clear')}</button></div></div>
@@ -6811,6 +6964,12 @@ function createPanel() {
         preferredToolsModel = normalizeWhitespace(this.value || '');
         safeStorageSyncSet({preferredToolsModel: preferredToolsModel});
     });
+    panel.querySelector('#sgpt-dock-mode').addEventListener('change', function () {
+        panelDockMode = normalizePanelDockMode(this.value || panelDockMode);
+        panelManualPosition = null;
+        safeStorageSyncSet({panelDockMode: panelDockMode});
+        positionPanelNearComposer();
+    });
     panel.querySelector('#sgpt-paste').addEventListener('click', () => {
         const result = pasteTextIntoActiveComposer(panel.querySelector('#sgpt-out').value, {submit: false});
         updatePanelComposerActions(result.ok ? result.message : result.error, result.ok ? 'success' : 'error');
@@ -6849,6 +7008,7 @@ function createPanel() {
     syncPanelMarkModeState();
     positionVerifyActionButton();
     populatePanelModelOptions(preferredToolsModel || defaultToolsModel);
+    panel.querySelector('#sgpt-dock-mode').value = panelDockMode;
 
     return panel;
 }
@@ -6881,6 +7041,7 @@ function openReplyPanel() {
     positionPanelNearComposer();
     updatePanelAnchorNote();
     updatePanelComposerActions();
+    refreshToolsRssSiteMatches();
     syncPanelMarkModeState();
     positionVerifyActionButton();
     p.querySelector('#sgpt-prompt').focus();
@@ -6889,20 +7050,25 @@ function openReplyPanel() {
     isClickMarkingActive = false;
     safeSendRuntimeMessage({type: 'RESET_MARK_MODE'});
 
-    safeStorageSyncGet(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood', 'defaultResponseLanguage', 'lastResponseLength', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel'], (data) => {
+    safeStorageSyncGet(['responderName', 'autoDetectResponder', 'defaultMood', 'defaultCustomMood', 'defaultResponseLanguage', 'lastResponseLength', 'availableToolsModels', 'defaultToolsModel', 'preferredToolsModel', 'panelDockMode'], (data) => {
         const label = p.querySelector('#sgpt-responder-name');
         const moodField = p.querySelector('#sgpt-mood');
         const customMoodField = p.querySelector('#sgpt-custom');
         const languageField = p.querySelector('#sgpt-language');
         const lengthField = p.querySelector('#sgpt-length');
         const modelField = p.querySelector('#sgpt-model');
+        const dockModeField = p.querySelector('#sgpt-dock-mode');
 
         availableToolsModels = normalizeAvailableToolsModels(data.availableToolsModels || availableToolsModels);
         defaultToolsModel = resolveDefaultToolsModel(availableToolsModels, data.defaultToolsModel || defaultToolsModel);
         preferredToolsModel = resolveDefaultToolsModel(availableToolsModels, data.preferredToolsModel || preferredToolsModel || defaultToolsModel);
+        panelDockMode = normalizePanelDockMode(data.panelDockMode || panelDockMode);
 
         if (modelField) {
             populatePanelModelOptions(preferredToolsModel || defaultToolsModel);
+        }
+        if (dockModeField) {
+            dockModeField.value = panelDockMode;
         }
 
         if (moodField && data.defaultMood) {
@@ -7478,6 +7644,7 @@ ensureAdminActivitiesControl();
 ensureSoundCloudInsightsControl();
 syncSoundCloudRuntimePreference();
 syncAdminRuntimePreferences();
+refreshToolsRssSiteMatches();
 safeAddStorageChangeListener(function (changes, areaName) {
     if (areaName === 'sync' && (changes.facebookAdminDebugEnabled || changes.facebookAdminStatsEnabled)) {
         syncAdminRuntimePreferences();

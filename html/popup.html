@@ -194,7 +194,7 @@
 </p>
 <p class="helper-note" data-i18n-html="page.popup.moreSettingsHtml">
     More settings and platform-specific tools live in Tools.
-    For more info, <a id="openToolsDashboardLink" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">open dashboard</a>.
+    For more info, <a id="openToolsDashboardLink" href="https://tools.tornevall.net/admin/social-media-tools" target="_blank" rel="noopener noreferrer">open dashboard</a>.
     You can also <a id="forumLink" href="https://forum.tornevall.net" target="_blank" rel="noopener noreferrer">open the forum</a>.
 </p>
 
@@ -208,19 +208,21 @@
     <label for="devMode" data-i18n-html="common.devModeHtml">Use dev / beta server (<code>tools.tornevall.com</code>)</label>
 </div>
 
-<div class="checkbox-inline">
-    <input type="checkbox" id="facebookAdminStatsEnabled">
-    <label for="facebookAdminStatsEnabled" data-i18n="common.facebookAdminStats">Enable Facebook admin activity statistics</label>
-</div>
-<p class="helper-note" style="margin-top:-6px;" data-i18n-html="common.facebookAdminStatsHelperHtml">
-    When this is off, Facebook <code>admin_activities</code> pages stay quiet and no statistics overlay is shown.
-    When this is on, you still have to enable reporting separately on each Facebook page before anything is submitted.
-</p>
+<section id="facebookAdminActionsWrap" hidden>
+    <p class="helper-note" style="margin-top:0;" data-i18n-html="common.facebookAdminStatsHelperHtml">
+        When this is off, Facebook <code>admin_activities</code> pages stay quiet and no statistics overlay is shown.
+        When this is on, you still have to enable reporting separately on each Facebook page before anything is submitted. This master switch is managed from the config page.
+    </p>
+    <div class="button-row" style="margin-top:-4px; margin-bottom:12px;">
+        <button id="facebookSendNowBtn" type="button" data-i18n="common.facebookSendNow">Send queued FB items (active tab)</button>
+        <button id="facebookForceReleaseBtn" type="button" data-i18n="common.facebookForceRelease">Release stuck FB send</button>
+    </div>
 
-<div class="checkbox-inline">
-    <input type="checkbox" id="facebookAdminDebugEnabled">
-    <label for="facebookAdminDebugEnabled" data-i18n="common.facebookAdminDebug">Enable Facebook admin debug diagnostics</label>
-</div>
+    <div class="checkbox-inline">
+        <input type="checkbox" id="facebookAdminDebugEnabled">
+        <label for="facebookAdminDebugEnabled" data-i18n="common.facebookAdminDebug">Enable Facebook admin debug diagnostics</label>
+    </div>
+</section>
 
 <label for="apiKey" data-i18n="common.apiKey">Tools API Bearer Token:</label>
 <input type="text" id="apiKey" placeholder="Paste your personal Tools token here" data-i18n-placeholder="common.apiKeyPlaceholder" />
@@ -293,7 +295,7 @@
 <textarea id="systemPrompt" rows="5">You are a friendly over intelligent human being, always ready to help. Respond as you are the one involved in the discussion and try to use the language used in the prompt.</textarea>
 <p class="helper-note" style="margin-top: -6px;" data-i18n-html="common.customInstructionsHelperHtml">
     For <strong>custom instructions</strong>, use
-    <a id="openToolsDashboardLinkInline" href="https://tools.tornevall.net/admin/social-media-tools/facebook" target="_blank" rel="noopener noreferrer">Tools → Social Media Tools → Facebook</a>.
+    <a id="openToolsDashboardLinkInline" href="https://tools.tornevall.net/admin/social-media-tools" target="_blank" rel="noopener noreferrer">Tools → Social Media Tools</a>.
 </p>
 
 <label for="testQuestion" data-i18n="common.testQuestion">Test question (Tools → OpenAI):</label>
