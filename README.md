@@ -22,10 +22,17 @@ This extension provides text selection overlays, fact-checking controls, and AI-
 - ✅ Get AI-powered replies and fact-checking via Tornevall Networks Tools
 - ✅ After a fact-check result appears, continue with the same context using the result-box `Open Toolbox` action
 
+Verify-fact note: when the backend decides that a check required real web search but OpenAI did not actually use the web-search tool, the result is now explicitly treated as **independent verification missing** rather than being presented as independently verified.
+
 **On specific platforms:**
 - 📘 **Facebook admin activities**: per-tab activity reporting with manual queue controls that can now retry directly to Tools if the extension runtime handoff stalls
+- 👥 **Facebook participant requests**: per-card moderation helper buttons on `/groups/*/participant_requests`, plus a floating fallback scanner panel that can list visible request cards, jump to the right card, and open **Analyze in Toolbox** / **Verify facts** directly from that panel when Facebook's DOM makes inline attachment awkward
 - 🎵 **SoundCloud**: Insights capture and analytics (with permission)
 - 𝕏 **X/Twitter**: Platform-specific tooling
+
+When the popup refreshes settings from Tools, the local Facebook admin activity checkbox can now also mirror the stored Tools-side on/off state from the Facebook Admin Tools dashboard. The same stricter state mirroring now also applies to the participant-request helper toggle, and the Tools dashboard checkbox should no longer drift visually from the saved remote state.
+
+The background worker now also batches debug-log persistence and avoids unnecessary sync writes when the Tools-side Facebook runtime flags have not actually changed, which reduces Chrome `MAX_WRITE_OPERATIONS_PER_MINUTE` quota errors.
 
 ---
 
@@ -238,6 +245,25 @@ On Facebook comment/reply fields, the reply panel tries to build a cleaner threa
 
 Reply generation and reply-assistance features are user-initiated.
 The extension does not post or submit replies automatically.
+
+## Facebook participant request helper
+
+On Facebook group pages that match `/groups/<group>/participant_requests`, the extension can now attach a small per-card helper when the feature is enabled from **Tools**.
+
+Current v1 behavior:
+
+- the helper is enabled from the Tools-side Facebook admin settings, not from a separate local popup checkbox
+- the same Tools-side master switch is authoritative, so the helper should appear only after that setting is enabled in Tools and synced into the extension/tab
+- visible participant-request cards are detected from the live Facebook DOM
+- each matched card gets compact **Analyze in Toolbox** and **Verify facts** actions
+- the imported Toolbox/fact-check context contains the visible participant card text, profile link when available, and a moderation-focused instruction block
+- when active, the page should also show one small floating scanner box in the lower-right corner so it is obvious that the participant helper is awake even before any card is matched
+
+Important guardrails:
+
+- the helper is advisory-only and does **not** click approve/reject buttons automatically
+- the imported participant card context is treated as visible UI context, not as independently verified fact
+- preview/GraphQL enrichment can be added later, but the first version already works from the visible card data alone
 
 ## Advanced mark mode context
 

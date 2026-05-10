@@ -6,14 +6,24 @@
 - A new build-time packaging script now creates browser-specific release archives for Chrome, Edge, Opera, and Firefox from the same `socialgpt-chrome` source tree.
 - Toolbox now has a hard-selectable panel mode (`Auto near field`, `Attached right`, `Attached left`, `Bottom right`, `Bottom left`) so it can behave more like a companion panel and stay out of the way.
 - Content scripts can now request lightweight related-site hints from Tools RSS (`/api/rss`) in the background, and the Toolbox anchor note now surfaces when the current URL matches a known RSS source host.
+- Facebook group `participant_requests` pages can now show a first participant-request helper that detects visible request cards and adds **Analyze in Toolbox** plus **Verify facts** actions per card.
+- The floating Facebook participant scanner can now also list the currently detected request cards, jump to the correct card, and open **Analyze in Toolbox** / **Verify facts** directly from that fallback panel.
 
 ### Changed
 - `projects/socialgpt.sh` no longer zips the raw source tree directly; it now calls the multi-browser builder and writes artifacts to `projects/socialgpt-chrome/dist/`.
 - The root `manifest.json` remains the Chrome-first source manifest used for development and first-pass testing.
 - Firefox packages now receive their `browser_specific_settings.gecko` metadata only at build time, so the source manifest can stay Chrome-oriented in the repository.
 - SocialGPT client metadata is now browser-aware and reports `chrome_extension`, `edge_extension`, `opera_extension`, or `firefox_extension` depending on the current build/runtime.
+- The popup/config sync now also mirrors the Tools-side **Facebook admin activity tools** on/off setting, so a remote Tools save can push the same feature state back into the local extension checkbox on the next settings refresh.
+- The new Facebook participant-request helper is intentionally controlled from Tools-side extension settings rather than from a separate local SocialGPT popup toggle.
 
 ### Fixed
+- Verify-fact flows no longer pretend a result was independently verified when the backend marked real web search as required but OpenAI did not actually use the web-search tool; those results now come back as an explicit independent-verification-missing outcome instead.
+- Background logging and Tools-side Facebook runtime-setting refreshes now write much less aggressively to Chrome extension storage, which reduces `MAX_WRITE_OPERATIONS_PER_MINUTE` quota failures in the background worker.
+- The Facebook `participant_requests` helper now searches a much wider DOM range, skips the bulk-action toolbar more reliably, and therefore attaches its per-card **Analyze in Toolbox** / **Verify facts** controls more consistently on the current Facebook participant-request layout.
+- Participant-request **Analyze in Toolbox** / **Verify facts** actions now also anchor themselves to the detected request card, so the Toolbox/fact box opens beside the correct Facebook card instead of drifting back to a generic page corner.
+- The saved Tools-side checkbox state for the Facebook admin activity / participant-request switches is now normalized again when the Facebook Admin Tools page loads, so a remotely enabled switch no longer appears visually unchecked just because the page markup drifted.
+- The Facebook admin-activity and participant-request helpers now re-read the authoritative Tools-side master switches on init, route changes, and settings sync instead of staying stuck on stale local cache values, so `/groups/*/participant_requests` can actually light up when the Tools-side scanner is enabled and the admin helper stays quiet when the Tools master switch is off.
 - Facebook admin activity **Send queue now** no longer depends only on a fragile background-runtime handoff. If the extension runtime is temporarily unavailable or times out, the page queue now retries the same bulk send directly against Tools with the saved bearer token instead of leaving the batch stuck in pending retry.
 - Facebook admin queue controls now expose clearer remote-send progress/stuck state and use hard timeouts in the popup, content script, and background worker instead of leaving the operator-facing buttons hanging indefinitely while one runtime hop is waiting forever.
 

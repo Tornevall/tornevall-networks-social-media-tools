@@ -1,4 +1,4 @@
-let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null, composerActionButton = null, quickResponseActionButton = null, adminActivitiesControl = null, soundCloudInsightsControl = null;
+let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null, composerActionButton = null, quickResponseActionButton = null, adminActivitiesControl = null, soundCloudInsightsControl = null, participantRequestsControl = null;
 let panelAttachedComposer = null;
 let panelContextDirty = false;
 let panelDragState = null;
@@ -788,10 +788,17 @@ const EXTENSION_VERSION = getExtensionVersion();
 let adminIngestEnabled = false;
 let adminDebugEnabled = false;
 let adminFeatureEnabled = false;
+let participantScannerFeatureEnabled = false;
 let adminActivitiesScanScheduled = false;
 let adminFlushInProgress = false;
 let adminFlushRequestedWhileBusy = false;
 let adminActiveSendBatch = null;
+let participantRequestsScanScheduled = false;
+let participantRequestsScanTimerId = null;
+let participantRequestsDomObserver = null;
+let participantRequestsEnhancedCardCount = 0;
+let participantRequestsLastSummary = '';
+let participantRequestsVisibleCards = [];
 let networkMonitorInjected = false;
 let adminLastStatusText = 'Passive activity detection is ready. Statistics are off.';
 let soundCloudPageBridge = null;
@@ -1108,7 +1115,7 @@ function renderBootstrapAdminScanDebug(scan, title, emptyText) {
 }
 
 function syncAdminRuntimePreferences() {
-    safeStorageSyncGet(['facebookAdminDebugEnabled', 'facebookAdminStatsEnabled'], function (data) {
+    getToolsRuntimeSettings().then(function (data) {
         const nextDebugEnabled = !!(data && data.facebookAdminDebugEnabled);
         const nextFeatureEnabled = !!(data && data.facebookAdminStatsEnabled);
         const featureWasEnabled = adminFeatureEnabled;
@@ -1551,6 +1558,11 @@ function extractOccurredAtFromVisibleAdminContainer(container) {
 
 function isFacebookPage() {
     return location.hostname.indexOf('facebook.com') !== -1;
+}
+
+function isFacebookParticipantRequestsPage() {
+    const path = String(location.pathname || '').toLowerCase();
+    return window.top === window && isFacebookPage() && path.indexOf('/participant_requests') !== -1;
 }
 
 function isSoundCloudPage() {
@@ -2553,19 +2565,29 @@ function mirrorAdminDetectionsToConsole(entries, networkEntry) {
 
 function getToolsRuntimeSettings() {
     return new Promise(function (resolve) {
-        safeStorageSyncGet(['toolsApiToken', 'devMode', 'soundcloudAutoIngestEnabled', 'facebookAdminStatsEnabled'], function (data) {
-            if (data && data.toolsApiToken) {
-                resolve(data || {});
+        safeStorageSyncGet(['toolsApiToken', 'devMode', 'soundcloudAutoIngestEnabled', 'facebookAdminStatsEnabled', 'facebookParticipantScannerEnabled'], function (data) {
+            const localSettings = data || {};
+            const hasLocalToken = !!(localSettings && localSettings.toolsApiToken);
+            const hasParticipantScannerFlag = Object.prototype.hasOwnProperty.call(localSettings, 'facebookParticipantScannerEnabled');
+            const hasAdminStatsFlag = Object.prototype.hasOwnProperty.call(localSettings, 'facebookAdminStatsEnabled');
+
+            if (!hasLocalToken) {
+                resolve(localSettings);
                 return;
             }
 
             safeSendRuntimeMessageWithResponse({type: 'GET_TOOLS_RUNTIME_SETTINGS'}).then(function (response) {
                 if (response && response.ok && response.settings) {
-                    resolve(response.settings || {});
+                    resolve(Object.assign({}, localSettings, response.settings || {}));
                     return;
                 }
 
-                resolve(data || {});
+                if (hasParticipantScannerFlag || hasAdminStatsFlag) {
+                    resolve(localSettings);
+                    return;
+                }
+
+                resolve(localSettings);
             });
         });
     });
@@ -2574,6 +2596,655 @@ function getToolsRuntimeSettings() {
 function isFacebookAdminActivitiesPage() {
     return location.hostname.indexOf('facebook.com') !== -1
         && /\/groups\/[^/]+\/admin_activities/.test(location.pathname || '');
+}
+
+function isFacebookParticipantRequestsPage() {
+    return location.hostname.indexOf('facebook.com') !== -1
+        && /\/groups\/[^/]+\/participant_requests/.test(location.pathname || '');
+}
+
+function countParticipantActionMatches(container, regex) {
+    if (!container || !regex) {
+        return 0;
+    }
+
+    let count = 0;
+    const actions = container.querySelectorAll('button, [role="button"], a');
+    for (let index = 0; index < actions.length; index += 1) {
+        const text = normalizeWhitespace(actions[index].textContent || actions[index].innerText || '');
+        if (!text || text.length > 80) {
+            continue;
+        }
+        if (regex.test(text)) {
+            count += 1;
+        }
+    }
+
+    return count;
+}
+
+function isParticipantBulkActionLabel(label) {
+    const normalized = normalizeWhitespace(label || '').toLowerCase();
+    if (!normalized) {
+        return false;
+    }
+
+    return normalized === 'godkänn alla'
+        || normalized === 'approve all'
+        || normalized === 'avvisa alla'
+        || normalized === 'reject all'
+        || normalized === 'decline all';
+}
+
+function countParticipantRequestSignals(text) {
+    const normalized = normalizeWhitespace(text || '');
+    if (!normalized) {
+        return 0;
+    }
+
+    const signals = [
+        /(besökare|visitor|förfrågan inkom|request came in)/i,
+        /(\d+\s+vänner|\d+\s+friends?)/i,
+        /(gemensam grupp|common group|andra grupper|other groups)/i,
+        /(gick med i facebook|joined facebook)/i,
+        /(bor i|lives in)/i,
+        /(har studerat|studied at|jobbar på|works at)/i,
+        /(har skickat en kommentar|sent a comment|förhandsgranska|preview)/i,
+        /(har inte besvarat frågorna ännu|has not answered|hasn't answered|väntar på svar|waiting for answer)/i,
+        /(godkänner du gruppreglerna|group rules|registration date on facebook|registreringsdatum på facebook)/i,
+    ];
+
+    let count = 0;
+    for (let index = 0; index < signals.length; index += 1) {
+        if (signals[index].test(normalized)) {
+            count += 1;
+        }
+    }
+
+    return count;
+}
+
+function scoreParticipantRequestCardCandidate(container) {
+    if (!container || !container.querySelectorAll || !container.getBoundingClientRect) {
+        return -1;
+    }
+
+    if (!container.offsetParent || container.closest('[aria-hidden="true"]')) {
+        return -1;
+    }
+
+    const text = normalizeWhitespace(container.innerText || container.textContent || '');
+    if (!text || text.length < 80 || text.length > 5000) {
+        return -1;
+    }
+
+    const approveRegex = /(godkänn|approve)/i;
+    const rejectRegex = /(avvisa|reject|decline)/i;
+    const approveCount = countParticipantActionMatches(container, approveRegex);
+    const rejectCount = countParticipantActionMatches(container, rejectRegex);
+    if (approveCount < 1 || rejectCount < 1 || approveCount > 4 || rejectCount > 4) {
+        return -1;
+    }
+
+    const signalCount = countParticipantRequestSignals(text);
+    if (signalCount < 2) {
+        return -1;
+    }
+
+    const rect = container.getBoundingClientRect();
+    if (rect.width < 220 || rect.height < 140) {
+        return -1;
+    }
+
+    let score = signalCount * 120;
+    score -= Math.abs(approveCount - 1) * 35;
+    score -= Math.abs(rejectCount - 1) * 35;
+    score -= Math.round(text.length / 35);
+    score -= Math.round(rect.height / 18);
+    score -= Math.round(rect.width / 45);
+
+    if (/(godkänn alla|approve all|avvisa alla|reject all|senaste först|newest first|återställ filter|reset filters|fler filter|more filters)/i.test(text)) {
+        score -= 320;
+    }
+
+    if (extractParticipantRequestName(container)) {
+        score += 45;
+    }
+
+    if (/(förhandsgranska|preview)/i.test(text)) {
+        score += 20;
+    }
+
+    return score;
+}
+
+function findBestParticipantRequestCardForAction(action) {
+    if (!action) {
+        return null;
+    }
+
+    let current = action;
+    let bestNode = null;
+    let bestScore = -1;
+
+    for (let depth = 0; depth < 18 && current; depth += 1) {
+        current = current.parentElement;
+        if (!current) {
+            continue;
+        }
+
+        const candidateScore = scoreParticipantRequestCardCandidate(current);
+        if (candidateScore > bestScore) {
+            bestNode = current;
+            bestScore = candidateScore;
+        }
+    }
+
+    return bestScore >= 120 ? bestNode : null;
+}
+
+function findParticipantRequestCards() {
+    const approveRegex = /(godkänn|approve)/i;
+    const roots = [];
+    const seen = new Set();
+    const actions = document.querySelectorAll('button, [role="button"], a');
+
+    for (let index = 0; index < actions.length; index += 1) {
+        const action = actions[index];
+        const label = normalizeWhitespace(action.textContent || action.innerText || '');
+        if (!label || !approveRegex.test(label) || isParticipantBulkActionLabel(label)) {
+            continue;
+        }
+
+        const candidate = findBestParticipantRequestCardForAction(action);
+        if (!candidate || seen.has(candidate)) {
+            continue;
+        }
+
+        seen.add(candidate);
+        roots.push(candidate);
+    }
+
+    return roots;
+}
+
+function extractParticipantRequestVisibleLines(card) {
+    if (!card) {
+        return [];
+    }
+
+    const clone = card.cloneNode(true);
+    clone.querySelectorAll('[data-sgpt-participant-badge="true"]').forEach(function (node) {
+        node.remove();
+    });
+
+    const rawLines = String(clone.innerText || clone.textContent || '').split(/\n+/);
+    const cleaned = [];
+    let previous = '';
+
+    rawLines.forEach(function (line) {
+        const normalized = normalizeWhitespace(line);
+        if (!normalized || normalized === previous) {
+            return;
+        }
+        previous = normalized;
+        cleaned.push(normalized);
+    });
+
+    return cleaned;
+}
+
+function extractParticipantRequestName(card) {
+    const ignored = /^(godkänn|approve|avvisa|reject|decline|förhandsgranska|preview|medlem|member|inget svar|no answer)$/i;
+    const candidates = card.querySelectorAll('a, strong, h1, h2, h3, h4, span');
+
+    for (let index = 0; index < candidates.length; index += 1) {
+        const text = normalizeWhitespace(candidates[index].textContent || candidates[index].innerText || '');
+        if (!text || text.length < 3 || text.length > 80 || ignored.test(text)) {
+            continue;
+        }
+        if (/^(95 andra grupper|11 grupper gemensamt|gick med i facebook|bor i|har gått på|har skickat)/i.test(text)) {
+            continue;
+        }
+        return text;
+    }
+
+    const lines = extractParticipantRequestVisibleLines(card);
+    return lines.length ? lines[0] : '';
+}
+
+function extractParticipantRequestProfileUrl(card) {
+    const anchors = card.querySelectorAll('a[href]');
+    for (let index = 0; index < anchors.length; index += 1) {
+        const href = String(anchors[index].href || '').trim();
+        if (!href) {
+            continue;
+        }
+        if (/\/groups\/[^/]+\/user\//i.test(href)) {
+            return href;
+        }
+    }
+
+    for (let index = 0; index < anchors.length; index += 1) {
+        const href = String(anchors[index].href || '').trim();
+        if (href && href.indexOf('facebook.com') !== -1) {
+            return href;
+        }
+    }
+
+    return '';
+}
+
+function buildParticipantRequestSummary(card) {
+    const lines = extractParticipantRequestVisibleLines(card);
+    const questionLines = lines.filter(function (line) {
+        return /\?$/.test(line) || /frågan är|godkänner du|är du /i.test(line);
+    });
+    const hasPreviewLink = !!Array.from(card.querySelectorAll('a, button')).find(function (node) {
+        return /(förhandsgranska|preview)/i.test(normalizeWhitespace(node.textContent || node.innerText || ''));
+    });
+
+    return {
+        name: extractParticipantRequestName(card),
+        profileUrl: extractParticipantRequestProfileUrl(card),
+        lines: lines,
+        questionCount: questionLines.length,
+        hasPreviewLink: hasPreviewLink,
+    };
+}
+
+function buildParticipantRequestContext(card) {
+    const summary = buildParticipantRequestSummary(card);
+    const payload = [
+        'Facebook participant-request moderation context',
+        'Facebook page URL: ' + location.href,
+        summary.name ? 'Candidate name: ' + summary.name : '',
+        summary.profileUrl ? 'Profile URL: ' + summary.profileUrl : '',
+        'Visible card lines:',
+    ];
+
+    summary.lines.slice(0, 40).forEach(function (line) {
+        payload.push('- ' + line);
+    });
+
+    payload.push('');
+    payload.push('Instruction: Analyze this participant request as a moderation helper. Highlight missing answers, contradictions, risk signals, useful positive signals, and what should be verified before approval. Treat the visible Facebook UI text as observational context, not independently verified fact.');
+
+    return payload.filter(Boolean).join('\n');
+}
+
+function removeParticipantRequestHelperFromCard(card) {
+    if (!card) {
+        return;
+    }
+
+    const helper = card.querySelector('[data-sgpt-participant-badge="true"]');
+    if (helper) {
+        helper.remove();
+    }
+
+    card.removeAttribute('data-sgpt-participant-card');
+}
+
+function focusParticipantRequestCard(card) {
+    if (!card || !document.contains(card) || !card.getBoundingClientRect) {
+        return;
+    }
+
+    card.scrollIntoView({behavior: 'smooth', block: 'center', inline: 'nearest'});
+    card.setAttribute('data-sgpt-participant-focus', '1');
+    const previousBoxShadow = card.style.boxShadow || '';
+    const previousOutline = card.style.outline || '';
+    const previousOutlineOffset = card.style.outlineOffset || '';
+    card.style.outline = '3px solid rgba(124,58,237,0.92)';
+    card.style.outlineOffset = '6px';
+    card.style.boxShadow = '0 0 0 6px rgba(124,58,237,0.16), 0 16px 34px rgba(15,23,42,0.18)';
+    window.setTimeout(function () {
+        if (!card || !document.contains(card)) {
+            return;
+        }
+        card.removeAttribute('data-sgpt-participant-focus');
+        card.style.boxShadow = previousBoxShadow;
+        card.style.outline = previousOutline;
+        card.style.outlineOffset = previousOutlineOffset;
+    }, 2400);
+}
+
+function openParticipantRequestToolbox(card) {
+    if (!card) {
+        return;
+    }
+
+    focusParticipantRequestCard(card);
+    openReplyPanelWithImportedContext(buildParticipantRequestContext(card), {
+        message: ct('contentScript.participantScannerContextImported', {}, 'Participant request imported into Toolbox.'),
+        anchorNode: card,
+    });
+}
+
+function verifyParticipantRequestCard(card) {
+    if (!card) {
+        return;
+    }
+
+    focusParticipantRequestCard(card);
+    startFactVerification(buildParticipantRequestContext(card), {
+        preferPanel: false,
+        sourceLabel: ct('contentScript.participantScannerVerifySource', {}, 'Participant request verify'),
+        anchor: createFactAnchorForNode(card),
+    });
+}
+
+function updateParticipantRequestsControl() {
+    if (!participantRequestsControl) {
+        return;
+    }
+
+    const state = participantRequestsControl.querySelector('[data-role="state"]');
+    const meta = participantRequestsControl.querySelector('[data-role="meta"]');
+    if (state) {
+        state.textContent = participantRequestsLastSummary || (participantScannerFeatureEnabled
+            ? ct('contentScript.participantScannerWaiting', {}, 'Participant scanner is active and waiting for visible request cards.')
+            : ct('contentScript.participantScannerDisabled', {}, 'Participant scanner is disabled in Tools.'));
+    }
+    if (meta) {
+        meta.textContent = ct('contentScript.participantScannerMeta', {count: participantRequestsEnhancedCardCount}, 'Cards enhanced: {count}').replace('{count}', String(participantRequestsEnhancedCardCount || 0));
+    }
+
+    const cardList = participantRequestsControl.querySelector('[data-role="card-list"]');
+    if (cardList) {
+        const visibleCards = participantRequestsVisibleCards.slice(0, 5);
+        if (!visibleCards.length) {
+            cardList.innerHTML = '<div style="margin-top:8px; color:#64748b; line-height:1.45;">'
+                + escapeHtml(ct('contentScript.participantScannerNoCards', {}, 'No visible participant-request cards matched yet.'))
+                + '</div>';
+        } else {
+            cardList.innerHTML = visibleCards.map(function (card, index) {
+                const summary = buildParticipantRequestSummary(card);
+                const title = summary.name || ct('contentScript.participantScannerUnknownCandidate', {}, 'Visible candidate detected');
+                const description = ct('contentScript.participantScannerCardMeta', {index: index + 1, questions: summary.questionCount || 0}, 'Card {index} · Questions: {questions}')
+                    .replace('{index}', String(index + 1))
+                    .replace('{questions}', String(summary.questionCount || 0));
+
+                return [
+                    '<div style="margin-top:8px; padding:8px; border-radius:10px; border:1px solid rgba(124,58,237,0.16); background:rgba(248,250,252,0.92);">',
+                    '<div style="font-weight:600; color:#312e81;">' + escapeHtml(title) + '</div>',
+                    '<div style="margin-top:2px; color:#64748b; line-height:1.4;">' + escapeHtml(description) + '</div>',
+                    '<div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">',
+                    '<button type="button" data-role="locate-card" data-card-index="' + String(index) + '" style="border:none; border-radius:999px; padding:5px 9px; background:#475569; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.participantScannerLocate', {}, 'Show card')) + '</button>',
+                    '<button type="button" data-role="open-card-toolbox" data-card-index="' + String(index) + '" style="border:none; border-radius:999px; padding:5px 9px; background:#0284c7; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.participantScannerAnalyze', {}, 'Analyze in Toolbox')) + '</button>',
+                    '<button type="button" data-role="verify-card" data-card-index="' + String(index) + '" style="border:none; border-radius:999px; padding:5px 9px; background:#7c3aed; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.participantScannerVerify', {}, 'Verify facts')) + '</button>',
+                    '</div>',
+                    '</div>'
+                ].join('');
+            }).join('');
+        }
+    }
+}
+
+function ensureParticipantRequestsControl() {
+    if (!isFacebookParticipantRequestsPage() || !participantScannerFeatureEnabled) {
+        if (participantRequestsControl) {
+            participantRequestsControl.remove();
+            participantRequestsControl = null;
+        }
+        return null;
+    }
+
+    if (participantRequestsControl) {
+        updateParticipantRequestsControl();
+        return participantRequestsControl;
+    }
+
+    const control = document.createElement('div');
+    control.id = 'sgpt-participant-requests-control';
+    control.style.position = 'fixed';
+    control.style.right = '16px';
+    control.style.bottom = '16px';
+    control.style.zIndex = '2147483645';
+    control.style.width = '280px';
+    control.style.padding = '10px';
+    control.style.borderRadius = '10px';
+    control.style.border = '1px solid rgba(124,58,237,0.22)';
+    control.style.background = 'rgba(255,255,255,0.97)';
+    control.style.boxShadow = '0 8px 24px rgba(15,23,42,0.16)';
+    control.style.fontFamily = 'system-ui,sans-serif';
+    control.style.fontSize = '12px';
+    control.innerHTML = [
+        '<div style="font-weight:700; color:#5b21b6;">' + escapeHtml(ct('contentScript.participantScannerTitle', {}, 'SG participant scanner')) + '</div>',
+        '<div data-role="state" style="margin-top:6px; color:#334155; line-height:1.45;">' + escapeHtml(ct('contentScript.participantScannerWaiting', {}, 'Participant scanner is active and waiting for visible request cards.')) + '</div>',
+        '<div data-role="meta" style="margin-top:6px; color:#64748b;">Cards enhanced: 0</div>',
+        '<button type="button" data-role="rescan" style="margin-top:10px; border:none; border-radius:999px; padding:6px 10px; background:#7c3aed; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.participantScannerRescan', {}, 'Scan visible cards now')) + '</button>',
+        '<div data-role="card-list"></div>'
+    ].join('');
+
+    control.querySelector('[data-role="rescan"]').addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        scheduleParticipantRequestsScan('manual-rescan');
+    });
+
+    control.addEventListener('click', function (event) {
+        const button = event.target && event.target.closest ? event.target.closest('[data-card-index]') : null;
+        if (!button) {
+            return;
+        }
+
+        const cardIndex = parseInt(String(button.getAttribute('data-card-index') || ''), 10);
+        const card = participantRequestsVisibleCards[cardIndex] || null;
+        if (!card) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+
+        const role = String(button.getAttribute('data-role') || '');
+        if (role === 'locate-card') {
+            focusParticipantRequestCard(card);
+            return;
+        }
+        if (role === 'open-card-toolbox') {
+            openParticipantRequestToolbox(card);
+            return;
+        }
+        if (role === 'verify-card') {
+            verifyParticipantRequestCard(card);
+        }
+    });
+
+    document.body.appendChild(control);
+    participantRequestsControl = control;
+    updateParticipantRequestsControl();
+    return participantRequestsControl;
+}
+
+function renderParticipantRequestHelper(card) {
+    if (!card) {
+        return;
+    }
+
+    const summary = buildParticipantRequestSummary(card);
+    const context = buildParticipantRequestContext(card);
+    let helper = card.querySelector('[data-sgpt-participant-badge="true"]');
+    if (!helper) {
+        helper = document.createElement('div');
+        helper.setAttribute('data-sgpt-participant-badge', 'true');
+        helper.style.marginTop = '12px';
+        helper.style.padding = '10px';
+        helper.style.border = '1px solid rgba(124,58,237,0.24)';
+        helper.style.borderRadius = '10px';
+        helper.style.background = 'rgba(245,243,255,0.92)';
+        helper.style.color = '#312e81';
+        helper.style.fontFamily = 'system-ui,sans-serif';
+        helper.style.fontSize = '12px';
+        helper.style.lineHeight = '1.45';
+        helper.style.position = 'relative';
+        helper.style.zIndex = '1';
+        helper.style.boxShadow = '0 4px 14px rgba(91,33,182,0.08)';
+        card.appendChild(helper);
+    }
+
+    helper.innerHTML = [
+        '<div style="font-weight:700; color:#5b21b6;">' + escapeHtml(ct('contentScript.participantScannerTitle', {}, 'SG participant scanner')) + '</div>',
+        '<div style="margin-top:4px; color:#4338ca;">' + escapeHtml(summary.name || ct('contentScript.participantScannerUnknownCandidate', {}, 'Visible candidate detected')) + '</div>',
+        '<div style="margin-top:4px; color:#475569;">'
+            + escapeHtml(ct('contentScript.participantScannerSummary', {}, 'Questions: {questions} · Preview link: {preview}'))
+                .replace('{questions}', String(summary.questionCount || 0))
+                .replace('{preview}', summary.hasPreviewLink ? ct('status.yes', {}, 'yes') : ct('status.no', {}, 'no'))
+            + '</div>',
+        '<div style="margin-top:8px; display:flex; gap:8px; flex-wrap:wrap;">',
+        '<button type="button" data-role="analyze" style="border:none; border-radius:999px; padding:6px 10px; background:#0284c7; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.participantScannerAnalyze', {}, 'Analyze in Toolbox')) + '</button>',
+        '<button type="button" data-role="verify" style="border:none; border-radius:999px; padding:6px 10px; background:#7c3aed; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.participantScannerVerify', {}, 'Verify facts')) + '</button>',
+        '</div>'
+    ].join('');
+
+    helper.querySelector('[data-role="analyze"]').addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        openParticipantRequestToolbox(card);
+    });
+
+    helper.querySelector('[data-role="verify"]').addEventListener('click', function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        verifyParticipantRequestCard(card);
+    });
+
+    card.setAttribute('data-sgpt-participant-card', 'true');
+}
+
+function disconnectParticipantRequestsObserver() {
+    if (participantRequestsDomObserver) {
+        participantRequestsDomObserver.disconnect();
+        participantRequestsDomObserver = null;
+    }
+}
+
+function clearParticipantRequestEnhancements() {
+    if (participantRequestsScanTimerId) {
+        window.clearTimeout(participantRequestsScanTimerId);
+        participantRequestsScanTimerId = null;
+    }
+
+    disconnectParticipantRequestsObserver();
+    participantRequestsEnhancedCardCount = 0;
+    participantRequestsLastSummary = '';
+    participantRequestsVisibleCards = [];
+
+    document.querySelectorAll('[data-sgpt-participant-card="true"]').forEach(function (card) {
+        removeParticipantRequestHelperFromCard(card);
+    });
+
+    if (participantRequestsControl) {
+        participantRequestsControl.remove();
+        participantRequestsControl = null;
+    }
+}
+
+function ensureParticipantRequestsObserver() {
+    if (!participantScannerFeatureEnabled || !isFacebookParticipantRequestsPage() || !document.body || participantRequestsDomObserver) {
+        return;
+    }
+
+    participantRequestsDomObserver = new MutationObserver(function (mutations) {
+        const shouldScan = (mutations || []).some(function (mutation) {
+            return (mutation.addedNodes && mutation.addedNodes.length) || (mutation.removedNodes && mutation.removedNodes.length);
+        });
+        if (shouldScan) {
+            scheduleParticipantRequestsScan('dom-mutation');
+        }
+    });
+
+    participantRequestsDomObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+    });
+}
+
+function runParticipantRequestsScan(reason) {
+    if (!participantScannerFeatureEnabled || !isFacebookParticipantRequestsPage()) {
+        clearParticipantRequestEnhancements();
+        return;
+    }
+
+    const previousObserver = participantRequestsDomObserver;
+    if (previousObserver) {
+        previousObserver.disconnect();
+    }
+
+    const cards = findParticipantRequestCards();
+    participantRequestsVisibleCards = cards.slice();
+    const activeCards = new Set(cards);
+    document.querySelectorAll('[data-sgpt-participant-card="true"]').forEach(function (card) {
+        if (!activeCards.has(card)) {
+            removeParticipantRequestHelperFromCard(card);
+        }
+    });
+
+    cards.forEach(function (card) {
+        renderParticipantRequestHelper(card);
+    });
+
+    participantRequestsEnhancedCardCount = cards.length;
+    participantRequestsLastSummary = cards.length
+        ? ct('contentScript.participantScannerFoundCards', {count: cards.length}, 'Enhanced {count} visible participant request cards.').replace('{count}', String(cards.length))
+        : ct('contentScript.participantScannerNoCards', {}, 'No visible participant-request cards matched yet.');
+    updateParticipantRequestsControl();
+
+    if (previousObserver && document.body) {
+        previousObserver.observe(document.body, {childList: true, subtree: true});
+        participantRequestsDomObserver = previousObserver;
+    } else {
+        ensureParticipantRequestsObserver();
+    }
+
+    if (adminDebugEnabled) {
+        debugLog({
+            level: 'info',
+            category: 'facebook-participant-requests',
+            message: 'Participant request scan completed.',
+            meta: {
+                reason: reason || 'scheduled',
+                cards: cards.length,
+                url: location.href,
+            }
+        });
+    }
+}
+
+function scheduleParticipantRequestsScan(reason) {
+    if (!participantScannerFeatureEnabled || !isFacebookParticipantRequestsPage()) {
+        return;
+    }
+
+    participantRequestsLastSummary = ct('contentScript.participantScannerScanning', {}, 'Scanning visible participant request cards...');
+    ensureParticipantRequestsControl();
+    updateParticipantRequestsControl();
+
+    if (participantRequestsScanTimerId) {
+        window.clearTimeout(participantRequestsScanTimerId);
+    }
+
+    participantRequestsScanTimerId = window.setTimeout(function () {
+        participantRequestsScanTimerId = null;
+        runParticipantRequestsScan(reason || 'scheduled');
+    }, 220);
+}
+
+function syncParticipantRequestRuntimePreference() {
+    getToolsRuntimeSettings().then(function (data) {
+        participantScannerFeatureEnabled = !!(data && data.facebookParticipantScannerEnabled);
+
+        if (!participantScannerFeatureEnabled || !isFacebookParticipantRequestsPage()) {
+            clearParticipantRequestEnhancements();
+            return;
+        }
+
+        ensureParticipantRequestsControl();
+        ensureParticipantRequestsObserver();
+        scheduleParticipantRequestsScan('settings-sync');
+    });
 }
 
 // ---------------------------------------------
@@ -6189,6 +6860,7 @@ function handleLocationChange(reason) {
     refreshToolsRssSiteMatches();
     ensureAdminActivitiesControl();
     ensureSoundCloudInsightsControl();
+    syncParticipantRequestRuntimePreference();
 
     if (isSoundCloudPage()) {
         if (isSupportedSoundCloudInsightsPage()) {
@@ -7089,6 +7761,7 @@ function panelHTML() {
       #sgpt-body input[type=text]::placeholder,#sgpt-body textarea::placeholder{color:#6b7280 !important;-webkit-text-fill-color:#6b7280 !important;opacity:1 !important}
       #sgpt-body input[type=text]:focus,#sgpt-body textarea:focus,#sgpt-body select:focus{outline:none;border-color:#1999c6 !important;box-shadow:0 0 0 2px rgba(25,153,198,.15)}
       #sgpt-body textarea{resize:vertical;min-height:60px;max-height:160px}
+      #sgpt-prompt{min-height:74px;max-height:140px}
       #sgpt-context{background:#f8fafc !important}
       #sgpt-send,#sgpt-mod,#sgpt-verify,#sgpt-paste{margin-right:4px;padding:4px 10px;border:none;border-radius:4px;background:#008CBA;color:#fff;cursor:pointer;font:13px/1.35 Arial,sans-serif !important}
       #sgpt-verify{background:#7c3aed}
@@ -7118,7 +7791,7 @@ function panelHTML() {
     <div id="sgpt-body">
       <div id="sgpt-responder-label">${ct('contentScript.responder', {}, 'Responder')}: <span id="sgpt-responder-name" data-name="${frontResponserName || ''}">${frontResponserName || ct('contentScript.loadingResponder', {}, '(loading...)')}</span></div>
       <div id="sgpt-anchor-note">${ct('contentScript.anchorFocused', {}, 'Anchored to the currently focused text field.')}</div>
-      <label>${ct('contentScript.promptLabel', {}, 'Prompt')}<input type="text" id="sgpt-prompt" placeholder="${escapeHtml(ct('contentScript.promptPlaceholder', {}, 'Leave blank to use the default reply instruction.'))}"></label>
+      <label>${ct('contentScript.promptLabel', {}, 'Prompt')}<textarea id="sgpt-prompt" rows="3" placeholder="${escapeHtml(ct('contentScript.promptPlaceholder', {}, 'Leave blank to use the default reply instruction.'))}"></textarea></label>
       <div class="sgpt-quick-settings">
         <label>${ct('contentScript.moodLabel', {}, 'Mood')}<select id="sgpt-mood">
             <optgroup label="Objective & Informative">
@@ -7374,6 +8047,13 @@ function openReplyPanelWithImportedContext(importedContext, options) {
     const message = options && options.message
         ? String(options.message)
         : ct('contentScript.contextImported', {}, 'Context imported into Toolbox.');
+
+    const anchorNode = options && options.anchorNode && document.contains(options.anchorNode)
+        ? options.anchorNode
+        : null;
+    if (anchorNode) {
+        activeComposer = anchorNode;
+    }
 
     openReplyPanel();
 
@@ -7943,10 +8623,15 @@ ensureAdminActivitiesControl();
 ensureSoundCloudInsightsControl();
 syncSoundCloudRuntimePreference();
 syncAdminRuntimePreferences();
+syncParticipantRequestRuntimePreference();
 refreshToolsRssSiteMatches();
 safeAddStorageChangeListener(function (changes, areaName) {
-    if (areaName === 'sync' && (changes.facebookAdminDebugEnabled || changes.facebookAdminStatsEnabled)) {
+    if (areaName === 'sync' && (changes.facebookAdminDebugEnabled || changes.facebookAdminStatsEnabled || changes.toolsApiToken || changes.devMode)) {
         syncAdminRuntimePreferences();
+    }
+
+    if (areaName === 'sync' && (changes.facebookParticipantScannerEnabled || changes.facebookAdminDebugEnabled || changes.toolsApiToken || changes.devMode)) {
+        syncParticipantRequestRuntimePreference();
     }
 
     if (areaName === 'sync' && (changes.soundcloudAutoIngestEnabled || changes.toolsApiToken)) {

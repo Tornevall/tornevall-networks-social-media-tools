@@ -42,6 +42,7 @@ const LEGACY_LOCALIZED_TEST_QUESTIONS = [
 ];
 const FORUM_URL = (window.TNNetworksExtensionLinks && window.TNNetworksExtensionLinks.FORUM_URL) || 'https://forum.tornevall.net';
 const TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH = (window.TNNetworksExtensionLinks && window.TNNetworksExtensionLinks.TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH) || '/admin/social-media-tools';
+const popupSyncWriteSignatures = {};
 
 function getBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
@@ -493,6 +494,7 @@ document.addEventListener('DOMContentLoaded', function () {
     let tokenValidationSequence = 0;
     let tokenValidationCompletedSequence = 0;
     let facebookAdminStatsEnabledValue = false;
+    let facebookParticipantScannerEnabledValue = false;
 
     function renderFacebookAdminControlsVisibility() {
         if (!facebookAdminActionsWrap) {
@@ -800,7 +802,8 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function syncLocalCache(values) {
-        chrome.storage.sync.set({
+        const payload = {
+            facebookAdminStatsEnabled: !!values.facebookAdminStatsEnabled,
             responderName: values.responderName,
             chatGptSystemPrompt: sanitizePersonaProfileValue(values.systemPrompt),
             autoDetectResponder: values.autoDetectResponder,
@@ -812,7 +815,31 @@ document.addEventListener('DOMContentLoaded', function () {
             preferredFactCheckModel: values.preferredFactCheckModel,
             defaultQuickReplyPreset: values.defaultQuickReplyPreset,
             defaultQuickReplyCustomInstruction: values.defaultQuickReplyCustomInstruction,
+        };
+
+        if (Object.prototype.hasOwnProperty.call(values || {}, 'facebookParticipantScannerEnabled')) {
+            payload.facebookParticipantScannerEnabled = !!values.facebookParticipantScannerEnabled;
+        }
+
+        writeSyncStorageIfChanged('local-cache', payload);
+    }
+
+    function writeSyncStorageIfChanged(signatureKey, payload, callback) {
+        const serialized = JSON.stringify(payload || {});
+        if (popupSyncWriteSignatures[signatureKey] === serialized) {
+            if (typeof callback === 'function') {
+                callback(false);
+            }
+            return false;
+        }
+
+        popupSyncWriteSignatures[signatureKey] = serialized;
+        chrome.storage.sync.set(payload, function () {
+            if (typeof callback === 'function') {
+                callback(true);
+            }
         });
+        return true;
     }
 
     function buildLocalSyncPayload() {
@@ -838,7 +865,7 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     function persistLocalSettings(callback) {
-        chrome.storage.sync.set(buildLocalSyncPayload(), function () {
+        writeSyncStorageIfChanged('local-settings', buildLocalSyncPayload(), function () {
             if (typeof callback === 'function') {
                 callback();
             }
@@ -852,6 +879,7 @@ document.addEventListener('DOMContentLoaded', function () {
             auto_detect_responder: autoDetectCheckbox.checked,
             response_language: responseLanguageSelect.value || DEFAULT_RESPONSE_LANGUAGE,
             verify_fact_language: verifyFactLanguageSelect.value || DEFAULT_VERIFY_FACT_LANGUAGE,
+            facebook_admin_stats_enabled: facebookAdminStatsCheckbox ? facebookAdminStatsCheckbox.checked : facebookAdminStatsEnabledValue,
         };
     }
 
@@ -1050,7 +1078,7 @@ document.addEventListener('DOMContentLoaded', function () {
             };
         }).filter(Boolean);
 
-        chrome.storage.sync.set({
+        writeSyncStorageIfChanged('available-model-catalog', {
             availableToolsModels: normalizedModels,
             defaultToolsModel: String(defaultModel || '').trim() || (normalizedModels[0] ? normalizedModels[0].id : 'gpt-4o-mini'),
             availableToolsModelsSource: source || 'provider',
@@ -1093,7 +1121,7 @@ document.addEventListener('DOMContentLoaded', function () {
             return false;
         }
 
-        chrome.storage.sync.set({
+        writeSyncStorageIfChanged('facebook-outcome-config', {
             facebookAdminOutcomeConfig: result.data.outcome_detection,
             facebookAdminOutcomeConfigVersion: result.data.outcome_detection.version || null,
         });
@@ -1126,6 +1154,12 @@ document.addEventListener('DOMContentLoaded', function () {
         autoDetectCheckbox.checked = settings.auto_detect_responder !== false;
         responseLanguageSelect.value = settings.response_language || DEFAULT_RESPONSE_LANGUAGE;
         verifyFactLanguageSelect.value = settings.verify_fact_language || DEFAULT_VERIFY_FACT_LANGUAGE;
+        facebookAdminStatsEnabledValue = !!settings.facebook_admin_stats_enabled;
+        facebookParticipantScannerEnabledValue = !!settings.facebook_participant_scanner_enabled;
+        if (facebookAdminStatsCheckbox) {
+            facebookAdminStatsCheckbox.checked = facebookAdminStatsEnabledValue;
+        }
+        renderFacebookAdminControlsVisibility();
         populateFactCheckModelOptions(
             result.data.available_models || [],
             result.data.default_model || DEFAULT_FACT_CHECK_MODEL,
@@ -1150,6 +1184,8 @@ document.addEventListener('DOMContentLoaded', function () {
             preferredFactCheckModel: factCheckModelSelect ? factCheckModelSelect.value || DEFAULT_FACT_CHECK_MODEL : DEFAULT_FACT_CHECK_MODEL,
             defaultQuickReplyPreset: quickReplyPresetSelect.value || DEFAULT_QUICK_REPLY_PRESET,
             defaultQuickReplyCustomInstruction: quickReplyInstructionInput.value.trim(),
+            facebookAdminStatsEnabled: facebookAdminStatsEnabledValue,
+            facebookParticipantScannerEnabled: facebookParticipantScannerEnabledValue,
         });
         cacheAvailableModelCatalog(
             result.data.available_models || [],
@@ -1177,6 +1213,7 @@ document.addEventListener('DOMContentLoaded', function () {
         'devMode',
         'facebookAdminDebugEnabled',
         'facebookAdminStatsEnabled',
+        'facebookParticipantScannerEnabled',
         'responderName',
         'chatGptSystemPrompt',
         'autoDetectResponder',
@@ -1220,6 +1257,7 @@ document.addEventListener('DOMContentLoaded', function () {
         }
         devModeCheckbox.checked = !!data.devMode;
         facebookAdminStatsEnabledValue = !!data.facebookAdminStatsEnabled;
+        facebookParticipantScannerEnabledValue = !!data.facebookParticipantScannerEnabled;
         if (facebookAdminDebugCheckbox) {
             facebookAdminDebugCheckbox.checked = !!data.facebookAdminDebugEnabled;
         }

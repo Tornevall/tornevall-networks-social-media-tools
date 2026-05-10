@@ -1,12 +1,14 @@
 const PROD_BASE_URL = 'https://tools.tornevall.net';
 const DEV_BASE_URL = 'https://tools.tornevall.com';
 const SOCIALGPT_PATH = '/api/ai/socialgpt/respond';
+const SETTINGS_PATH = '/api/social-media-tools/extension/settings';
 const MODELS_PATH = '/api/social-media-tools/extension/models';
 const FACEBOOK_INGEST_PATH = '/api/social-media-tools/facebook/ingest';
 const SOUNDCLOUD_INGEST_PATH = '/api/social-media-tools/soundcloud/ingest';
 const RSS_OVERVIEW_PATH = '/api/rss';
 const DEBUG_LOG_KEY = 'tn_networks_debug_logs';
 const MAX_DEBUG_LOGS = 200;
+const DEBUG_LOG_FLUSH_DELAY_MS = 1200;
 const MAX_SOUNDCLOUD_RECENT_EVENTS = 5;
 const MAX_SOUNDCLOUD_PENDING_CAPTURES = 50;
 const MAX_SOUNDCLOUD_SENT_FINGERPRINTS = 200;
@@ -43,6 +45,9 @@ let rssSiteCatalogCache = {
     fetchedAt: 0,
     entries: [],
 };
+let debugLogCache = [];
+let debugLogCacheLoaded = false;
+let debugLogFlushTimer = null;
 
 function normalizeExtensionUiLanguage(value) {
     var normalized = String(value || '').trim().toLowerCase();
@@ -684,32 +689,71 @@ function getTabMarking(tabId) {
 
 function appendDebugLog(entry) {
     return new Promise(function (resolve) {
-        chrome.storage.session.get(DEBUG_LOG_KEY, function (data) {
-            var logs = Array.isArray(data[DEBUG_LOG_KEY]) ? data[DEBUG_LOG_KEY] : [];
+        ensureDebugLogCacheLoaded().then(function (logs) {
             logs.push(Object.assign({
                 ts: new Date().toISOString(),
                 source: 'background',
             }, entry || {}));
-            logs = logs.slice(-MAX_DEBUG_LOGS);
-            chrome.storage.session.set({[DEBUG_LOG_KEY]: logs}, function () {
-                resolve(logs);
-            });
+            debugLogCache = logs.slice(-MAX_DEBUG_LOGS);
+            scheduleDebugLogCacheFlush();
+            resolve(debugLogCache.slice());
         });
     });
 }
 
 function getDebugLogs() {
     return new Promise(function (resolve) {
-        chrome.storage.session.get(DEBUG_LOG_KEY, function (data) {
-            resolve(Array.isArray(data[DEBUG_LOG_KEY]) ? data[DEBUG_LOG_KEY] : []);
+        ensureDebugLogCacheLoaded().then(function (logs) {
+            resolve(Array.isArray(logs) ? logs.slice() : []);
         });
     });
 }
 
 function clearDebugLogs() {
     return new Promise(function (resolve) {
-        chrome.storage.session.set({[DEBUG_LOG_KEY]: []}, function () {
-            resolve();
+        ensureDebugLogCacheLoaded().then(function () {
+            debugLogCache = [];
+            persistDebugLogCache().then(function () {
+                resolve();
+            });
+        });
+    });
+}
+
+function ensureDebugLogCacheLoaded() {
+    return new Promise(function (resolve) {
+        if (debugLogCacheLoaded) {
+            resolve(debugLogCache);
+            return;
+        }
+
+        chrome.storage.session.get(DEBUG_LOG_KEY, function (data) {
+            debugLogCache = Array.isArray(data[DEBUG_LOG_KEY]) ? data[DEBUG_LOG_KEY].slice(-MAX_DEBUG_LOGS) : [];
+            debugLogCacheLoaded = true;
+            resolve(debugLogCache);
+        });
+    });
+}
+
+function scheduleDebugLogCacheFlush() {
+    if (debugLogFlushTimer !== null) {
+        return;
+    }
+
+    debugLogFlushTimer = setTimeout(function () {
+        persistDebugLogCache();
+    }, DEBUG_LOG_FLUSH_DELAY_MS);
+}
+
+function persistDebugLogCache() {
+    return new Promise(function (resolve) {
+        if (debugLogFlushTimer !== null) {
+            clearTimeout(debugLogFlushTimer);
+            debugLogFlushTimer = null;
+        }
+
+        chrome.storage.session.set({[DEBUG_LOG_KEY]: debugLogCache.slice(-MAX_DEBUG_LOGS)}, function () {
+            resolve(debugLogCache);
         });
     });
 }
@@ -937,6 +981,39 @@ async function fetchAvailableModels(apiToken, baseUrl, forceRefresh) {
         fetchedAt: cachedOnError.fetchedAt,
         warning: cachedOnError.warning || 'Using cached/fallback model list.',
     };
+}
+
+async function fetchExtensionSettings(apiToken, baseUrl) {
+    try {
+        var response = await fetchWithTimeout(baseUrl + SETTINGS_PATH, {
+            method: 'GET',
+            headers: {
+                'Accept': 'application/json',
+                'Authorization': 'Bearer ' + apiToken,
+            }
+        }, TOOLS_FETCH_TIMEOUT_MS);
+
+        var data = await response.json().catch(function () {
+            return {};
+        });
+
+        if (!response.ok || !data || !data.ok || !data.settings) {
+            return {
+                ok: false,
+                error: normalizeToolsApiError(response.status, data),
+            };
+        }
+
+        return {
+            ok: true,
+            settings: data.settings,
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            error: error && error.message ? error.message : 'Could not load extension settings from Tools.',
+        };
+    }
 }
 
 chrome.runtime.onInstalled.addListener(function () {
@@ -2031,11 +2108,35 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
             'devMode',
             'soundcloudAutoIngestEnabled',
             'facebookAdminStatsEnabled',
+            'facebookParticipantScannerEnabled',
             'facebookAdminDebugEnabled',
             'defaultToolsModel',
             'preferredFactCheckModel'
-        ], function (data) {
-            sendResponse({ok: true, settings: data || {}});
+        ], async function (data) {
+            var settings = Object.assign({}, data || {});
+
+            if (settings.toolsApiToken) {
+                var baseUrl = getToolsBaseUrl(!!settings.devMode);
+                var remoteSettings = await fetchExtensionSettings(settings.toolsApiToken, baseUrl);
+                if (remoteSettings.ok && remoteSettings.settings) {
+                    settings.facebookAdminStatsEnabled = !!remoteSettings.settings.facebook_admin_stats_enabled;
+                    settings.facebookParticipantScannerEnabled = !!remoteSettings.settings.facebook_participant_scanner_enabled;
+
+                    var runtimePreferencePatch = {};
+                    if (!!data.facebookAdminStatsEnabled !== settings.facebookAdminStatsEnabled) {
+                        runtimePreferencePatch.facebookAdminStatsEnabled = settings.facebookAdminStatsEnabled;
+                    }
+                    if (!!data.facebookParticipantScannerEnabled !== settings.facebookParticipantScannerEnabled) {
+                        runtimePreferencePatch.facebookParticipantScannerEnabled = settings.facebookParticipantScannerEnabled;
+                    }
+
+                    if (Object.keys(runtimePreferencePatch).length) {
+                        chrome.storage.sync.set(runtimePreferencePatch);
+                    }
+                }
+            }
+
+            sendResponse({ok: true, settings: settings});
         });
         return true;
     }
