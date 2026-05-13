@@ -69,9 +69,17 @@
         return text.substring(0, limit) + '\n...[clipped]';
     }
 
+    function normalizeJsonCandidateText(value) {
+        var text = String(value || '').trim();
+        if (text.indexOf('for (;;);') === 0) {
+            text = text.slice('for (;;);'.length).trim();
+        }
+        return text;
+    }
+
     function safeJsonParse(value) {
         try {
-            return JSON.parse(value);
+            return JSON.parse(normalizeJsonCandidateText(value));
         } catch (e) {
             return null;
         }
@@ -524,10 +532,26 @@
         var candidates = [
             node && node.body && node.body.text,
             node && node.preferred_body && node.preferred_body.text,
+            node && node.body_renderer && node.body_renderer.text,
             node && node.message && node.message.text,
+            node && node.story && node.story.message && node.story.message.text,
+            node && node.story_body && node.story_body.text,
             node && node.comment_body && node.comment_body.text,
             node && node.text,
         ];
+
+        if (Array.isArray(node && node.rich_message)) {
+            node.rich_message.forEach(function (item) {
+                candidates.push(item && item.text);
+                candidates.push(item && item.message && item.message.text);
+            });
+        }
+
+        if (node && node.originalPost) {
+            candidates.push(node.originalPost.message && node.originalPost.message.text);
+            candidates.push(node.originalPost.story && node.originalPost.story.message && node.originalPost.story.message.text);
+            candidates.push(node.originalPost.body && node.originalPost.body.text);
+        }
 
         for (var i = 0; i < candidates.length; i += 1) {
             var text = normalizeWhitespace(candidates[i]);
@@ -555,6 +579,166 @@
         }
 
         return '';
+    }
+
+    function extractCommentAuthorProfileUrl(node) {
+        var candidates = [
+            node && node.author && node.author.url,
+            node && node.author && node.author.profile_url,
+            node && node.user && node.user.url,
+            node && node.user && node.user.profile_url,
+            node && node.actor && node.actor.url,
+            node && node.owner && node.owner.url,
+        ];
+
+        for (var i = 0; i < candidates.length; i += 1) {
+            var url = normalizeWhitespace(candidates[i]);
+            if (/^https?:\/\//i.test(url) && url.indexOf('facebook.com') !== -1) {
+                return url;
+            }
+        }
+
+        return '';
+    }
+
+    function extractCommentAuthorProfileId(node) {
+        return normalizeDigits(
+            (node && node.author && (node.author.id || node.author.legacy_fbid))
+            || (node && node.user && (node.user.id || node.user.legacy_fbid))
+            || (node && node.actor && (node.actor.id || node.actor.legacy_fbid))
+            || ''
+        );
+    }
+
+    function extractPreviewNodeTimestamp(node) {
+        var candidates = [
+            node && node.created_time,
+            node && node.creation_time,
+            node && node.createdTime,
+            node && node.creationTime,
+            node && node.timestamp,
+        ];
+
+        for (var i = 0; i < candidates.length; i += 1) {
+            var value = normalizeWhitespace(candidates[i]);
+            if (value) {
+                return value;
+            }
+        }
+
+        return '';
+    }
+
+    function extractPreviewNodeUrl(node) {
+        var candidates = [
+            node && node.url,
+            node && node.permalink_url,
+            node && node.permalinkUrl,
+            node && node.www_link,
+            node && node.feedback && node.feedback.url,
+            node && node.originalPost && node.originalPost.url,
+            node && node.originalPost && node.originalPost.permalink_url,
+            node && node.originalPost && node.originalPost.feedback && node.originalPost.feedback.url,
+        ];
+
+        for (var i = 0; i < candidates.length; i += 1) {
+            var url = normalizeWhitespace(candidates[i]);
+            if (/^https?:\/\//i.test(url) && url.indexOf('facebook.com') !== -1) {
+                return url;
+            }
+        }
+
+        return '';
+    }
+
+    function extractPreviewFeedbackUrl(node) {
+        var candidates = [
+            node && node.feedback && node.feedback.url,
+            node && node.url,
+            node && node.permalink_url,
+            node && node.originalPost && node.originalPost.feedback && node.originalPost.feedback.url,
+            node && node.originalPost && node.originalPost.url,
+        ];
+
+        for (var i = 0; i < candidates.length; i += 1) {
+            var url = normalizeWhitespace(candidates[i]);
+            if (/^https?:\/\//i.test(url) && url.indexOf('facebook.com') !== -1) {
+                return url;
+            }
+        }
+
+        return '';
+    }
+
+    function extractOriginalPostText(node) {
+        var originalPost = node && node.originalPost ? node.originalPost : null;
+        if (!originalPost || typeof originalPost !== 'object') {
+            return '';
+        }
+
+        var candidates = [
+            originalPost.message && originalPost.message.text,
+            originalPost.story && originalPost.story.message && originalPost.story.message.text,
+            originalPost.body && originalPost.body.text,
+            originalPost.preferred_body && originalPost.preferred_body.text,
+            originalPost.body_renderer && originalPost.body_renderer.text,
+        ];
+
+        for (var i = 0; i < candidates.length; i += 1) {
+            var text = normalizeWhitespace(candidates[i]);
+            if (text) {
+                return text;
+            }
+        }
+
+        var lines = extractParticipantPreviewLines(originalPost, 4);
+        return lines.length ? lines[0] : '';
+    }
+
+    function pushUniqueText(target, value) {
+        var text = normalizeWhitespace(value);
+        if (!text || target.indexOf(text) !== -1) {
+            return;
+        }
+        target.push(text);
+    }
+
+    function buildParticipantPreviewCommentRecords(commentPreview, limit) {
+        var nodes = commentPreview && Array.isArray(commentPreview.nodes)
+            ? commentPreview.nodes
+            : (Array.isArray(commentPreview) ? commentPreview : []);
+        var records = [];
+
+        nodes.slice(0, limit || 6).forEach(function (node) {
+            if (!node || typeof node !== 'object') {
+                return;
+            }
+
+            var text = extractCommentText(node);
+            var authorName = extractCommentAuthor(node);
+            var originalPostText = extractOriginalPostText(node);
+            var record = {
+                comment_id: normalizeWhitespace(node.id || node.legacy_fbid || node.comment_id || ''),
+                post_id: normalizeWhitespace(node.post_id || (node.originalPost && node.originalPost.post_id) || ''),
+                author_name: authorName,
+                author_profile_url: extractCommentAuthorProfileUrl(node),
+                author_profile_id: extractCommentAuthorProfileId(node),
+                text: text,
+                created_time: extractPreviewNodeTimestamp(node),
+                comment_url: extractPreviewNodeUrl(node),
+                feedback_url: extractPreviewFeedbackUrl(node),
+                original_post_text: originalPostText,
+                original_post_url: normalizeWhitespace((node.originalPost && (node.originalPost.url || node.originalPost.permalink_url || (node.originalPost.feedback && node.originalPost.feedback.url))) || ''),
+            };
+
+            if (!record.text && !record.original_post_text && !record.author_name) {
+                return;
+            }
+
+            records.push(record);
+        });
+
+        return records;
     }
 
     function looksLikeCommentNode(node) {
@@ -655,6 +839,502 @@
             }
         }
 
+        return results;
+    }
+
+    function looksLikeLikelyBase64Token(value) {
+        var text = normalizeWhitespace(value);
+        return !!(
+            text
+            && text.length >= 12
+            && text.length <= 180
+            && text.indexOf('data:') !== 0
+            && /^[A-Za-z0-9+/_=-]+$/.test(text)
+            && text.indexOf('{') === -1
+            && text.indexOf(' ') === -1
+        );
+    }
+
+    function decodeLikelyBase64Token(value) {
+        var text = normalizeWhitespace(value);
+        if (!looksLikeLikelyBase64Token(text) || typeof atob !== 'function') {
+            return '';
+        }
+
+        var normalized = text.replace(/-/g, '+').replace(/_/g, '/');
+        while (normalized.length % 4 !== 0) {
+            normalized += '=';
+        }
+
+        try {
+            var decoded = atob(normalized);
+            var nonPrintable = decoded.replace(/[\x20-\x7E\r\n\t]/g, '');
+            var cleaned = normalizeWhitespace(decoded);
+            if (!cleaned || nonPrintable.length > Math.max(4, Math.round(decoded.length * 0.2))) {
+                return '';
+            }
+            if (cleaned === text || cleaned.length > 220) {
+                return '';
+            }
+            if (!/(comment|feedback|story|post|profile|user|group|member|thread|request|viewer|ent:)/i.test(cleaned)) {
+                return '';
+            }
+            return cleaned;
+        } catch (error) {
+            return '';
+        }
+    }
+
+    function shouldKeepParticipantPreviewText(value, key) {
+        var text = normalizeWhitespace(value);
+        var loweredKey = normalizeWhitespace(key).toLowerCase();
+        if (!text) {
+            return false;
+        }
+        if (text.length < 2 || text.length > 280) {
+            return false;
+        }
+        if (/^data:[^,]+;base64,/i.test(text)) {
+            return false;
+        }
+        if (looksLikeLikelyBase64Token(text)) {
+            return false;
+        }
+        if (/^https?:\/\//i.test(text)) {
+            return false;
+        }
+        if (/^[\d\s:._-]+$/.test(text) && text.replace(/\D/g, '').length >= 6) {
+            return false;
+        }
+        if (/\$normalization\.graphql|\.react$/i.test(text)) {
+            return false;
+        }
+        if (loweredKey && /^(id|tracking|cursor|cache|logger|token|uri|url|href|permalink|typename|__typename|comment_menu_tooltip|translation_type|gender|intent_token)$/.test(loweredKey)) {
+            return false;
+        }
+        return true;
+    }
+
+    function isPreferredParticipantPreviewTextKey(key) {
+        return /^(text|body|body_renderer|preferred_body|message|comment_text|post_text|story_text)$/i.test(normalizeWhitespace(key));
+    }
+
+    function collectParticipantPreviewTextLines(value, preferredResults, otherResults, seen, limit, pathKey, depth) {
+        if (!value || (preferredResults.length + otherResults.length) >= limit || depth > 6) {
+            return;
+        }
+
+        if (Array.isArray(value)) {
+            value.slice(0, 16).forEach(function (item) {
+                collectParticipantPreviewTextLines(item, preferredResults, otherResults, seen, limit, pathKey, depth + 1);
+            });
+            return;
+        }
+
+        if (typeof value === 'string') {
+            var text = normalizeWhitespace(value);
+            if (shouldKeepParticipantPreviewText(text, pathKey) && !seen[text]) {
+                seen[text] = true;
+                if (isPreferredParticipantPreviewTextKey(pathKey)) {
+                    preferredResults.push(text);
+                } else {
+                    otherResults.push(text);
+                }
+            }
+            return;
+        }
+
+        if (typeof value !== 'object') {
+            return;
+        }
+
+        Object.keys(value).forEach(function (key) {
+            if ((preferredResults.length + otherResults.length) >= limit) {
+                return;
+            }
+            if (/^(extensions|prefetch_uris|big_pipe|relay|serialized_state|comet_sections|layout|tracking|cursor)$/i.test(String(key || ''))) {
+                return;
+            }
+            collectParticipantPreviewTextLines(value[key], preferredResults, otherResults, seen, limit, key, depth + 1);
+        });
+    }
+
+    function extractParticipantPreviewLines(value, limit) {
+        var preferredResults = [];
+        var otherResults = [];
+        collectParticipantPreviewTextLines(value, preferredResults, otherResults, {}, limit || 8, '', 0);
+        return preferredResults.concat(otherResults).slice(0, limit || 8);
+    }
+
+    function isLikelyFacebookProfileUrl(value) {
+        var candidate = normalizeWhitespace(value);
+        return /^https?:\/\//i.test(candidate) && candidate.indexOf('facebook.com') !== -1;
+    }
+
+    function extractParticipantPreviewIdentityScore(value) {
+        if (!value || typeof value !== 'object') {
+            return -1;
+        }
+
+        var name = normalizeWhitespace(value.name || value.text || value.title || '');
+        var profileUrl = extractParticipantPreviewProfileUrl(value);
+        var typename = normalizeWhitespace(value.__typename || value.__isActor || value.__isEntity || '').toLowerCase();
+        var score = 0;
+
+        if (name) {
+            score += 50;
+        }
+        if (profileUrl) {
+            score += 80;
+        }
+        if (typename === 'user') {
+            score += 120;
+        }
+        if (normalizeDigits(value.legacy_fbid || value.profile_id || value.profileId || value.user_id || value.userId || '')) {
+            score += 35;
+        }
+        if (!profileUrl && !name && !typename) {
+            return -1;
+        }
+
+        return score;
+    }
+
+    function collectParticipantPreviewIdentityCandidates(value, results, seen, depth, pathKey) {
+        if (!value || depth > 6 || results.length >= 16) {
+            return;
+        }
+
+        if (Array.isArray(value)) {
+            value.slice(0, 12).forEach(function (item) {
+                collectParticipantPreviewIdentityCandidates(item, results, seen, depth + 1, pathKey);
+            });
+            return;
+        }
+
+        if (typeof value !== 'object') {
+            return;
+        }
+
+        var loweredPath = normalizeWhitespace(pathKey || '').toLowerCase();
+        if (loweredPath && /^(viewer_actor|actor_provider|associated_group|group|groups|feedback|reactors|top_reactions|tracking|extensions|cursor|prefetch_uris|big_pipe|relay|serialized_state)$/.test(loweredPath)) {
+            return;
+        }
+
+        var score = extractParticipantPreviewIdentityScore(value);
+        if (score >= 0) {
+            var signature = [
+                normalizeWhitespace(value.name || value.text || value.title || ''),
+                extractParticipantPreviewProfileUrl(value),
+                normalizeDigits(value.legacy_fbid || value.profile_id || value.profileId || value.user_id || value.userId || ''),
+                normalizeWhitespace(value.__typename || value.__isActor || value.__isEntity || ''),
+            ].join('|');
+            if (signature && !seen[signature]) {
+                seen[signature] = true;
+                results.push({
+                    score: score,
+                    value: value,
+                });
+            }
+        }
+
+        Object.keys(value).forEach(function (key) {
+            if (results.length >= 16) {
+                return;
+            }
+            if (/^(extensions|prefetch_uris|big_pipe|relay|serialized_state|tracking|cursor)$/i.test(String(key || ''))) {
+                return;
+            }
+            collectParticipantPreviewIdentityCandidates(value[key], results, seen, depth + 1, key);
+        });
+    }
+
+    function findParticipantPreviewCandidateEntity() {
+        var candidates = [];
+        var seen = {};
+        Array.prototype.slice.call(arguments).forEach(function (item) {
+            collectParticipantPreviewIdentityCandidates(item, candidates, seen, 0, '');
+        });
+        candidates.sort(function (left, right) {
+            return (right && right.score ? right.score : 0) - (left && left.score ? left.score : 0);
+        });
+        return candidates.length ? candidates[0].value : null;
+    }
+
+    function extractParticipantPreviewProfileUrl(value) {
+        var candidates = [
+            value && value.url,
+            value && value.profile_url,
+            value && value.profileUrl,
+            value && value.link,
+            value && value.www_link,
+            value && value.profile && value.profile.url,
+            value && value.profile && value.profile.profile_url,
+        ];
+
+        for (var index = 0; index < candidates.length; index += 1) {
+            var candidate = normalizeWhitespace(candidates[index]);
+            if (/^https?:\/\//i.test(candidate) && candidate.indexOf('facebook.com') !== -1) {
+                return candidate;
+            }
+        }
+
+        return '';
+    }
+
+    function extractParticipantPreviewProfileId(value, profileUrl) {
+        var direct = normalizeDigits(
+            value && (
+                value.legacy_fbid
+                || value.profile_id
+                || value.profileId
+                || value.user_id
+                || value.userId
+                || ((normalizeWhitespace(value && (value.__typename || value.__isActor || value.__isEntity || '')).toLowerCase() === 'user' || isLikelyFacebookProfileUrl(value && (value.profile_url || value.profileUrl || value.url || ''))) ? value.id : '')
+            )
+        );
+        if (direct) {
+            return direct;
+        }
+
+        var url = normalizeWhitespace(profileUrl);
+        if (!url) {
+            return '';
+        }
+
+        try {
+            var parsed = new URL(url, window.location.origin);
+            var fromQuery = normalizeDigits(parsed.searchParams.get('id') || '');
+            if (fromQuery) {
+                return fromQuery;
+            }
+            var groupUserMatch = parsed.pathname.match(/\/groups\/[^/]+\/user\/(\d{3,})/i);
+            if (groupUserMatch) {
+                return groupUserMatch[1];
+            }
+            var peopleMatch = parsed.pathname.match(/\/people\/[^/]+\/(\d{3,})/i);
+            if (peopleMatch) {
+                return peopleMatch[1];
+            }
+        } catch (error) {
+        }
+
+        return '';
+    }
+
+    function pushDecodedParticipantPreviewId(results, label, value) {
+        var decoded = decodeLikelyBase64Token(value);
+        if (!decoded) {
+            return;
+        }
+        var entry = label + ': ' + decoded;
+        if (results.indexOf(entry) === -1) {
+            results.push(entry);
+        }
+    }
+
+    function extractParticipantPreviewDecodedIds(value, membership, commentPreview, postPreview) {
+        var results = [];
+        [
+            ['candidate_id', value && value.id],
+            ['candidate_legacy_fbid', value && value.legacy_fbid],
+            ['membership_id', membership && membership.id],
+            ['membership_feedback_id', membership && membership.feedback_id],
+            ['comment_preview_id', commentPreview && commentPreview.id],
+            ['comment_preview_feedback_id', commentPreview && commentPreview.feedback_id],
+            ['post_preview_id', postPreview && postPreview.id],
+            ['post_preview_feedback_id', postPreview && postPreview.feedback_id],
+        ].forEach(function (pair) {
+            pushDecodedParticipantPreviewId(results, pair[0], pair[1]);
+        });
+        return results.slice(0, 6);
+    }
+
+    function buildParticipantPreviewEntry(value, bodyMeta) {
+        if (!value || typeof value !== 'object') {
+            return null;
+        }
+
+        var candidate = value.node && typeof value.node === 'object'
+            ? value.node
+            : (value.participant || value.user || value.profile || value.requestee || value.member || value);
+        var membership = value.membership && typeof value.membership === 'object'
+            ? value.membership
+            : (candidate && candidate.membership && typeof candidate.membership === 'object' ? candidate.membership : null);
+        var commentPreview = membership && membership.participation_request_context_comment_preview && typeof membership.participation_request_context_comment_preview === 'object'
+            ? membership.participation_request_context_comment_preview
+            : (value.participation_request_context_comment_preview && typeof value.participation_request_context_comment_preview === 'object' ? value.participation_request_context_comment_preview : null);
+        var postPreview = membership && membership.participation_request_context_post_preview && typeof membership.participation_request_context_post_preview === 'object'
+            ? membership.participation_request_context_post_preview
+            : (value.participation_request_context_post_preview && typeof value.participation_request_context_post_preview === 'object' ? value.participation_request_context_post_preview : null);
+        var fallbackPreviewContext = membership && membership.participation_request_context && typeof membership.participation_request_context === 'object'
+            ? membership.participation_request_context
+            : (value.participation_request_context && typeof value.participation_request_context === 'object' ? value.participation_request_context : membership);
+
+        if (!membership && !commentPreview && !postPreview) {
+            return null;
+        }
+
+        var requestName = normalizeWhitespace(bodyMeta && bodyMeta.variables_object && bodyMeta.variables_object.name ? bodyMeta.variables_object.name : '');
+        var nestedCandidate = findParticipantPreviewCandidateEntity(candidate, membership, commentPreview, postPreview, value);
+        if (nestedCandidate) {
+            candidate = nestedCandidate;
+        }
+        var explicitCandidateName = normalizeWhitespace(candidate && (candidate.name || candidate.text || candidate.title) ? (candidate.name || candidate.text || candidate.title) : '');
+        var candidateName = explicitCandidateName || requestName;
+        var profileUrl = extractParticipantPreviewProfileUrl(candidate);
+        var profileUserId = extractParticipantPreviewProfileId(candidate, profileUrl);
+        var previewType = normalizeWhitespace(
+            membership && (membership.preview_type || membership.previewType)
+                ? (membership.preview_type || membership.previewType)
+                : (bodyMeta && bodyMeta.variables_object && bodyMeta.variables_object.previewType ? bodyMeta.variables_object.previewType : '')
+        );
+        var commentRecords = buildParticipantPreviewCommentRecords(commentPreview, 6);
+        var commentLines = [];
+        commentRecords.forEach(function (record) {
+            pushUniqueText(commentLines, record.text);
+            pushUniqueText(commentLines, record.original_post_text);
+        });
+        extractParticipantPreviewLines(commentPreview, 8).forEach(function (line) {
+            pushUniqueText(commentLines, line);
+        });
+        var postLines = [];
+        extractParticipantPreviewLines(postPreview, 6).forEach(function (line) {
+            pushUniqueText(postLines, line);
+        });
+        var additionalLines = extractParticipantPreviewLines(fallbackPreviewContext || candidate, 8).filter(function (line) {
+            return commentLines.indexOf(line) === -1 && postLines.indexOf(line) === -1 && line !== candidateName;
+        }).slice(0, 8);
+        var decodedIds = extractParticipantPreviewDecodedIds(candidate, membership, commentPreview, postPreview);
+        var authorNames = [];
+        var createdTimes = [];
+        var commentUrls = [];
+        var feedbackUrls = [];
+        var originalPostLinks = [];
+        var normalizedTextLines = [];
+        var summaryParts = [];
+
+        commentRecords.forEach(function (record) {
+            pushUniqueText(authorNames, record.author_name);
+            pushUniqueText(createdTimes, record.created_time);
+            pushUniqueText(commentUrls, record.comment_url);
+            pushUniqueText(feedbackUrls, record.feedback_url);
+            pushUniqueText(originalPostLinks, record.original_post_url);
+            pushUniqueText(normalizedTextLines, record.text);
+            pushUniqueText(normalizedTextLines, record.original_post_text);
+        });
+        commentLines.forEach(function (line) { pushUniqueText(normalizedTextLines, line); });
+        postLines.forEach(function (line) { pushUniqueText(normalizedTextLines, line); });
+        additionalLines.forEach(function (line) { pushUniqueText(normalizedTextLines, line); });
+
+        if (!explicitCandidateName && !profileUrl && !profileUserId && !value.node) {
+            return null;
+        }
+
+        if (candidateName) {
+            summaryParts.push('candidate=' + candidateName);
+        }
+        if (previewType) {
+            summaryParts.push('preview=' + previewType);
+        }
+        if (commentLines.length) {
+            summaryParts.push('comment=' + commentLines[0]);
+        }
+        if (authorNames.length) {
+            summaryParts.push('author=' + authorNames[0]);
+        }
+        if (postLines.length) {
+            summaryParts.push('post=' + postLines[0]);
+        }
+        if (!commentLines.length && !postLines.length && additionalLines.length) {
+            summaryParts.push('context=' + additionalLines[0]);
+        }
+
+        if (!candidateName && !commentLines.length && !postLines.length && !additionalLines.length) {
+            return null;
+        }
+
+        return {
+            key: [candidateName || requestName || 'participant-preview', profileUserId || profileUrl || '', previewType || '', summaryParts.join('|')].join('|'),
+            request_name: requestName,
+            candidate_name: candidateName,
+            profile_url: profileUrl,
+            profile_user_id: profileUserId,
+            preview_type: previewType,
+            comment_lines: commentLines,
+            post_lines: postLines,
+            additional_lines: additionalLines,
+            normalized_text_lines: normalizedTextLines.slice(0, 10),
+            author_names: authorNames.slice(0, 4),
+            created_times: createdTimes.slice(0, 6),
+            comment_urls: commentUrls.slice(0, 4),
+            feedback_urls: feedbackUrls.slice(0, 4),
+            original_post_links: originalPostLinks.slice(0, 4),
+            comment_records: commentRecords.slice(0, 4),
+            decoded_ids: decodedIds,
+            group_id: normalizeWhitespace(bodyMeta && bodyMeta.variables_object && bodyMeta.variables_object.groupID ? bodyMeta.variables_object.groupID : ''),
+            feed_location: normalizeWhitespace(bodyMeta && bodyMeta.variables_object && bodyMeta.variables_object.feedLocation ? bodyMeta.variables_object.feedLocation : ''),
+            render_location: normalizeWhitespace(bodyMeta && bodyMeta.variables_object && bodyMeta.variables_object.renderLocation ? bodyMeta.variables_object.renderLocation : ''),
+            summary_text: clip(summaryParts.join(' | '), 700),
+        };
+    }
+
+    function walkForParticipantPreviewEntries(value, results, seenKeys, bodyMeta) {
+        if (!value || results.length >= 8) {
+            return;
+        }
+
+        if (Array.isArray(value)) {
+            value.slice(0, 20).forEach(function (item) {
+                walkForParticipantPreviewEntries(item, results, seenKeys, bodyMeta);
+            });
+            return;
+        }
+
+        if (typeof value !== 'object') {
+            return;
+        }
+
+        var parsedEntry = buildParticipantPreviewEntry(value, bodyMeta);
+        if (parsedEntry && !seenKeys[parsedEntry.key]) {
+            seenKeys[parsedEntry.key] = true;
+            results.push(parsedEntry);
+        }
+
+        Object.keys(value).forEach(function (key) {
+            if (results.length >= 8) {
+                return;
+            }
+            if (/^(extensions|prefetch_uris|big_pipe|relay|serialized_state|tracking|cursor)$/i.test(String(key || ''))) {
+                return;
+            }
+            walkForParticipantPreviewEntries(value[key], results, seenKeys, bodyMeta);
+        });
+    }
+
+    function isFacebookParticipantPreviewRequest(base, bodyMeta) {
+        var friendlyName = normalizeWhitespace(
+            base && (base.friendly_name || base.operation_name)
+                ? (base.friendly_name || base.operation_name)
+                : (bodyMeta && bodyMeta.friendly_name ? bodyMeta.friendly_name : '')
+        ).toLowerCase();
+        var preview = String(bodyMeta && bodyMeta.preview ? bodyMeta.preview : '').toLowerCase();
+
+        return friendlyName.indexOf('groupscometforumparticipantrequestpreviewdialogquery') !== -1
+            || (preview.indexOf('previewtype') !== -1 && preview.indexOf('group_pending') !== -1 && preview.indexOf('groupid') !== -1);
+    }
+
+    function parseParticipantPreviewEntries(base, bodyMeta) {
+        var parsedResponse = base && base.response_json && typeof base.response_json === 'object'
+            ? base.response_json
+            : safeJsonParse(base && base.response_text ? base.response_text : '');
+        var results = [];
+
+        if (!parsedResponse || typeof parsedResponse !== 'object') {
+            return results;
+        }
+
+        walkForParticipantPreviewEntries(parsedResponse, results, {}, bodyMeta || null);
         return results;
     }
 
@@ -1334,6 +2014,10 @@
         var detectedComments = Array.isArray(base.detected_comments_override)
             ? base.detected_comments_override
             : (shouldParseComments ? parseDetectedCommentsFromResponse(base.response_text || '', batchId) : []);
+        var shouldParseParticipantPreview = !!(urlMeta.is_graphql && isFacebookParticipantPreviewRequest(base, bodyMeta));
+        var participantPreviewEntries = Array.isArray(base.participant_preview_entries_override)
+            ? base.participant_preview_entries_override
+            : (shouldParseParticipantPreview ? parseParticipantPreviewEntries(base, bodyMeta) : []);
 
         return {
             transport: base.transport,
@@ -1360,6 +2044,8 @@
             detected_count: detectedEntries.length,
             detected_comment_entries: detectedComments,
             detected_comment_count: detectedComments.length,
+            participant_preview_entries: participantPreviewEntries,
+            participant_preview_count: participantPreviewEntries.length,
             soundcloud_capture: soundcloudCapture,
             bootstrap_debug: base.bootstrap_debug || null,
         };

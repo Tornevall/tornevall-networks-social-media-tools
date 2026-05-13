@@ -44,6 +44,39 @@ const FORUM_URL = (window.TNNetworksExtensionLinks && window.TNNetworksExtension
 const TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH = (window.TNNetworksExtensionLinks && window.TNNetworksExtensionLinks.TOOLS_SOCIAL_MEDIA_DASHBOARD_PATH) || '/admin/social-media-tools';
 const popupSyncWriteSignatures = {};
 
+function normalizeStoredBoolean(value, defaultValue) {
+    if (typeof value === 'boolean') {
+        return value;
+    }
+
+    if (typeof value === 'string') {
+        const normalized = value.trim().toLowerCase();
+        if (['true', '1', 'yes', 'on'].indexOf(normalized) !== -1) {
+            return true;
+        }
+        if (['false', '0', 'no', 'off', ''].indexOf(normalized) !== -1) {
+            return false;
+        }
+    }
+
+    if (typeof value === 'number') {
+        return value !== 0;
+    }
+
+    return !!defaultValue;
+}
+
+function migrateLegacyDevModeValue(rawValue) {
+    if (typeof rawValue !== 'string') {
+        return;
+    }
+
+    const normalizedValue = normalizeStoredBoolean(rawValue, false);
+    chrome.storage.sync.set({
+        devMode: normalizedValue,
+    });
+}
+
 function getBaseUrl(devMode) {
     return devMode ? DEV_BASE_URL : PROD_BASE_URL;
 }
@@ -355,23 +388,6 @@ function sendRuntimeMessage(message) {
     });
 }
 
-function sendMessageToActiveTab(message) {
-    return sendRuntimeMessage({
-        type: 'SEND_MESSAGE_TO_ACTIVE_TAB',
-        message: message || {},
-    }).then(function (response) {
-        if (response && response.ok) {
-            return response;
-        }
-
-        return {
-            ok: false,
-            error: response && response.error
-                ? response.error
-                : t('status.noResponseFromTab', {}, 'The active tab did not return a response.'),
-        };
-    });
-}
 
 function queryActiveTabFacebookAdminStatus() {
     return new Promise(function (resolve) {
@@ -471,8 +487,6 @@ document.addEventListener('DOMContentLoaded', function () {
     const forumLink = document.getElementById('forumLink');
     const openToolboxBtn = document.getElementById('openToolboxBtn');
     const openOptionsPageBtn = document.getElementById('openOptionsPageBtn');
-    const facebookSendNowBtn = document.getElementById('facebookSendNowBtn');
-    const facebookForceReleaseBtn = document.getElementById('facebookForceReleaseBtn');
     const status = document.getElementById('status');
     const testBtn = document.getElementById('testConnectionBtn');
     const resetBtn = document.getElementById('resetPromptBtn');
@@ -1230,6 +1244,8 @@ document.addEventListener('DOMContentLoaded', function () {
         'markedContextLabelMode',
         'markedContextExpansionMode'
     ], async function (data) {
+        migrateLegacyDevModeValue(data.devMode);
+
         const initialExtensionUiLanguage = normalizeExtensionUiLanguage(data.extensionUiLanguage || DEFAULT_EXTENSION_UI_LANGUAGE);
         if (extensionLanguageSelect) {
             extensionLanguageSelect.value = initialExtensionUiLanguage;
@@ -1243,7 +1259,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (data.responderName) responderNameInput.value = data.responderName;
         systemPromptInput.value = sanitizePersonaProfileValue(data.chatGptSystemPrompt) || DEFAULT_PERSONA_PROFILE;
         testQuestionInput.value = DEFAULT_TEST_QUESTION;
-        autoDetectCheckbox.checked = data.autoDetectResponder !== false;
+        autoDetectCheckbox.checked = normalizeStoredBoolean(data.autoDetectResponder, true);
         responseLanguageSelect.value = data.defaultResponseLanguage || DEFAULT_RESPONSE_LANGUAGE;
         verifyFactLanguageSelect.value = data.defaultVerifyFactLanguage || DEFAULT_VERIFY_FACT_LANGUAGE;
         populateFactCheckModelOptions(data.availableToolsModels || [], data.defaultToolsModel || DEFAULT_FACT_CHECK_MODEL, data.preferredFactCheckModel || DEFAULT_FACT_CHECK_MODEL);
@@ -1255,11 +1271,11 @@ document.addEventListener('DOMContentLoaded', function () {
         if (markedContextExpansionModeSelect) {
             markedContextExpansionModeSelect.value = data.markedContextExpansionMode || DEFAULT_MARKED_CONTEXT_EXPANSION_MODE;
         }
-        devModeCheckbox.checked = !!data.devMode;
-        facebookAdminStatsEnabledValue = !!data.facebookAdminStatsEnabled;
-        facebookParticipantScannerEnabledValue = !!data.facebookParticipantScannerEnabled;
+        devModeCheckbox.checked = normalizeStoredBoolean(data.devMode, false);
+        facebookAdminStatsEnabledValue = normalizeStoredBoolean(data.facebookAdminStatsEnabled, false);
+        facebookParticipantScannerEnabledValue = normalizeStoredBoolean(data.facebookParticipantScannerEnabled, false);
         if (facebookAdminDebugCheckbox) {
-            facebookAdminDebugCheckbox.checked = !!data.facebookAdminDebugEnabled;
+            facebookAdminDebugCheckbox.checked = normalizeStoredBoolean(data.facebookAdminDebugEnabled, false);
         }
         if (facebookAdminStatsCheckbox) {
             facebookAdminStatsCheckbox.checked = facebookAdminStatsEnabledValue;
@@ -1524,43 +1540,6 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    if (facebookSendNowBtn) {
-        facebookSendNowBtn.addEventListener('click', async function () {
-            setBusyState(true, [facebookSendNowBtn, facebookForceReleaseBtn]);
-            const result = await sendMessageToActiveTab({
-                type: 'RUN_FACEBOOK_ADMIN_INGEST_MANUAL',
-                forceRelease: false,
-            });
-            setBusyState(false, [facebookSendNowBtn, facebookForceReleaseBtn]);
-
-            if (!result || !result.ok) {
-                setStatus(status, (result && result.error) || 'Could not trigger manual Facebook queue send on the active tab.', true);
-                return;
-            }
-
-            const stateText = result.status && result.status.state_text ? result.status.state_text : 'Manual queue send was triggered in the active Facebook tab.';
-            setStatus(status, stateText, false);
-        });
-    }
-
-    if (facebookForceReleaseBtn) {
-        facebookForceReleaseBtn.addEventListener('click', async function () {
-            setBusyState(true, [facebookSendNowBtn, facebookForceReleaseBtn]);
-            const result = await sendMessageToActiveTab({
-                type: 'RUN_FACEBOOK_ADMIN_INGEST_MANUAL',
-                forceRelease: true,
-            });
-            setBusyState(false, [facebookSendNowBtn, facebookForceReleaseBtn]);
-
-            if (!result || !result.ok) {
-                setStatus(status, (result && result.error) || 'Could not force-release stuck Facebook queue entries on the active tab.', true);
-                return;
-            }
-
-            const stateText = result.status && result.status.state_text ? result.status.state_text : 'Forced queue release was triggered in the active Facebook tab.';
-            setStatus(status, stateText, false);
-        });
-    }
 
     if (chrome.storage && chrome.storage.onChanged && typeof chrome.storage.onChanged.addListener === 'function') {
         chrome.storage.onChanged.addListener(function (changes, areaName) {

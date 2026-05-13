@@ -97,6 +97,79 @@ function parseUrlSafe(value) {
     }
 }
 
+function extractFacebookGroupIdFromPathname(pathname) {
+    var match = String(pathname || '').match(/^\/groups\/([^/?#]+)/i);
+    return match && match[1] ? String(match[1]).trim() : '';
+}
+
+function extractFacebookGroupIdFromPageUrl(pageUrl) {
+    var parsed = parseUrlSafe(pageUrl);
+    if (parsed && parsed.pathname) {
+        return extractFacebookGroupIdFromPathname(parsed.pathname);
+    }
+
+    return extractFacebookGroupIdFromPathname(pageUrl);
+}
+
+function normalizeParticipantGroupContextValue(value) {
+    return String(value || '')
+        .replace(/\r\n?/g, '\n')
+        .trim()
+        .slice(0, 4000);
+}
+
+function normalizeParticipantGroupContextMap(input) {
+    var source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+    var normalized = {};
+
+    Object.keys(source).forEach(function (key) {
+        var groupId = String(key || '').trim();
+        if (!groupId) {
+            return;
+        }
+
+        var contextValue = normalizeParticipantGroupContextValue(source[key]);
+        if (!contextValue) {
+            return;
+        }
+
+        normalized[groupId] = contextValue;
+    });
+
+    return normalized;
+}
+
+function resolveParticipantGroupContextForTarget(settings, options) {
+    var source = settings && typeof settings === 'object' ? settings : {};
+    var requestOptions = options && typeof options === 'object' ? options : {};
+    var groupId = String(requestOptions.groupId || '').trim();
+    if (!groupId) {
+        groupId = extractFacebookGroupIdFromPageUrl(requestOptions.pageUrl || '');
+    }
+
+    var contextsByGroupId = normalizeParticipantGroupContextMap(source.facebookParticipantGroupContextsByGroupId);
+    var groupSpecific = groupId && contextsByGroupId[groupId]
+        ? normalizeParticipantGroupContextValue(contextsByGroupId[groupId])
+        : '';
+    var globalFallback = normalizeParticipantGroupContextValue(source.facebookParticipantGroupContext || '');
+
+    if (groupId) {
+        return {
+            groupId: groupId,
+            contextsByGroupId: contextsByGroupId,
+            value: groupSpecific,
+            source: groupSpecific ? 'group' : 'empty'
+        };
+    }
+
+    return {
+        groupId: groupId,
+        contextsByGroupId: contextsByGroupId,
+        value: groupSpecific || globalFallback,
+        source: groupSpecific ? 'group' : (globalFallback ? 'global' : 'empty')
+    };
+}
+
 function normalizeHostName(value) {
     return String(value || '').trim().toLowerCase().replace(/^www\./, '');
 }
@@ -770,6 +843,10 @@ function clearAuthFailureIndicator() {
 }
 
 function extractToolsApiMessage(data) {
+    if (data && typeof data.user_message === 'string' && data.user_message.trim()) {
+        return data.user_message.trim();
+    }
+
     if (data && typeof data.error === 'string' && data.error.trim()) {
         return data.error.trim();
     }
@@ -818,6 +895,10 @@ function normalizeToolsApiError(status, data) {
 
     if (status === 503) {
         return apiMessage || 'Tools is reachable, but the global provider_openai key is not configured.';
+    }
+
+    if (status === 504) {
+        return apiMessage || 'OpenAI is taking longer than expected right now. Please try again in a moment.';
     }
 
     return apiMessage || 'Tools API request failed (' + status + ')';
@@ -1016,6 +1097,45 @@ async function fetchExtensionSettings(apiToken, baseUrl) {
     }
 }
 
+async function updateExtensionSettings(apiToken, baseUrl, payload) {
+    try {
+        var response = await fetchWithTimeout(baseUrl + SETTINGS_PATH, {
+            method: 'PUT',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + apiToken,
+            },
+            body: JSON.stringify(payload || {}),
+        }, TOOLS_FETCH_TIMEOUT_MS);
+
+        var data = await response.json().catch(function () {
+            return {};
+        });
+
+        if (!response.ok || !data || !data.ok || !data.settings) {
+            return {
+                ok: false,
+                error: normalizeToolsApiError(response.status, data),
+                status: response.status,
+                data: data,
+            };
+        }
+
+        return {
+            ok: true,
+            settings: data.settings,
+            data: data,
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            error: error && error.message ? error.message : 'Could not save extension settings to Tools.',
+            status: 0,
+        };
+    }
+}
+
 chrome.runtime.onInstalled.addListener(function () {
     setupExtensionContextMenus();
     appendDebugLog({level: 'info', category: 'lifecycle', message: 'Extension installed / updated.'});
@@ -1163,6 +1283,17 @@ async function callToolsSocialGpt(apiToken, baseUrl, payload) {
             }
 
             clearAuthFailureIndicator();
+            if (data && typeof data.notice === 'string' && data.notice.trim()) {
+                await appendDebugLog({
+                    level: 'warning',
+                    category: 'ai-response',
+                    message: data.notice.trim(),
+                    meta: {
+                        baseUrl: currentBaseUrl,
+                        model: data.model || payload.model,
+                    }
+                });
+            }
             await appendDebugLog({
                 level: 'info',
                 category: 'ai-response',
@@ -1177,6 +1308,8 @@ async function callToolsSocialGpt(apiToken, baseUrl, payload) {
             return {
                 ok: true,
                 response: (data && data.response ? String(data.response).trim() : '') || 'No response from Tools API.',
+                payload: data || {},
+                notice: data && data.notice ? String(data.notice).trim() : '',
             };
         }
     } catch (e) {
@@ -2109,6 +2242,8 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
             'soundcloudAutoIngestEnabled',
             'facebookAdminStatsEnabled',
             'facebookParticipantScannerEnabled',
+            'facebookParticipantGroupContext',
+            'facebookParticipantGroupContextsByGroupId',
             'facebookAdminDebugEnabled',
             'defaultToolsModel',
             'preferredFactCheckModel'
@@ -2121,6 +2256,8 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
                 if (remoteSettings.ok && remoteSettings.settings) {
                     settings.facebookAdminStatsEnabled = !!remoteSettings.settings.facebook_admin_stats_enabled;
                     settings.facebookParticipantScannerEnabled = !!remoteSettings.settings.facebook_participant_scanner_enabled;
+                    settings.facebookParticipantGroupContext = remoteSettings.settings.facebook_participant_group_context || '';
+                    settings.facebookParticipantGroupContextsByGroupId = normalizeParticipantGroupContextMap(remoteSettings.settings.facebook_participant_group_contexts_by_group_id || {});
 
                     var runtimePreferencePatch = {};
                     if (!!data.facebookAdminStatsEnabled !== settings.facebookAdminStatsEnabled) {
@@ -2129,6 +2266,12 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
                     if (!!data.facebookParticipantScannerEnabled !== settings.facebookParticipantScannerEnabled) {
                         runtimePreferencePatch.facebookParticipantScannerEnabled = settings.facebookParticipantScannerEnabled;
                     }
+                    if (String(data.facebookParticipantGroupContext || '') !== String(settings.facebookParticipantGroupContext || '')) {
+                        runtimePreferencePatch.facebookParticipantGroupContext = settings.facebookParticipantGroupContext || '';
+                    }
+                    if (JSON.stringify(normalizeParticipantGroupContextMap(data.facebookParticipantGroupContextsByGroupId || {})) !== JSON.stringify(settings.facebookParticipantGroupContextsByGroupId || {})) {
+                        runtimePreferencePatch.facebookParticipantGroupContextsByGroupId = settings.facebookParticipantGroupContextsByGroupId || {};
+                    }
 
                     if (Object.keys(runtimePreferencePatch).length) {
                         chrome.storage.sync.set(runtimePreferencePatch);
@@ -2136,7 +2279,161 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
                 }
             }
 
+            var resolvedParticipantGroupContext = resolveParticipantGroupContextForTarget(settings, {
+                groupId: req && req.groupId ? req.groupId : '',
+                pageUrl: req && req.pageUrl ? req.pageUrl : ''
+            });
+            settings.facebookParticipantGroupContextsByGroupId = resolvedParticipantGroupContext.contextsByGroupId;
+            settings.facebookParticipantGroupContextDefault = normalizeParticipantGroupContextValue(settings.facebookParticipantGroupContext || '');
+            settings.facebookParticipantActiveGroupId = resolvedParticipantGroupContext.groupId;
+            settings.facebookParticipantGroupContextSource = resolvedParticipantGroupContext.source;
+            settings.facebookParticipantGroupContext = resolvedParticipantGroupContext.value;
+
             sendResponse({ok: true, settings: settings});
+        });
+        return true;
+    }
+
+    if (req.type === 'SAVE_FACEBOOK_PARTICIPANT_GROUP_CONTEXT') {
+        chrome.storage.sync.get([
+            'toolsApiToken',
+            'devMode',
+            'facebookParticipantGroupContext',
+            'facebookParticipantGroupContextsByGroupId'
+        ], async function (data) {
+            var normalizedValue = normalizeParticipantGroupContextValue(req && typeof req.value === 'string' ? req.value : '');
+            var groupId = String(req && req.groupId ? req.groupId : '').trim();
+            if (!groupId) {
+                groupId = extractFacebookGroupIdFromPageUrl(req && req.pageUrl ? req.pageUrl : '');
+            }
+
+            var contextsByGroupId = normalizeParticipantGroupContextMap(data && data.facebookParticipantGroupContextsByGroupId);
+            var localPatch;
+            if (groupId) {
+                if (normalizedValue) {
+                    contextsByGroupId[groupId] = normalizedValue;
+                } else {
+                    delete contextsByGroupId[groupId];
+                }
+
+                localPatch = {
+                    facebookParticipantGroupContextsByGroupId: contextsByGroupId,
+                };
+            } else {
+                localPatch = {
+                    facebookParticipantGroupContext: normalizedValue,
+                };
+            }
+
+            chrome.storage.sync.set(localPatch, async function () {
+                if (groupId) {
+                    sendResponse({
+                        ok: true,
+                        localOnly: true,
+                        synced: false,
+                        scoped: true,
+                        groupId: groupId,
+                        value: normalizedValue,
+                        settings: {
+                            facebook_participant_group_context: normalizedValue,
+                            facebook_participant_group_context_source: 'group',
+                        },
+                        message: normalizedValue
+                            ? ('Saved participant user-verifier rules for Facebook group ' + groupId + ' in this extension/profile.')
+                            : ('Cleared participant user-verifier rules for Facebook group ' + groupId + ' in this extension/profile.'),
+                    });
+                    return;
+                }
+
+                var token = data && data.toolsApiToken ? String(data.toolsApiToken).trim() : '';
+                if (!token) {
+                    sendResponse({
+                        ok: true,
+                        localOnly: true,
+                        synced: false,
+                        value: normalizedValue,
+                        message: 'Saved locally in the extension. Add your Tools bearer token to sync it remotely too.'
+                    });
+                    return;
+                }
+
+                var baseUrl = getToolsBaseUrl(!!(data && data.devMode));
+                if (groupId) {
+                    var scopedResult = await updateExtensionSettings(token, baseUrl, {
+                        facebook_participant_group_contexts_by_group_id: contextsByGroupId,
+                    });
+
+                    if (!scopedResult.ok) {
+                        sendResponse({
+                            ok: true,
+                            localOnly: true,
+                            synced: false,
+                            scoped: true,
+                            groupId: groupId,
+                            value: normalizedValue,
+                            warning: scopedResult.error || 'Could not save participant group rules to Tools.',
+                            message: 'Saved for this Facebook group in the extension/profile, but Tools sync failed this time.',
+                        });
+                        return;
+                    }
+
+                    var scopedRemoteMap = normalizeParticipantGroupContextMap(
+                        scopedResult.settings && scopedResult.settings.facebook_participant_group_contexts_by_group_id
+                            ? scopedResult.settings.facebook_participant_group_contexts_by_group_id
+                            : contextsByGroupId
+                    );
+                    var scopedRemoteValue = groupId && scopedRemoteMap[groupId]
+                        ? scopedRemoteMap[groupId]
+                        : '';
+
+                    chrome.storage.sync.set({
+                        facebookParticipantGroupContextsByGroupId: scopedRemoteMap,
+                    }, function () {
+                        sendResponse({
+                            ok: true,
+                            localOnly: false,
+                            synced: true,
+                            scoped: true,
+                            groupId: groupId,
+                            value: scopedRemoteValue,
+                            settings: scopedResult.settings,
+                            message: scopedRemoteValue
+                                ? ('Participant user-verifier rules for Facebook group ' + groupId + ' were saved to Tools.')
+                                : ('Participant user-verifier rules for Facebook group ' + groupId + ' were cleared in Tools.'),
+                        });
+                    });
+                    return;
+                }
+
+                var result = await updateExtensionSettings(token, baseUrl, {
+                    facebook_participant_group_context: normalizedValue,
+                });
+
+                if (!result.ok) {
+                    sendResponse({
+                        ok: true,
+                        localOnly: true,
+                        synced: false,
+                        value: normalizedValue,
+                        warning: result.error || 'Could not save participant group context to Tools.',
+                        message: 'Saved locally in the extension, but Tools sync failed this time.',
+                    });
+                    return;
+                }
+
+                chrome.storage.sync.set({
+                    facebookParticipantGroupContext: result.settings.facebook_participant_group_context || normalizedValue,
+                }, function () {
+                    sendResponse({
+                        ok: true,
+                        localOnly: false,
+                        synced: true,
+                        value: result.settings.facebook_participant_group_context || normalizedValue,
+                        settings: result.settings,
+                        message: 'Participant user-verifier rules were saved to Tools.',
+                    });
+                });
+            });
         });
         return true;
     }
@@ -2250,11 +2547,17 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
                 client_version: clientMeta.client_version,
                 client_platform: clientMeta.client_platform,
             };
+            if (req.extraData && typeof req.extraData === 'object') {
+                payload.extra_data = req.extraData;
+            }
+            if (req.maxTokens || req.max_tokens) {
+                payload.max_tokens = parseInt(req.maxTokens || req.max_tokens, 10) || undefined;
+            }
 
             var toolsResponse = await executeToolsRequestWithFactFallback(data.toolsApiToken, baseUrl, payload);
             var output = toolsResponse.ok ? toolsResponse.response : toolsResponse.error;
 
-            chrome.tabs.sendMessage(requestTabId, {type: 'GPT_RESPONSE', payload: output, ok: toolsResponse.ok});
+            chrome.tabs.sendMessage(requestTabId, {type: 'GPT_RESPONSE', payload: toolsResponse.ok ? (toolsResponse.payload || output) : output, ok: toolsResponse.ok});
             sendResponse({ok: toolsResponse.ok, error: toolsResponse.error || null});
         });
         return true;

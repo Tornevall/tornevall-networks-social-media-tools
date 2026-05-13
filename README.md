@@ -22,15 +22,35 @@ This extension provides text selection overlays, fact-checking controls, and AI-
 - ✅ Get AI-powered replies and fact-checking via Tornevall Networks Tools
 - ✅ After a fact-check result appears, continue with the same context using the result-box `Open Toolbox` action
 
-Verify-fact note: when the backend decides that a check required real web search but OpenAI did not actually use the web-search tool, the result is now explicitly treated as **independent verification missing** rather than being presented as independently verified.
+Verify-fact note: when the backend decides that a check requires independent verification, Tools now treats the normal AI answer and the web-search verification lookup as separate steps. The preliminary answer can still be shown if web search fails or adds no useful evidence, but the metadata clearly marks the result as not independently verified. Fact/user-analysis result boxes now render the first markdown answer as safe HTML (headings, bold text, lists, and links), can show structured citation links returned by Tools, and use an internal scroll area so longer source-backed answers remain readable without hiding the action buttons. The first pending **Analyzing user…** / **Verifying facts…** state is also styled more cleanly with a compact preview card instead of a flattened text dump.
+
+Timeout note: if Tools temporarily hits a slow OpenAI upstream call, the API can now return a friendlier `user_message` plus additive retry metadata instead of only exposing a raw transport error. Verify/source-check flows can also keep the preliminary answer visible when only the last OpenAI refinement step times out, together with a small backend `notice` telling the client that the answer is still the preliminary version.
 
 **On specific platforms:**
 - 📘 **Facebook admin activities**: per-tab activity reporting with manual queue controls that can now retry directly to Tools if the extension runtime handoff stalls
-- 👥 **Facebook participant requests**: per-card moderation helper buttons on `/groups/*/participant_requests`, plus a floating fallback scanner panel that can list visible request cards, jump to the right card, and open **Analyze in Toolbox** / **Verify facts** directly from that panel when Facebook's DOM makes inline attachment awkward
+- 👥 **Facebook participant requests**: a lighter moderation helper on `/groups/*/participant_requests` that now prefers compact actions near the card's existing action/`...` area instead of injecting a larger helper block into every card, plus a floating fallback scanner panel that can list visible request cards, jump to the right card, and open **Analyze user** directly from that panel when Facebook's DOM makes inline attachment awkward
 - 🎵 **SoundCloud**: Insights capture and analytics (with permission)
 - 𝕏 **X/Twitter**: Platform-specific tooling
 
 When the popup refreshes settings from Tools, the local Facebook admin activity checkbox can now also mirror the stored Tools-side on/off state from the Facebook Admin Tools dashboard. The same stricter state mirroring now also applies to the participant-request helper toggle, and the Tools dashboard checkbox should no longer drift visually from the saved remote state.
+
+The participant-request helper now also scans more conservatively on heavy Facebook moderation pages: it uses a narrower visible-area scan, caches card scoring more aggressively, and reports scan timing in the floating scanner panel so it is easier to see that the helper is still alive even when Facebook's own page is sluggish.
+
+Participant-request **Analyze user** now treats the visible request card as first-class context from the start: profile rows, group/friend clues, membership questions, visible answers/rule acknowledgements, and preview/comment markers are structured before the AI request is sent. When you click inside a request card, the helper also watches for newly opened Facebook comment/post preview UI and relevant Graph/XHR snippets; if more context appears after the analysis starts, the result box shows an update notice and offers **Update analysis** so the refreshed context can be included without manually copying text.
+
+The participant-request helper now also reads Facebook's dedicated preview GraphQL response (`GroupsCometForumParticipantRequestPreviewDialogQuery`) more selectively: instead of dragging along large raw response blobs, it extracts participant-specific preview/comment/post clues from richer fields such as `preferred_body.text`, `body_renderer.text`, `message.text`, original-post message text, author names, timestamps, comment/post ids, and Facebook URLs before it falls back to visible DOM text only.
+
+When Facebook temporarily rerenders the request list behind an open **Preview comment** dialog, the helper now also treats that dialog as an active participant surface. This lets the in-page analysis keep following the same person/comment context on the fly even when the original list card is no longer visible long enough to be re-bound immediately. The dialog matcher now also uses dialog-label metadata from Facebook's separate root-mounted `mount_*` preview roots, and the floating helper exposes **Find preview element** so the currently matched preview dialog can be scrolled into view and highlighted directly.
+
+The participant helper now also exposes a small detected-context list inside the floating panel, showing the current name/profile id/profile URL plus any visible group/friend/profile signals, preview-comment clues, original-post links, and whether the current context comes from cards, preview dialog fallback, or captured GraphQL preview data. The verify-style **Analyzing user…** box now shows a more visibly moving progress line with step count, elapsed time, and a live bar instead of a mostly static `Checking now…` spinner, and the helper can launch **Analyze current preview** even when Facebook has temporarily rerendered all visible request cards away.
+
+The participant-request helper now also exposes **Rules / group info** from the floating helper list, from each inline request-card helper, and from the user-analysis result box so the group-specific moderation context can be edited from whichever participant view you are already using. That rule text is now keyed per Facebook group path (`/groups/<id>`) instead of being one shared text for every group, and the same per-group map is now saved through Tools extension settings so it can sync back into other extension installs for the same user/token. On actual `/groups/<id>/participant_requests` pages, only the exact current group's saved rules are shown/used there; the older Tools-side setting is no longer allowed to fill the box with another group's text.
+
+The popup's **Use dev / beta server** checkbox is opt-in and stays unchecked by default. The extension should keep using `tools.tornevall.net` unless you explicitly enable the dev/beta host.
+
+Older synced popup installs now also normalize legacy string-based `devMode` leftovers once, so users do not stay on the dev/beta host accidentally just because an old storage value looked truthy.
+
+The popup no longer duplicates the Facebook **Send queued** / **Release stuck** actions because those controls already exist on the ingest page itself.
 
 The background worker now also batches debug-log persistence and avoids unnecessary sync writes when the Tools-side Facebook runtime flags have not actually changed, which reduces Chrome `MAX_WRITE_OPERATIONS_PER_MINUTE` quota errors.
 
@@ -255,9 +275,15 @@ Current v1 behavior:
 - the helper is enabled from the Tools-side Facebook admin settings, not from a separate local popup checkbox
 - the same Tools-side master switch is authoritative, so the helper should appear only after that setting is enabled in Tools and synced into the extension/tab
 - visible participant-request cards are detected from the live Facebook DOM
-- each matched card gets compact **Analyze in Toolbox** and **Verify facts** actions
+- each matched card now keeps only compact **Show card** and **Analyze user** actions
+- the helper now prefers to attach beside stable moderation-detail rows inside the left request body (for example comment/preview or unanswered-question lines) before it falls back to the top-right `...` action area
+- the participant-analysis import is now explicitly user-focused: it calls out visible group/friend clues, visible membership questions, question-answer state, and other profile/background hints before the full card text is appended as raw context
 - the imported Toolbox/fact-check context contains the visible participant card text, profile link when available, and a moderation-focused instruction block
-- when active, the page should also show one small floating scanner box in the lower-right corner so it is obvious that the participant helper is awake even before any card is matched
+- when active, the page now shows one small floating participant-helper box docked in the top-right corner by default so it is obvious that the helper is awake even before any card is matched
+- DOM rescans now stay scoped to the relevant Facebook participant-request content root instead of watching the whole page body, which keeps the helper lighter on heavier moderation queues
+- the floating participant helper can now be dragged around, re-docked to the top-right corner, and remembers its last free-moved position for later visits
+- rescanning no longer depends on a manual scan button: the helper now rescans after scroll/load-more settle and through a light timer fallback when Facebook's own DOM mutations are not enough
+- **Analyze user** now opens a verify-style result box instead of the full Toolbox composer so the participant review stays focused on user analysis first
 
 Important guardrails:
 
