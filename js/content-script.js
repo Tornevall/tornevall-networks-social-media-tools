@@ -69,6 +69,7 @@ let participantRequestsLastSelectedSummary = null;
 let participantRequestsLastSelectedReason = '';
 let activeParticipantUserAnalysis = null;
 let participantAnalysisMutationTimerId = null;
+let participantAnalysisAutoSupplementTimerId = null;
 let participantScannerGroupContext = '';
 let participantScannerConfigBox = null;
 
@@ -4001,6 +4002,308 @@ function buildParticipantSummaryFromDialogContext(dialogContext) {
     };
 }
 
+function buildParticipantPreviewDebugState() {
+    if (!isParticipantAnalysisRequestActive()) {
+        return null;
+    }
+
+    const requestState = getParticipantAnalysisRequestState();
+    const summary = requestState && requestState.summary ? requestState.summary : getParticipantReferenceSummary();
+    const card = requestState && requestState.card ? requestState.card : participantRequestsLastSelectedCard;
+    const dialogContext = extractParticipantPreviewDialogContext(summary);
+    const previewEntries = activeParticipantUserAnalysis && Array.isArray(activeParticipantUserAnalysis.previewEntries)
+        ? activeParticipantUserAnalysis.previewEntries
+        : [];
+    const openedContextLines = collectParticipantRequestOpenedContextLines(card, summary);
+    const sections = [];
+
+    function normalizeLines(lines, limit) {
+        const seen = new Set();
+        return (Array.isArray(lines) ? lines : []).map(function (line) {
+            return clipText(normalizeWhitespace(line), 500);
+        }).filter(function (line) {
+            if (!line || seen.has(line)) {
+                return false;
+            }
+            seen.add(line);
+            return true;
+        }).slice(0, typeof limit === 'number' ? limit : 8);
+    }
+
+    if (dialogContext) {
+        const dialogLines = normalizeLines(dialogContext.commentLines, 8);
+        sections.push({
+            title: 'Preview dialog DOM',
+            subtitle: dialogContext.mountRootId ? 'mount=' + dialogContext.mountRootId : 'matched live dialog',
+            lines: dialogLines,
+        });
+    }
+
+    previewEntries.slice(-4).forEach(function (entry, index) {
+        const lines = normalizeLines(
+            (Array.isArray(entry.comment_lines) ? entry.comment_lines : []).concat(
+                Array.isArray(entry.post_lines) ? entry.post_lines : [],
+                Array.isArray(entry.normalized_text_lines) ? entry.normalized_text_lines : []
+            ),
+            8
+        );
+        sections.push({
+            title: 'GraphQL preview #' + String(index + 1),
+            subtitle: normalizeWhitespace([
+                entry.candidate_name || entry.request_name || '',
+                entry.preview_type ? '(' + entry.preview_type + ')' : '',
+                entry.profile_user_id ? 'id=' + entry.profile_user_id : '',
+            ].join(' ')),
+            lines: lines,
+        });
+    });
+
+    if (openedContextLines.length) {
+        sections.push({
+            title: 'Fallback opened-preview context',
+            subtitle: 'DOM scan',
+            lines: normalizeLines(openedContextLines, 8),
+        });
+    }
+
+    const capturedLineCount = sections.reduce(function (sum, section) {
+        return sum + ((section && Array.isArray(section.lines)) ? section.lines.length : 0);
+    }, 0);
+
+    return {
+        sections: sections,
+        capturedLineCount: capturedLineCount,
+        hasCapturedLines: capturedLineCount > 0,
+        dialogMatched: !!dialogContext,
+        previewEntryCount: previewEntries.length,
+    };
+}
+
+function buildParticipantPreviewDebugHtml(debugState) {
+    const state = debugState || buildParticipantPreviewDebugState();
+    if (!state) {
+        return '';
+    }
+
+    const summaryText = [
+        'Captured lines: ' + String(state.capturedLineCount || 0),
+        'Preview dialog: ' + (state.dialogMatched ? 'yes' : 'no'),
+        'GraphQL entries: ' + String(state.previewEntryCount || 0),
+    ].join(' · ');
+
+    const sectionsHtml = (state.sections || []).map(function (section) {
+        const subtitle = section && section.subtitle ? '<div style="margin-top:2px; font-size:11px; color:#64748b;">' + escapeHtml(section.subtitle) + '</div>' : '';
+        const lines = (section && Array.isArray(section.lines) ? section.lines : []).map(function (line) {
+            return '<li style="margin:0 0 4px 0;">' + escapeHtml(line) + '</li>';
+        }).join('');
+        return [
+            '<div style="margin-top:8px; padding-top:8px; border-top:1px dashed rgba(148,163,184,0.35);">',
+            '<div style="font-weight:700; color:#312e81;">' + escapeHtml(section && section.title ? section.title : 'Preview source') + '</div>',
+            subtitle,
+            lines
+                ? '<ul style="margin:6px 0 0 18px; padding:0; color:#334155;">' + lines + '</ul>'
+                : '<div style="margin-top:6px; color:#94a3b8; font-style:italic;">No comment lines captured from this source yet.</div>',
+            '</div>'
+        ].join('');
+    }).join('');
+
+    return [
+        '<details open style="margin-top:10px; border:1px solid rgba(191,219,254,0.85); border-radius:12px; background:rgba(239,246,255,0.75); padding:10px;">',
+        '<summary style="cursor:pointer; font-weight:800; color:#075985;">Preview capture debug</summary>',
+        '<div style="margin-top:8px; font-size:12px; color:#0f172a;">' + escapeHtml(summaryText) + '</div>',
+        sectionsHtml || '<div style="margin-top:8px; color:#64748b;">No preview comments captured yet. Open the preview dialog and wait for the comment extraction.</div>',
+        '</details>'
+    ].join('');
+}
+
+function updateParticipantPreviewDebugView() {
+    if (!factResultBox || !document.contains(factResultBox)) {
+        return;
+    }
+
+    const existing = factResultBox.querySelector('[data-role="participant-preview-debug"]');
+    if (!isParticipantAnalysisRequestActive()) {
+        if (existing) {
+            existing.remove();
+        }
+        return;
+    }
+
+    const debugState = buildParticipantPreviewDebugState();
+    if (!debugState) {
+        if (existing) {
+            existing.remove();
+        }
+        return;
+    }
+
+    const debugBox = existing || document.createElement('div');
+    debugBox.setAttribute('data-role', 'participant-preview-debug');
+    debugBox.innerHTML = buildParticipantPreviewDebugHtml(debugState);
+
+    if (!existing) {
+        const contentScroll = factResultBox.querySelector('[data-role="fact-content-scroll"]');
+        const actionsRow = factResultBox.querySelector('[data-role="fact-actions"]');
+        if (contentScroll) {
+            contentScroll.appendChild(debugBox);
+        } else if (actionsRow && actionsRow.parentElement === factResultBox) {
+            factResultBox.insertBefore(debugBox, actionsRow);
+        } else {
+            factResultBox.appendChild(debugBox);
+        }
+    }
+}
+
+function setParticipantAutoSupplementStatus(message, active) {
+    if (!factResultBox || !document.contains(factResultBox)) {
+        return;
+    }
+
+    const existing = factResultBox.querySelector('[data-role="participant-auto-supplement-status"]');
+    if (!active) {
+        if (existing) {
+            existing.remove();
+        }
+        return;
+    }
+
+    const statusBox = existing || document.createElement('div');
+    statusBox.setAttribute('data-role', 'participant-auto-supplement-status');
+    statusBox.style.marginTop = '10px';
+    statusBox.style.padding = '8px 10px';
+    statusBox.style.borderRadius = '10px';
+    statusBox.style.border = '1px solid rgba(196,181,253,0.9)';
+    statusBox.style.background = 'rgba(245,243,255,0.92)';
+    statusBox.style.display = 'flex';
+    statusBox.style.alignItems = 'center';
+    statusBox.style.gap = '8px';
+    statusBox.style.color = '#6d28d9';
+    statusBox.style.fontSize = '12px';
+    statusBox.style.fontWeight = '700';
+
+    statusBox.innerHTML = [
+        '<span style="width:14px; height:14px; border-radius:50%; border:2px solid rgba(124,58,237,0.22); border-top-color:#7c3aed; animation:sgpt-inline-spin .8s linear infinite; flex:0 0 auto;"></span>',
+        '<span style="flex:1 1 auto;">' + escapeHtml(message || 'Preview comments captured. Wait a few more seconds while the comment part is analyzed too…') + '</span>'
+    ].join('');
+
+    if (!existing) {
+        const actionsRow = factResultBox.querySelector('[data-role="fact-actions"]');
+        if (actionsRow && actionsRow.parentElement === factResultBox) {
+            factResultBox.insertBefore(statusBox, actionsRow);
+        } else {
+            factResultBox.appendChild(statusBox);
+        }
+    }
+}
+
+function clearParticipantAnalysisAutoSupplementTimer() {
+    if (participantAnalysisAutoSupplementTimerId) {
+        window.clearTimeout(participantAnalysisAutoSupplementTimerId);
+        participantAnalysisAutoSupplementTimerId = null;
+    }
+}
+
+function getParticipantAutoSupplementRequestState() {
+    if (!activeParticipantUserAnalysis || !lastVerificationRequest || lastVerificationRequest.requestMode !== 'user-analysis') {
+        return null;
+    }
+
+    const debugState = buildParticipantPreviewDebugState();
+    if (!debugState || !debugState.hasCapturedLines) {
+        return null;
+    }
+
+    const requestState = getParticipantAnalysisRequestState();
+    if (!requestState || !requestState.context) {
+        return null;
+    }
+
+    const contextSignature = normalizeWhitespace(requestState.context).slice(0, 6000);
+    const currentRequestSignature = normalizeWhitespace(lastVerificationRequest.context || '').slice(0, 6000);
+    if (!contextSignature || contextSignature === currentRequestSignature) {
+        return null;
+    }
+
+    if (activeParticipantUserAnalysis.autoSupplementContextSignature === contextSignature) {
+        return null;
+    }
+
+    return {
+        requestState: requestState,
+        contextSignature: contextSignature,
+        debugState: debugState,
+    };
+}
+
+function runParticipantAnalysisAutoSupplement(reason) {
+    clearParticipantAnalysisAutoSupplementTimer();
+    const supplementState = getParticipantAutoSupplementRequestState();
+    if (!supplementState) {
+        setParticipantAutoSupplementStatus('', false);
+        return;
+    }
+
+    if (pendingAiRequestMode === 'verify') {
+        activeParticipantUserAnalysis.autoSupplementQueued = true;
+        return;
+    }
+
+    activeParticipantUserAnalysis.autoSupplementQueued = false;
+    activeParticipantUserAnalysis.autoSupplementInFlight = true;
+    activeParticipantUserAnalysis.autoSupplementContextSignature = supplementState.contextSignature;
+    setParticipantAutoSupplementStatus('Preview comments were captured. Wait a few more seconds while the comment part is analyzed too…', true);
+    updateParticipantPreviewDebugView();
+
+    startFactVerification(supplementState.requestState.context, {
+        anchor: createFactAnchorForNode(supplementState.requestState.anchorElement),
+        model: lastVerificationRequest.model,
+        responseLanguage: lastVerificationRequest.responseLanguage,
+        sourceLabel: lastVerificationRequest.sourceLabel || 'Participant user analysis',
+        pendingTitle: lastVerificationRequest.pendingTitle,
+        pendingSubtitle: lastVerificationRequest.pendingSubtitle,
+        resultTitle: lastVerificationRequest.resultTitle,
+        failedTitle: lastVerificationRequest.failedTitle,
+        modeLabel: lastVerificationRequest.modeLabel,
+        showOpenToolboxAction: lastVerificationRequest.showOpenToolboxAction,
+        participantAnalysisCard: supplementState.requestState.card,
+        participantAnalysisSummary: supplementState.requestState.summary,
+        verificationInstruction: lastVerificationRequest.verificationInstruction,
+        requestMode: lastVerificationRequest.requestMode,
+        sourceUrl: lastVerificationRequest.sourceUrl,
+        extraData: lastVerificationRequest.extraData,
+        loadingSteps: lastVerificationRequest.loadingSteps,
+        previewLimit: lastVerificationRequest.previewLimit,
+        keepMarks: true,
+        keepPosition: true,
+        preserveExistingResultDuringLoading: true,
+        participantAutoSupplement: true,
+    });
+}
+
+function scheduleParticipantAnalysisAutoSupplement(reason) {
+    if (!activeParticipantUserAnalysis || !lastVerificationRequest || lastVerificationRequest.requestMode !== 'user-analysis') {
+        return;
+    }
+
+    const supplementState = getParticipantAutoSupplementRequestState();
+    if (!supplementState) {
+        setParticipantAutoSupplementStatus('', false);
+        return;
+    }
+
+    activeParticipantUserAnalysis.autoSupplementQueued = true;
+    updateParticipantPreviewDebugView();
+
+    if (pendingAiRequestMode === 'verify') {
+        return;
+    }
+
+    clearParticipantAnalysisAutoSupplementTimer();
+    participantAnalysisAutoSupplementTimerId = window.setTimeout(function () {
+        runParticipantAnalysisAutoSupplement(reason || 'preview-auto-supplement');
+    }, 1600);
+}
+
 function buildParticipantContextListRows(summary) {
     const activeSummary = summary || getParticipantReferenceSummary();
     const rows = [];
@@ -4754,6 +5057,7 @@ function participantAnalysisContextSignature(card) {
 
 function updateParticipantUserAnalysisNotice() {
     if (!factResultBox || !document.contains(factResultBox) || !activeParticipantUserAnalysis || !activeParticipantUserAnalysis.changed) {
+        updateParticipantPreviewDebugView();
         return;
     }
     let notice = factResultBox.querySelector('[data-role="participant-context-notice"]');
@@ -4775,7 +5079,11 @@ function updateParticipantUserAnalysisNotice() {
             factResultBox.appendChild(notice);
         }
     }
-    notice.textContent = ct('contentScript.participantScannerNewContext', {}, 'New Facebook context was loaded for this participant. Use “Update analysis” to include it.');
+    const debugState = buildParticipantPreviewDebugState();
+    notice.textContent = debugState && debugState.hasCapturedLines
+        ? 'New Facebook preview comments were captured for this participant. Wait a few more seconds while the comment part is analyzed too…'
+        : ct('contentScript.participantScannerNewContext', {}, 'New Facebook context was loaded for this participant. Use “Update analysis” to include it.');
+    updateParticipantPreviewDebugView();
 }
 
 function markParticipantUserAnalysisContextChanged(reason) {
@@ -4785,6 +5093,7 @@ function markParticipantUserAnalysisContextChanged(reason) {
     activeParticipantUserAnalysis.changed = true;
     activeParticipantUserAnalysis.changedReason = reason || 'context';
     updateParticipantUserAnalysisNotice();
+    scheduleParticipantAnalysisAutoSupplement(reason || 'context');
 }
 
 function scheduleParticipantUserAnalysisContextCheck() {
@@ -4814,6 +5123,8 @@ function activateParticipantUserAnalysisContextWatcher(card, reason, options) {
     if (!liveCard && !summary) {
         return;
     }
+    clearParticipantAnalysisAutoSupplementTimer();
+    setParticipantAutoSupplementStatus('', false);
     if (activeParticipantUserAnalysis && activeParticipantUserAnalysis.observer) {
         activeParticipantUserAnalysis.observer.disconnect();
     }
@@ -4826,6 +5137,9 @@ function activateParticipantUserAnalysisContextWatcher(card, reason, options) {
         previewOnly: !!settings.previewOnly,
         changed: false,
         changedReason: reason || 'focus',
+        autoSupplementQueued: false,
+        autoSupplementInFlight: false,
+        autoSupplementContextSignature: '',
         observer: null,
     };
     activeParticipantUserAnalysis.contextSignature = participantAnalysisContextSignature(liveCard);
@@ -5383,6 +5697,8 @@ function disconnectParticipantRequestsObserver() {
 }
 
 function clearParticipantRequestEnhancements() {
+    clearParticipantAnalysisAutoSupplementTimer();
+
     if (participantRequestsScanTimerId) {
         window.clearTimeout(participantRequestsScanTimerId);
         participantRequestsScanTimerId = null;
@@ -5416,6 +5732,7 @@ function clearParticipantRequestEnhancements() {
     participantRequestsLastSelectedCard = null;
     participantRequestsLastSelectedSummary = null;
     participantRequestsLastSelectedReason = '';
+    setParticipantAutoSupplementStatus('', false);
 
     document.querySelectorAll('[data-sgpt-participant-card="true"]').forEach(function (card) {
         removeParticipantRequestHelperFromCard(card);
@@ -6544,6 +6861,7 @@ function showFactResultBox(content, anchor, options) {
     }
 
     const contentScroll = document.createElement('div');
+    contentScroll.setAttribute('data-role', 'fact-content-scroll');
     contentScroll.style.flex = '1 1 auto';
     contentScroll.style.minHeight = '0';
     contentScroll.style.overflowY = 'auto';
@@ -6627,6 +6945,7 @@ function showFactResultBox(content, anchor, options) {
     } else {
         stopFactResultLoadingAnimation(box);
     }
+    updateParticipantPreviewDebugView();
 }
 
 function showFactVerificationPending(context, anchor, sourceLabel, options) {
@@ -11327,6 +11646,7 @@ function startFactVerification(contextOverride, options) {
     const settings = options || {};
     const contextField = panel ? panel.querySelector('#sgpt-context') : null;
     const context = sanitizeContextForAi(typeof contextOverride === 'string' ? contextOverride : (contextField ? contextField.value : ''));
+    const preserveExistingResultDuringLoading = !!settings.preserveExistingResultDuringLoading && factResultBox && document.contains(factResultBox);
 
     if (!context) {
         alert(ct('contentScript.verifyNoContext', {}, 'There is no context to verify yet. Import, mark, or write context first.'));
@@ -11335,6 +11655,16 @@ function startFactVerification(contextOverride, options) {
 
     if (!settings.keepPosition) {
         factResultBoxManualPosition = null;
+    }
+
+    if (!settings.participantAutoSupplement) {
+        clearParticipantAnalysisAutoSupplementTimer();
+        setParticipantAutoSupplementStatus('', false);
+        if (activeParticipantUserAnalysis) {
+            activeParticipantUserAnalysis.autoSupplementQueued = false;
+            activeParticipantUserAnalysis.autoSupplementInFlight = false;
+            activeParticipantUserAnalysis.autoSupplementContextSignature = '';
+        }
     }
 
     showLoader(ct('contentScript.verifyingFacts', {}, 'Verifying facts…'), {skipFloating: true});
@@ -11380,9 +11710,16 @@ function startFactVerification(contextOverride, options) {
         extraData: extraData,
         loadingSteps: settings.loadingSteps || [],
         previewLimit: settings.previewLimit || 280,
+        preserveExistingResultDuringLoading: preserveExistingResultDuringLoading,
+        participantAutoSupplement: !!settings.participantAutoSupplement,
     };
-    showFactVerificationPending(context, factResultAnchor, settings.sourceLabel || 'Fact verification', settings);
-    updateFactResultLoadingProgress(lastVerificationRequest.requestMode === 'user-analysis' ? 4 : 0, lastVerificationRequest.requestMode === 'user-analysis' ? 'Sending participant context to Tools…' : 'Sending verification request to Tools…');
+    if (preserveExistingResultDuringLoading) {
+        setParticipantAutoSupplementStatus('Preview comments were captured. Wait a few more seconds while the comment part is analyzed too…', true);
+        updateParticipantPreviewDebugView();
+    } else {
+        showFactVerificationPending(context, factResultAnchor, settings.sourceLabel || 'Fact verification', settings);
+        updateFactResultLoadingProgress(lastVerificationRequest.requestMode === 'user-analysis' ? 4 : 0, lastVerificationRequest.requestMode === 'user-analysis' ? 'Sending participant context to Tools…' : 'Sending verification request to Tools…');
+    }
 
     safeSendRuntimeMessage({
         type: 'GPT_REQUEST',
@@ -11484,6 +11821,9 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
     } else if (req.type === 'GPT_RESPONSE') {
         hideLoader();
         if (pendingAiRequestMode === 'verify') {
+            if (activeParticipantUserAnalysis) {
+                activeParticipantUserAnalysis.autoSupplementInFlight = false;
+            }
             showFactResultBox(
                 req.ok ? getReadablePanelText(req.payload) : getReadablePanelErrorText(req.error || req.payload),
                 factResultAnchor,
@@ -11505,6 +11845,12 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
                 updatePanelComposerActions(req.ok
                     ? ct('contentScript.factCheckComplete', {}, 'Fact check complete. Review the popup result.')
                     : ct('contentScript.factCheckFailed', {}, 'Fact check failed. Try refresh or think harder.'), req.ok ? 'success' : 'error');
+            }
+            updateParticipantPreviewDebugView();
+            if (activeParticipantUserAnalysis && activeParticipantUserAnalysis.changed) {
+                scheduleParticipantAnalysisAutoSupplement('post-response');
+            } else {
+                setParticipantAutoSupplementStatus('', false);
             }
             return;
         }
