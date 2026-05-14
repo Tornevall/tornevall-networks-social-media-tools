@@ -4958,11 +4958,16 @@ function collectParticipantRequestOpenedContextLines(card, summary) {
         if (!/(kommentar|comment|inlägg|post|preview|förhandsgranska|svarade|answered|reply|medlemsfråga|membership question|godkänner du|group rules)/i.test(text)) {
             return;
         }
-        const focusedLines = collectRelevantParticipantPreviewLines(splitParticipantContextTextIntoLines(text), activeSummary, 6);
-        if (!focusedLines.length) {
+        const splitLines = splitParticipantContextTextIntoLines(text);
+        const focusedLines = collectRelevantParticipantPreviewLines(splitLines, activeSummary, 6);
+        const neighborhoodLines = collectParticipantContextNeighborhoodLines(splitLines, activeSummary, 6);
+        const mergedLines = focusedLines.concat(neighborhoodLines.filter(function (line) {
+            return focusedLines.indexOf(line) === -1;
+        }));
+        if (!mergedLines.length) {
             return;
         }
-        focusedLines.forEach(function (line, index) {
+        mergedLines.forEach(function (line, index) {
             const decoratedLine = index === 0 && lineMatchesParticipantIdentity(line, activeSummary)
                 ? 'Expanded preview/post: ' + line
                 : line;
@@ -5643,6 +5648,15 @@ function focusParticipantPreviewElement(summary) {
         element.style.outline = previousOutline;
         element.style.outlineOffset = previousOutlineOffset;
     }, 2400);
+
+    if (activeParticipantUserAnalysis) {
+        window.setTimeout(function () {
+            forceParticipantPreviewContextRefresh('locate-preview-context');
+        }, 180);
+        window.setTimeout(function () {
+            forceParticipantPreviewContextRefresh('locate-preview-context-late');
+        }, 900);
+    }
 
     return true;
 }
@@ -6492,6 +6506,65 @@ function buildFactBoxSubtitle(anchor, responseLanguage, isError, modeLabel) {
         parts.push(ct('contentScript.factRetry', {}, 'You can retry below.'));
     }
     return parts.join(' · ');
+}
+
+function buildFactVerificationRequestToken() {
+    return 'sgpt-fact-' + String(Date.now()) + '-' + Math.random().toString(36).slice(2, 10);
+}
+
+function shouldHandleIncomingFactResponse(req) {
+    if (!req || req.type !== 'GPT_RESPONSE' || !lastVerificationRequest) {
+        return false;
+    }
+
+    const requestToken = normalizeWhitespace(req.requestToken || '');
+    const activeRequestToken = normalizeWhitespace(lastVerificationRequest.requestToken || '');
+    if (requestToken && activeRequestToken && requestToken !== activeRequestToken) {
+        return false;
+    }
+
+    if (pendingAiRequestMode === 'verify') {
+        return true;
+    }
+
+    return !!(req.replaceExistingFactResult
+        && lastVerificationRequest.requestMode === 'user-analysis'
+        && factResultBox
+        && document.contains(factResultBox));
+}
+
+function forceParticipantPreviewContextRefresh(reason) {
+    if (!activeParticipantUserAnalysis) {
+        return false;
+    }
+
+    const requestState = getParticipantAnalysisRequestState();
+    if (!requestState || !requestState.context) {
+        return false;
+    }
+
+    const nextSignature = normalizeWhitespace(requestState.context).slice(0, 6000);
+    const currentDisplayedSignature = normalizeWhitespace(lastVerificationRequest && lastVerificationRequest.context ? lastVerificationRequest.context : '').slice(0, 6000);
+    if (nextSignature && nextSignature !== activeParticipantUserAnalysis.contextSignature) {
+        activeParticipantUserAnalysis.contextSignature = nextSignature;
+    }
+
+    if (nextSignature && nextSignature !== currentDisplayedSignature) {
+        markParticipantUserAnalysisContextChanged(reason || 'forced-preview-refresh');
+        return true;
+    }
+
+    const debugState = buildParticipantPreviewDebugState();
+    if (debugState && debugState.hasCapturedLines) {
+        activeParticipantUserAnalysis.changed = true;
+        activeParticipantUserAnalysis.changedReason = reason || 'forced-preview-refresh';
+        activeParticipantUserAnalysis.lastContextChangeAt = Date.now();
+        updateParticipantUserAnalysisNotice();
+        scheduleParticipantAnalysisAutoSupplement(reason || 'forced-preview-refresh');
+        return true;
+    }
+
+    return false;
 }
 
 function isParticipantAnalysisRequestActive() {
@@ -12185,11 +12258,18 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
         });
     } else if (req.type === 'GPT_RESPONSE') {
         hideLoader();
-        if (pendingAiRequestMode === 'verify') {
+        if (shouldHandleIncomingFactResponse(req)) {
             if (activeParticipantUserAnalysis) {
                 activeParticipantUserAnalysis.autoSupplementInFlight = false;
                 activeParticipantUserAnalysis.lastAutoSupplementCompletedAt = Date.now();
             }
+            const effectiveModeLabel = req.ok
+                && req.raceVariant === 'with_web_search'
+                && req.payload
+                && req.payload.web_search
+                && req.payload.web_search.used
+                ? (((lastVerificationRequest && lastVerificationRequest.modeLabel) || ct('contentScript.participantScannerAnalyzeMode', {}, 'User analysis')) + ' · web search follow-up')
+                : (lastVerificationRequest ? lastVerificationRequest.modeLabel : '');
             showFactResultBox(
                 req.ok ? getReadablePanelText(req.payload) : getReadablePanelErrorText(req.error || req.payload),
                 factResultAnchor,
@@ -12198,7 +12278,7 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
                         ? ((lastVerificationRequest && lastVerificationRequest.resultTitle) || ct('contentScript.factVerificationTitle', {}, '✅ Fact checking via OpenAI'))
                         : ((lastVerificationRequest && lastVerificationRequest.failedTitle) || ct('contentScript.factVerificationFailedTitle', {}, '⚠️ Fact check failed')),
                     titleColor: req.ok ? '#0284c7' : '#b91c1c',
-                    subtitle: buildFactBoxSubtitle(factResultAnchor, lastVerificationRequest ? lastVerificationRequest.responseLanguage : defaultResponseLanguage, !req.ok, lastVerificationRequest ? lastVerificationRequest.modeLabel : ''),
+                    subtitle: buildFactBoxSubtitle(factResultAnchor, lastVerificationRequest ? lastVerificationRequest.responseLanguage : defaultResponseLanguage, !req.ok, effectiveModeLabel),
                     subtitleColor: req.ok ? '#7c3aed' : '#b91c1c',
                     borderColor: req.ok ? '#d8b4fe' : '#fecaca',
                     background: req.ok ? '#fff' : '#fef2f2',
@@ -12206,10 +12286,14 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
                     actions: buildFactBoxActions(),
                 }
             );
-            pendingAiRequestMode = null;
+            if (pendingAiRequestMode === 'verify') {
+                pendingAiRequestMode = null;
+            }
             if (panel) {
                 updatePanelComposerActions(req.ok
-                    ? ct('contentScript.factCheckComplete', {}, 'Fact check complete. Review the popup result.')
+                    ? (req.hasPendingRaceResult
+                        ? ct('contentScript.factCheckComplete', {}, 'Fact check complete. Review the popup result.') + ' Deeper web search is still running…'
+                        : ct('contentScript.factCheckComplete', {}, 'Fact check complete. Review the popup result.'))
                     : ct('contentScript.factCheckFailed', {}, 'Fact check failed. Try refresh or think harder.'), req.ok ? 'success' : 'error');
             }
             updateParticipantPreviewDebugView();

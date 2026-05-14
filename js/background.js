@@ -1341,6 +1341,120 @@ function hasMeaningfulAiResponse(result) {
     return !!response && response !== 'No response from Tools API.';
 }
 
+function shouldUseParticipantAnalysisRace(payload) {
+    return !!(payload
+        && payload.request_mode === 'user-analysis'
+        && payload.requestToken
+        && payload.extra_data
+        && payload.extra_data.participant_analysis_phase);
+}
+
+function clonePayloadWithWebSearchMode(payload, mode, variant) {
+    var extraData = Object.assign({}, payload && payload.extra_data ? payload.extra_data : {});
+    extraData.web_search_mode = mode;
+    extraData.request_race_variant = variant;
+
+    return Object.assign({}, payload, {
+        extra_data: extraData,
+    });
+}
+
+function buildParticipantAnalysisRaceResponse(result, payload, variant, replaceExistingFactResult, hasPendingRaceResult) {
+    return {
+        ok: !!(result && result.ok),
+        payload: result && result.ok ? (result.payload || result.response || '') : (result ? (result.error || result.payload || '') : ''),
+        error: result && !result.ok ? (result.error || null) : null,
+        requestToken: payload && payload.requestToken ? payload.requestToken : '',
+        requestMode: payload && payload.request_mode ? payload.request_mode : '',
+        replaceExistingFactResult: !!replaceExistingFactResult,
+        hasPendingRaceResult: !!hasPendingRaceResult,
+        raceVariant: variant,
+        raceSource: 'participant-analysis-race',
+    };
+}
+
+function shouldPromoteParticipantAnalysisRaceResult(currentResult, nextResult, variant) {
+    if (!nextResult || !nextResult.ok || !hasMeaningfulAiResponse(nextResult)) {
+        return false;
+    }
+    if (!currentResult || !currentResult.ok || !hasMeaningfulAiResponse(currentResult)) {
+        return true;
+    }
+
+    var currentPayload = currentResult.payload || {};
+    var nextPayload = nextResult.payload || {};
+    var currentResponse = currentResult.response ? String(currentResult.response).trim() : '';
+    var nextResponse = nextResult.response ? String(nextResult.response).trim() : '';
+    var currentWebSearchUsed = !!(currentPayload.web_search && currentPayload.web_search.used);
+    var nextWebSearchUsed = !!(nextPayload.web_search && nextPayload.web_search.used);
+
+    if (currentWebSearchUsed && variant !== 'with_web_search') {
+        return false;
+    }
+
+    if (variant === 'with_web_search' && nextWebSearchUsed && !currentWebSearchUsed) {
+        return true;
+    }
+
+    return !!nextResponse && nextResponse !== currentResponse;
+}
+
+async function executeParticipantAnalysisRace(apiToken, baseUrl, payload, emitResponse) {
+    var variants = [
+        {
+            key: 'no_web_search',
+            payload: clonePayloadWithWebSearchMode(payload, 'force_off', 'no_web_search')
+        },
+        {
+            key: 'with_web_search',
+            payload: clonePayloadWithWebSearchMode(payload, 'force_on', 'with_web_search')
+        }
+    ];
+    var deliveredResult = null;
+    var firstFailure = null;
+    var completedCount = 0;
+
+    await Promise.all(variants.map(async function (variantInfo) {
+        var result = await executeToolsRequestWithFactFallback(apiToken, baseUrl, variantInfo.payload);
+        completedCount += 1;
+
+        if (result && result.ok && hasMeaningfulAiResponse(result)) {
+            if (!deliveredResult) {
+                deliveredResult = result;
+                emitResponse(buildParticipantAnalysisRaceResponse(result, payload, variantInfo.key, false, completedCount < variants.length));
+                return;
+            }
+
+            if (shouldPromoteParticipantAnalysisRaceResult(deliveredResult, result, variantInfo.key)) {
+                deliveredResult = result;
+                emitResponse(buildParticipantAnalysisRaceResponse(result, payload, variantInfo.key, true, false));
+            }
+
+            return;
+        }
+
+        if (!firstFailure) {
+            firstFailure = {
+                result: result,
+                variant: variantInfo.key,
+            };
+        }
+    }));
+
+    if (deliveredResult) {
+        return deliveredResult;
+    }
+
+    if (firstFailure) {
+        emitResponse(buildParticipantAnalysisRaceResponse(firstFailure.result, payload, firstFailure.variant, false, false));
+        return firstFailure.result;
+    }
+
+    var fallbackFailure = {ok: false, error: 'No response from Tools API.', status: 0};
+    emitResponse(buildParticipantAnalysisRaceResponse(fallbackFailure, payload, 'unknown', false, false));
+    return fallbackFailure;
+}
+
 async function executeToolsRequestWithFactFallback(apiToken, baseUrl, payload) {
     var primaryResult = await callToolsSocialGpt(apiToken, baseUrl, payload);
     var requestedModel = payload && payload.model ? String(payload.model).trim() : '';
@@ -2553,11 +2667,29 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
             if (req.maxTokens || req.max_tokens) {
                 payload.max_tokens = parseInt(req.maxTokens || req.max_tokens, 10) || undefined;
             }
+            if (req.requestToken) {
+                payload.requestToken = String(req.requestToken);
+            }
 
-            var toolsResponse = await executeToolsRequestWithFactFallback(data.toolsApiToken, baseUrl, payload);
-            var output = toolsResponse.ok ? toolsResponse.response : toolsResponse.error;
+            var toolsResponse;
+            if (shouldUseParticipantAnalysisRace(payload)) {
+                toolsResponse = await executeParticipantAnalysisRace(data.toolsApiToken, baseUrl, payload, function (responseEnvelope) {
+                    chrome.tabs.sendMessage(requestTabId, Object.assign({type: 'GPT_RESPONSE'}, responseEnvelope));
+                });
+            } else {
+                toolsResponse = await executeToolsRequestWithFactFallback(data.toolsApiToken, baseUrl, payload);
+                chrome.tabs.sendMessage(requestTabId, {
+                    type: 'GPT_RESPONSE',
+                    payload: toolsResponse.ok ? (toolsResponse.payload || toolsResponse.response) : toolsResponse.error,
+                    ok: toolsResponse.ok,
+                    requestToken: payload.requestToken || '',
+                    requestMode: payload.request_mode || '',
+                    replaceExistingFactResult: false,
+                    hasPendingRaceResult: false,
+                    raceVariant: '',
+                });
+            }
 
-            chrome.tabs.sendMessage(requestTabId, {type: 'GPT_RESPONSE', payload: toolsResponse.ok ? (toolsResponse.payload || output) : output, ok: toolsResponse.ok});
             sendResponse({ok: toolsResponse.ok, error: toolsResponse.error || null});
         });
         return true;
