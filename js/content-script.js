@@ -3888,18 +3888,21 @@ function buildParticipantAnalysisReferenceText(summary, card) {
     const parts = [];
     const surface = getActiveParticipantUserAnalysisSurface();
     const liveCard = card && document.contains(card) ? card : null;
+    const preferPreviewSurfaceOnly = !!(activeParticipantUserAnalysis && activeParticipantUserAnalysis.previewOnly && surface && surface.type === 'dialog');
 
     if (surface && surface.text) {
         parts.push(surface.text);
     }
-    if (liveCard) {
+    if (liveCard && !preferPreviewSurfaceOnly) {
         parts.push(normalizeWhitespace(liveCard.innerText || liveCard.textContent || ''));
     }
     if (summary) {
         parts.push(summary.name || '');
         parts.push(summary.profileUserId || '');
         parts.push(summary.profileUrl || '');
-        parts.push(getParticipantSummaryLines(summary).join(' | '));
+        if (!preferPreviewSurfaceOnly) {
+            parts.push(getParticipantSummaryLines(summary).join(' | '));
+        }
     }
 
     return normalizeWhitespace(parts.join(' | ')).toLowerCase();
@@ -4561,6 +4564,8 @@ function buildParticipantRequestContext(card, options) {
     const useActiveAnalysisState = !liveCard || (activeParticipantUserAnalysis && activeParticipantUserAnalysis.card === liveCard);
     const networkEvents = settings.networkEvents || (useActiveAnalysisState && activeParticipantUserAnalysis ? activeParticipantUserAnalysis.networkEvents || [] : []);
     const previewEntries = settings.previewEntries || (useActiveAnalysisState && activeParticipantUserAnalysis ? activeParticipantUserAnalysis.previewEntries || [] : []);
+    const dialogContext = settings.dialogContext || extractParticipantPreviewDialogContext(summary);
+    const previewOnly = !!settings.previewOnly && !!dialogContext;
     const payload = [
         'Facebook participant-request user analysis context',
         'Facebook page URL: ' + location.href,
@@ -4573,7 +4578,11 @@ function buildParticipantRequestContext(card, options) {
         '',
     ];
 
-    payload.push('IMPORTANT: The visible participant-request card text below is already included as primary analysis context. Do not ask the operator to provide the card text again unless it is missing or ambiguous.');
+    if (previewOnly) {
+        payload.push('IMPORTANT: This run is preview-first. Treat the opened Facebook preview dialog as the primary text source, and only use surrounding card/profile metadata as secondary context. Do not assume hidden card answers or comment text belong to the preview unless they are also visible in the opened preview or GraphQL preview payload.');
+    } else {
+        payload.push('IMPORTANT: The visible participant-request card text below is already included as primary analysis context. Do not ask the operator to provide the card text again unless it is missing or ambiguous.');
+    }
     payload.push('');
 
     if (participantScannerGroupContext) {
@@ -4606,7 +4615,7 @@ function buildParticipantRequestContext(card, options) {
         payload.push('');
     }
 
-    if (questionAnswerPairs.length) {
+    if (questionAnswerPairs.length && !previewOnly) {
         payload.push('Visible membership question/answer pairs from the card:');
         questionAnswerPairs.slice(0, 10).forEach(function (pair) {
             payload.push('- Question: ' + pair.question);
@@ -4627,11 +4636,24 @@ function buildParticipantRequestContext(card, options) {
         payload.push('');
     }
 
-    if (commentLines.length) {
+    if (commentLines.length && !previewOnly) {
         payload.push('Visible comment/preview clues:');
         commentLines.slice(0, 12).forEach(function (line) {
             payload.push('- ' + line);
         });
+        payload.push('');
+    }
+
+    if (dialogContext && dialogContext.commentLines && dialogContext.commentLines.length) {
+        payload.push('Opened preview dialog text:');
+        dialogContext.commentLines.slice(0, 8).forEach(function (line) {
+            payload.push('- ' + line);
+        });
+        if (dialogContext.originalPostLinks && dialogContext.originalPostLinks.length) {
+            dialogContext.originalPostLinks.slice(0, 2).forEach(function (link) {
+                payload.push('- Original post: ' + link);
+            });
+        }
         payload.push('');
     }
 
@@ -4705,15 +4727,17 @@ function buildParticipantRequestContext(card, options) {
         payload.push('');
     }
 
-    payload.push(
-        'Visible card lines:',
-    );
+    if (!previewOnly) {
+        payload.push(
+            'Visible card lines:',
+        );
 
-    summary.lines.slice(0, 40).forEach(function (line) {
-        payload.push('- ' + line);
-    });
+        summary.lines.slice(0, 40).forEach(function (line) {
+            payload.push('- ' + line);
+        });
 
-    payload.push('');
+        payload.push('');
+    }
     payload.push('Instruction: Analyze this participant request as a user-analysis helper. First summarize who the user seems to be from the visible card, then list visible group/friend clues, visible question prompts, whether the questions look unanswered, and any comment/preview signal that may need follow-up. Highlight contradictions, risk signals, useful positive signals, and exactly what should still be checked before approval. When a profile URL or numeric Facebook user id is present, use it as specific lookup context for independent web-search verification where available. Treat the visible Facebook UI text as observational context, not independently verified fact.');
 
     return payload.filter(Boolean).join('\n');
@@ -4799,6 +4823,7 @@ function activateParticipantUserAnalysisContextWatcher(card, reason, options) {
         contextSignature: '',
         networkEvents: [],
         previewEntries: [],
+        previewOnly: !!settings.previewOnly,
         changed: false,
         changedReason: reason || 'focus',
         observer: null,
@@ -4823,6 +4848,7 @@ function buildUpdatedParticipantUserAnalysisContext(card) {
         openedContextLines: collectParticipantRequestOpenedContextLines(card, activeParticipantUserAnalysis && activeParticipantUserAnalysis.summary ? activeParticipantUserAnalysis.summary : null),
         networkEvents: activeParticipantUserAnalysis ? activeParticipantUserAnalysis.networkEvents || [] : [],
         previewEntries: activeParticipantUserAnalysis ? activeParticipantUserAnalysis.previewEntries || [] : [],
+        previewOnly: !!(activeParticipantUserAnalysis && activeParticipantUserAnalysis.previewOnly),
     });
     if (activeParticipantUserAnalysis) {
         const liveCard = card && document.contains(card)
@@ -4851,6 +4877,7 @@ function getParticipantAnalysisRequestState() {
         summary: summary,
         anchorElement: surface && surface.element ? surface.element : (card && document.contains(card) ? card : null),
         context: buildUpdatedParticipantUserAnalysisContext(card && document.contains(card) ? card : null),
+        previewOnly: !!(activeParticipantUserAnalysis && activeParticipantUserAnalysis.previewOnly),
     };
 }
 
@@ -4947,6 +4974,18 @@ function focusParticipantPreviewElement(summary) {
     return true;
 }
 
+function isDialogLikeAnchorNode(node) {
+    if (!node || !node.getBoundingClientRect) {
+        return false;
+    }
+
+    if (node.getAttribute && (node.getAttribute('role') === 'dialog' || node.getAttribute('aria-modal') === 'true')) {
+        return true;
+    }
+
+    return !!(node.closest && node.closest('[role="dialog"], [aria-modal="true"]'));
+}
+
 function startParticipantUserAnalysis(card, options) {
     const settings = options || {};
     const liveCard = card && document.contains(card) ? card : null;
@@ -4962,6 +5001,7 @@ function startParticipantUserAnalysis(card, options) {
     }
     activateParticipantUserAnalysisContextWatcher(liveCard, settings.reason || 'analysis-start', {
         summary: summary,
+        previewOnly: !!settings.previewOnly,
     });
     const requestState = getParticipantAnalysisRequestState();
     const initialContext = requestState.context;
@@ -5195,6 +5235,7 @@ function ensureParticipantRequestsControl() {
             startParticipantUserAnalysis(participantRequestsLastSelectedCard, {
                 summary: referenceSummary,
                 anchorElement: dialogContext && dialogContext.element ? dialogContext.element : participantRequestsLastSelectedCard,
+                previewOnly: !!dialogContext,
                 reason: 'helper-analyze-current',
             });
             return;

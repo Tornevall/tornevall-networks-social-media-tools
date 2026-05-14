@@ -23,6 +23,8 @@
 - Participant-request **Analyze user** now keeps the candidate profile URL as the verification source when Facebook exposes it, preserves extra verification metadata across **Refresh** / **Update analysis** / **Dig deeper**, and keeps the operator-supplied group rules in sync when they are edited from the new inline config box.
 
 ### Fixed
+- Facebook participant-request **Analyze current preview** now treats the opened preview dialog as the primary text source when a matched preview is visible, instead of always dragging along full card-only answer/comment text that is not actually shown inside that preview.
+- Preview-driven participant user-analysis/result boxes now anchor themselves to the actual Facebook preview dialog element instead of expanding to one broader surrounding DOM context block, so the floating analysis box stays beside the real preview surface much more reliably.
 - The Facebook participant-request helper now detects root-mounted preview dialogs more reliably by also matching dialog `aria-label`/label metadata inside Facebook's separate `mount_*` roots, so **Analyze current preview** no longer misses the active comment-preview dialog as easily when the visible request cards have re-rendered away.
 - The floating participant helper now also exposes a dedicated **Find preview element** action that scrolls to and highlights the currently matched preview dialog, making it easier to confirm which Facebook preview surface the helper is actually using.
 - The Facebook participant-request helper now guards its floating-panel DOM creation more defensively, so odd page/DOM races can no longer crash the content script with `Cannot set properties of undefined (setting 'position')` while the helper panel or rules box is initializing.
