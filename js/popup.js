@@ -507,6 +507,11 @@ document.addEventListener('DOMContentLoaded', function () {
     let tokenValidationTimer = null;
     let tokenValidationSequence = 0;
     let tokenValidationCompletedSequence = 0;
+
+    if (factCheckModelSelect) {
+        factCheckModelSelect.disabled = true;
+        factCheckModelSelect.title = 'Tools controls the verification model for Verify fact.';
+    }
     let facebookAdminStatsEnabledValue = false;
     let facebookParticipantScannerEnabledValue = false;
 
@@ -1033,7 +1038,7 @@ document.addEventListener('DOMContentLoaded', function () {
         return available[0] || DEFAULT_FACT_CHECK_MODEL;
     }
 
-    function populateFactCheckModelOptions(models, defaultModel, preferredModel) {
+    function populateFactCheckModelOptions(models, defaultModel) {
         if (!factCheckModelSelect) {
             return;
         }
@@ -1072,7 +1077,7 @@ document.addEventListener('DOMContentLoaded', function () {
             seen[DEFAULT_FACT_CHECK_MODEL] = true;
         }
 
-        factCheckModelSelect.value = resolveFactCheckModelSelection(normalizedModels, preferredModel, defaultModel);
+        factCheckModelSelect.value = resolveFactCheckModelSelection(normalizedModels, defaultModel, defaultModel);
     }
 
     function cacheAvailableModelCatalog(models, defaultModel, source, fetchedAt, warning) {
@@ -1115,7 +1120,7 @@ document.addEventListener('DOMContentLoaded', function () {
             result.data.warning || ''
         );
 
-        populateFactCheckModelOptions(result.data.models || [], result.data.default_model || '', factCheckModelSelect ? factCheckModelSelect.value : DEFAULT_FACT_CHECK_MODEL);
+        populateFactCheckModelOptions(result.data.models || [], result.data.default_model || '');
 
         return true;
     }
@@ -1176,8 +1181,7 @@ document.addEventListener('DOMContentLoaded', function () {
         renderFacebookAdminControlsVisibility();
         populateFactCheckModelOptions(
             result.data.available_models || [],
-            result.data.default_model || DEFAULT_FACT_CHECK_MODEL,
-            factCheckModelSelect ? factCheckModelSelect.value : DEFAULT_FACT_CHECK_MODEL
+            result.data.default_model || DEFAULT_FACT_CHECK_MODEL
         );
         const sanitizedTestQuestion = sanitizeTestQuestionValue(testQuestionInput.value);
         if (sanitizedTestQuestion !== '') {
@@ -1262,7 +1266,7 @@ document.addEventListener('DOMContentLoaded', function () {
         autoDetectCheckbox.checked = normalizeStoredBoolean(data.autoDetectResponder, true);
         responseLanguageSelect.value = data.defaultResponseLanguage || DEFAULT_RESPONSE_LANGUAGE;
         verifyFactLanguageSelect.value = data.defaultVerifyFactLanguage || DEFAULT_VERIFY_FACT_LANGUAGE;
-        populateFactCheckModelOptions(data.availableToolsModels || [], data.defaultToolsModel || DEFAULT_FACT_CHECK_MODEL, data.preferredFactCheckModel || DEFAULT_FACT_CHECK_MODEL);
+        populateFactCheckModelOptions(data.availableToolsModels || [], data.defaultToolsModel || DEFAULT_FACT_CHECK_MODEL);
         quickReplyPresetSelect.value = data.defaultQuickReplyPreset || DEFAULT_QUICK_REPLY_PRESET;
         quickReplyInstructionInput.value = data.defaultQuickReplyCustomInstruction || DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
         if (markedContextLabelModeSelect) {
@@ -1464,7 +1468,7 @@ document.addEventListener('DOMContentLoaded', function () {
         systemPromptInput.value = DEFAULT_PERSONA_PROFILE;
         responseLanguageSelect.value = DEFAULT_RESPONSE_LANGUAGE;
         verifyFactLanguageSelect.value = DEFAULT_VERIFY_FACT_LANGUAGE;
-        populateFactCheckModelOptions([], DEFAULT_FACT_CHECK_MODEL, DEFAULT_FACT_CHECK_MODEL);
+        populateFactCheckModelOptions([], DEFAULT_FACT_CHECK_MODEL);
         quickReplyPresetSelect.value = DEFAULT_QUICK_REPLY_PRESET;
         quickReplyInstructionInput.value = DEFAULT_QUICK_REPLY_CUSTOM_INSTRUCTION;
         if (markedContextLabelModeSelect) {

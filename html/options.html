@@ -395,7 +395,7 @@
             <label for="factCheckModel" data-i18n="common.factCheckModel">Fact-check model:</label>
             <select id="factCheckModel"></select>
             <p class="helper-note" style="margin-top:-4px;" data-i18n-html="common.factCheckModelHelperHtml">
-                Used by <strong>Verify fact</strong>. If the chosen model returns an empty/failed fact-check, the extension retries once with <code>gpt-4o</code>. <strong>Dig deeper</strong> still prefers a reasoning-capable model.
+                <strong>Verify fact</strong> no longer picks its own model in the extension. Tools decides the verification model server-side and may prefer <code>gpt-4o</code> when web search is used there.
             </p>
 
             <label for="quickReplyPreset" data-i18n="common.quickReplyPreset">Default quick-reply style:</label>

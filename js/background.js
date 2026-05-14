@@ -3,6 +3,7 @@ const DEV_BASE_URL = 'https://tools.tornevall.com';
 const SOCIALGPT_PATH = '/api/ai/socialgpt/respond';
 const SETTINGS_PATH = '/api/social-media-tools/extension/settings';
 const MODELS_PATH = '/api/social-media-tools/extension/models';
+const FACEBOOK_PARTICIPANT_HISTORY_PATH = '/api/social-media-tools/extension/facebook-participant-history';
 const FACEBOOK_INGEST_PATH = '/api/social-media-tools/facebook/ingest';
 const SOUNDCLOUD_INGEST_PATH = '/api/social-media-tools/soundcloud/ingest';
 const RSS_OVERVIEW_PATH = '/api/rss';
@@ -22,7 +23,6 @@ const FALLBACK_AVAILABLE_MODELS = [
     {id: 'o4-mini', label: 'o4-mini'},
     {id: 'o3-mini', label: 'o3-mini'},
 ];
-const DEFAULT_FACT_CHECK_MODEL = 'gpt-4o';
 const soundCloudTabStatusCache = {};
 const CONTEXT_MENU_OPEN_TOOLBOX_ID = 'tn-social-tools-open-toolbox';
 const CONTEXT_MENU_VERIFY_ID = 'tn-social-tools-verify-fact';
@@ -1136,6 +1136,47 @@ async function updateExtensionSettings(apiToken, baseUrl, payload) {
     }
 }
 
+async function fetchFacebookParticipantHistory(apiToken, baseUrl, payload) {
+    try {
+        var response = await fetchWithTimeout(baseUrl + FACEBOOK_PARTICIPANT_HISTORY_PATH, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + apiToken,
+            },
+            body: JSON.stringify(payload || {}),
+        }, TOOLS_FETCH_TIMEOUT_MS);
+
+        var data = await response.json().catch(function () {
+            return {};
+        });
+
+        if (!response.ok || !data || !data.ok) {
+            return {
+                ok: false,
+                error: normalizeToolsApiError(response.status, data),
+                status: response.status,
+                data: data,
+            };
+        }
+
+        return {
+            ok: true,
+            data: data,
+            participants: Array.isArray(data.participants) ? data.participants : [],
+            period: data.period || null,
+            groupReference: data.group_reference || '',
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            error: error && error.message ? error.message : 'Could not load Facebook participant history from Tools.',
+            status: 0,
+        };
+    }
+}
+
 chrome.runtime.onInstalled.addListener(function () {
     setupExtensionContextMenus();
     appendDebugLog({level: 'info', category: 'lifecycle', message: 'Extension installed / updated.'});
@@ -1456,39 +1497,7 @@ async function executeParticipantAnalysisRace(apiToken, baseUrl, payload, emitRe
 }
 
 async function executeToolsRequestWithFactFallback(apiToken, baseUrl, payload) {
-    var primaryResult = await callToolsSocialGpt(apiToken, baseUrl, payload);
-    var requestedModel = payload && payload.model ? String(payload.model).trim() : '';
-    var shouldRetry = payload
-        && payload.request_mode === 'verify'
-        && requestedModel
-        && requestedModel !== DEFAULT_FACT_CHECK_MODEL
-        && !hasMeaningfulAiResponse(primaryResult);
-
-    if (!shouldRetry) {
-        return primaryResult;
-    }
-
-    await appendDebugLog({
-        level: 'warning',
-        category: 'ai-request',
-        message: 'Fact-check returned an empty or failed response. Retrying once with gpt-4o fallback.',
-        meta: {
-            previous_model: requestedModel,
-            fallback_model: DEFAULT_FACT_CHECK_MODEL,
-            request_mode: payload.request_mode,
-        }
-    });
-
-    var retryPayload = Object.assign({}, payload, {
-        model: DEFAULT_FACT_CHECK_MODEL,
-    });
-    var retryResult = await callToolsSocialGpt(apiToken, baseUrl, retryPayload);
-
-    if (retryResult && retryResult.ok) {
-        retryResult.response = String(retryResult.response || '').trim();
-    }
-
-    return retryResult;
+    return callToolsSocialGpt(apiToken, baseUrl, payload);
 }
 
 async function callFacebookAdminIngest(apiToken, baseUrl, payload) {
@@ -2627,9 +2636,28 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
         return true;
     }
 
+    if (req.type === 'GET_FACEBOOK_PARTICIPANT_HISTORY') {
+        chrome.storage.sync.get(['toolsApiToken', 'devMode'], async function (data) {
+            if (!data.toolsApiToken) {
+                sendResponse({ok: false, error: 'Missing Tools API token. Save it in the extension popup first.'});
+                return;
+            }
+
+            var historyResponse = await fetchFacebookParticipantHistory(data.toolsApiToken, getToolsBaseUrl(!!data.devMode), {
+                page_url: req && req.pageUrl ? req.pageUrl : '',
+                group_id: req && req.groupId ? req.groupId : '',
+                period_days: req && req.periodDays ? req.periodDays : 40,
+                candidates: Array.isArray(req && req.candidates) ? req.candidates : [],
+            });
+
+            sendResponse(historyResponse);
+        });
+        return true;
+    }
+
     if (req.type === 'GPT_REQUEST') {
         var requestTabId = sender.tab.id;
-        chrome.storage.sync.get(['toolsApiToken', 'devMode', 'defaultToolsModel', 'preferredFactCheckModel'], async function (data) {
+        chrome.storage.sync.get(['toolsApiToken', 'devMode', 'defaultToolsModel'], async function (data) {
             if (!data.toolsApiToken) {
                 var missingTokenMessage = 'Missing Tools API token. Register at tools.tornevall.net, generate a personal bearer token there, and save it in the extension popup.';
                 setAuthFailureIndicator(missingTokenMessage);
@@ -2645,6 +2673,8 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
 
             var baseUrl = getToolsBaseUrl(!!data.devMode);
             var clientMeta = getExtensionClientMeta();
+            var requestMode = req.requestMode || 'reply';
+            var requestedModel = req.model ? String(req.model).trim() : '';
             var payload = {
                 context: req.context.trim(),
                 user_prompt: req.userPrompt.trim(),
@@ -2653,14 +2683,18 @@ chrome.runtime.onMessage.addListener(function (req, sender, sendResponse) {
                 custom_mood: req.customMood ? req.customMood.trim() : '',
                 response_length: req.responseLength || 'auto',
                 previous_reply: req.previousReply || '',
-                model: req.model || (req.requestMode === 'verify' ? (data.preferredFactCheckModel || DEFAULT_FACT_CHECK_MODEL) : '') || data.defaultToolsModel || 'gpt-4o-mini',
                 responder_name_override: req.responderName || '',
-                request_mode: req.requestMode || 'reply',
+                request_mode: requestMode,
                 response_language: req.responseLanguage || 'auto',
                 client_name: clientMeta.client_name,
                 client_version: clientMeta.client_version,
                 client_platform: clientMeta.client_platform,
             };
+            if (requestedModel) {
+                payload.model = requestedModel;
+            } else if (requestMode !== 'verify') {
+                payload.model = data.defaultToolsModel || 'gpt-4o-mini';
+            }
             if (req.extraData && typeof req.extraData === 'object') {
                 payload.extra_data = req.extraData;
             }

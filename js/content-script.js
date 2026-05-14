@@ -73,6 +73,14 @@ let participantAnalysisAutoSupplementTimerId = null;
 let participantAnalysisAutoSupplementStatusTimerId = null;
 let participantScannerGroupContext = '';
 let participantScannerConfigBox = null;
+let participantHistoryLookupTimerId = null;
+let participantHistoryLookupInFlight = false;
+let participantHistoryLookupQueued = false;
+let participantHistoryLookupLastSignature = '';
+let participantHistoryLookupLastFetchedAt = 0;
+let participantHistoryLookupError = '';
+let participantHistoryLookupGroupReference = '';
+let participantHistoryByCandidateKey = {};
 
 const EDITABLE_SELECTOR = 'textarea,input[type="text"],input:not([type]),[contenteditable=""],[contenteditable="true"],[role="textbox"]';
 const TOOLS_PROD_BASE_URL = 'https://tools.tornevall.net';
@@ -92,6 +100,8 @@ const SOUND_CLOUD_DIRECT_HOOK_READY_ATTRIBUTE = 'data-tn-soundcloud-hook-ready';
 const SOUND_CLOUD_DIRECT_BUFFER_ELEMENT_ID = 'tn-soundcloud-direct-capture-buffer';
 const SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED = false;
 const MAX_RECENT_FACEBOOK_COMMENT_ENTRIES = 200;
+const PARTICIPANT_HISTORY_LOOKUP_DEBOUNCE_MS = 650;
+const PARTICIPANT_HISTORY_LOOKUP_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_REPLY_PROMPT = 'Write text that fits the visible context and can be pasted into the selected field.';
 const MARKED_CONTEXT_LABEL_MODES = ['compact', 'mark-id', 'detailed'];
 const MARKED_CONTEXT_EXPANSION_MODES = ['current', 'parent', 'parent-children', 'document'];
@@ -861,6 +871,7 @@ const PARTICIPANT_REQUEST_AUTO_SCAN_INTERVAL_MS = 5000;
 const PARTICIPANT_REQUEST_ACTION_VIEWPORT_MARGIN = 260;
 const PARTICIPANT_REQUEST_MAX_ACTION_CANDIDATES = 140;
 const PARTICIPANT_REQUEST_MIN_CARD_SCORE = 120;
+const PARTICIPANT_REQUEST_CARD_PARENT_DEPTH = 30;
 
 function clearAdminActivityRuntimeDebugState() {
     adminNetworkEventsSeen = 0;
@@ -2923,6 +2934,256 @@ function saveParticipantGroupContext(value) {
     });
 }
 
+function resetParticipantHistoryLookupState() {
+    if (participantHistoryLookupTimerId) {
+        window.clearTimeout(participantHistoryLookupTimerId);
+        participantHistoryLookupTimerId = null;
+    }
+
+    participantHistoryLookupInFlight = false;
+    participantHistoryLookupQueued = false;
+    participantHistoryLookupLastSignature = '';
+    participantHistoryLookupLastFetchedAt = 0;
+    participantHistoryLookupError = '';
+    participantHistoryLookupGroupReference = '';
+    participantHistoryByCandidateKey = {};
+}
+
+function buildParticipantHistoryStableKey(seed) {
+    const source = String(seed || '');
+    if (!source) {
+        return '';
+    }
+
+    function hashWithSalt(salt) {
+        let hash = 2166136261;
+        const input = salt + '|' + source;
+        for (let index = 0; index < input.length; index += 1) {
+            hash ^= input.charCodeAt(index);
+            hash = Math.imul(hash, 16777619);
+        }
+        return (hash >>> 0).toString(16).padStart(8, '0');
+    }
+
+    return [
+        hashWithSalt('a'),
+        hashWithSalt('b'),
+        hashWithSalt('c'),
+        hashWithSalt('d'),
+    ].join('');
+}
+
+function buildParticipantHistoryCandidate(summary) {
+    const activeSummary = summary || null;
+    const fallbackName = getParticipantSummaryLines(activeSummary).find(function (line) {
+        return normalizeWhitespace(line).length >= 2;
+    }) || '';
+    const name = normalizeWhitespace(activeSummary && activeSummary.name ? activeSummary.name : fallbackName);
+    const normalizedName = normalizeParticipantIdentityText(name);
+    if (!normalizedName) {
+        return null;
+    }
+
+    const facebookUserId = normalizeWhitespace(activeSummary && activeSummary.profileUserId ? activeSummary.profileUserId : '');
+    const profileUrl = normalizeWhitespace(activeSummary && activeSummary.profileUrl ? activeSummary.profileUrl : '');
+    const candidateKey = buildParticipantHistoryStableKey([
+        normalizedName,
+        facebookUserId,
+        profileUrl,
+    ].join('|'));
+
+    if (!candidateKey) {
+        return null;
+    }
+
+    return {
+        candidate_key: candidateKey,
+        name: name,
+        profile_url: profileUrl,
+        facebook_user_id: facebookUserId,
+    };
+}
+
+function getParticipantHistoryForSummary(summary) {
+    const candidate = buildParticipantHistoryCandidate(summary || null);
+    if (!candidate || !candidate.candidate_key) {
+        return null;
+    }
+
+    const historyMap = participantHistoryByCandidateKey && typeof participantHistoryByCandidateKey === 'object'
+        ? participantHistoryByCandidateKey
+        : {};
+
+    return historyMap[candidate.candidate_key] || null;
+}
+
+function buildParticipantHistoryBadgeMarkup(entry) {
+    if (participantHistoryLookupInFlight) {
+        return '<span title="Looking up earlier moderation history from Tools." style="display:inline-flex; align-items:center; border-radius:999px; padding:4px 8px; background:#ede9fe; color:#6d28d9; font-weight:700;">History…</span>';
+    }
+
+    if (participantHistoryLookupError) {
+        return '<span title="' + escapeHtml(participantHistoryLookupError) + '" style="display:inline-flex; align-items:center; border-radius:999px; padding:4px 8px; background:#fef2f2; color:#b91c1c; font-weight:700;">History unavailable</span>';
+    }
+
+    if (!entry || !entry.matched) {
+        if (participantHistoryLookupLastFetchedAt > 0) {
+            return '<span title="Tools found no earlier moderation decisions for this participant in the current linked group set." style="display:inline-flex; align-items:center; border-radius:999px; padding:4px 8px; background:#ecfdf5; color:#047857; font-weight:700;">No earlier history</span>';
+        }
+        return '';
+    }
+
+    const decisionCount = Number(entry.decision_count || 0);
+    const approvedCount = Number(entry.approved_count || 0);
+    const rejectedCount = Number(entry.rejected_count || 0);
+    const label = decisionCount > 0
+        ? 'History: ' + String(decisionCount)
+        : 'Earlier moderation history';
+    const parts = [];
+    if (approvedCount > 0) {
+        parts.push('approved: ' + String(approvedCount));
+    }
+    if (rejectedCount > 0) {
+        parts.push('rejected: ' + String(rejectedCount));
+    }
+    const titleText = normalizeWhitespace(entry.summary_text || parts.join(' · ') || 'Earlier moderation history found in Tools.');
+
+    return '<span title="' + escapeHtml(titleText) + '" style="display:inline-flex; align-items:center; border-radius:999px; padding:4px 8px; background:#fff7ed; color:#c2410c; font-weight:700;">' + escapeHtml(label + (parts.length ? ' (' + parts.join(' / ') + ')' : '')) + '</span>';
+}
+
+function buildParticipantHistoryLookupCandidates() {
+    const cards = Array.isArray(participantRequestsVisibleCards) ? participantRequestsVisibleCards : [];
+    const summaries = cards.map(function (card) {
+        return buildParticipantRequestSummary(card);
+    });
+
+    if (participantRequestsLastSelectedSummary) {
+        summaries.push(participantRequestsLastSelectedSummary);
+    }
+    if (activeParticipantUserAnalysis && activeParticipantUserAnalysis.summary) {
+        summaries.push(activeParticipantUserAnalysis.summary);
+    }
+
+    const uniqueCandidates = {};
+    summaries.forEach(function (summary) {
+        const candidate = buildParticipantHistoryCandidate(summary);
+        if (!candidate || !candidate.candidate_key || uniqueCandidates[candidate.candidate_key]) {
+            return;
+        }
+        uniqueCandidates[candidate.candidate_key] = candidate;
+    });
+
+    return Object.keys(uniqueCandidates).map(function (key) {
+        return uniqueCandidates[key];
+    });
+}
+
+function buildParticipantHistoryLookupSignature(candidates) {
+    const rows = Array.isArray(candidates) ? candidates : [];
+    return [
+        location.href,
+        getCurrentFacebookGroupId(),
+        rows.map(function (candidate) {
+            return candidate && candidate.candidate_key ? candidate.candidate_key : '';
+        }).filter(Boolean).sort().join('|'),
+    ].join('||');
+}
+
+function rerenderParticipantHistoryTargets() {
+    participantRequestsVisibleCards.forEach(function (card) {
+        renderParticipantRequestHelper(card);
+    });
+    updateParticipantRequestsControl();
+}
+
+async function runParticipantHistoryLookup(reason) {
+    if (!participantScannerFeatureEnabled || !isFacebookParticipantRequestsPage()) {
+        resetParticipantHistoryLookupState();
+        rerenderParticipantHistoryTargets();
+        return;
+    }
+
+    if (participantHistoryLookupInFlight) {
+        participantHistoryLookupQueued = true;
+        return;
+    }
+
+    const candidates = buildParticipantHistoryLookupCandidates();
+    if (!candidates.length) {
+        participantHistoryLookupError = '';
+        participantHistoryLookupGroupReference = '';
+        participantHistoryByCandidateKey = {};
+        participantHistoryLookupLastSignature = '';
+        participantHistoryLookupLastFetchedAt = 0;
+        rerenderParticipantHistoryTargets();
+        return;
+    }
+
+    const signature = buildParticipantHistoryLookupSignature(candidates);
+    if (signature && signature === participantHistoryLookupLastSignature && participantHistoryLookupLastFetchedAt > 0 && (Date.now() - participantHistoryLookupLastFetchedAt) < PARTICIPANT_HISTORY_LOOKUP_TTL_MS) {
+        return;
+    }
+
+    participantHistoryLookupInFlight = true;
+    participantHistoryLookupQueued = false;
+    participantHistoryLookupError = '';
+    rerenderParticipantHistoryTargets();
+
+    const response = await safeSendRuntimeMessageWithResponse({
+        type: 'GET_FACEBOOK_PARTICIPANT_HISTORY',
+        pageUrl: location.href,
+        groupId: getCurrentFacebookGroupId(),
+        periodDays: 40,
+        candidates: candidates,
+        reason: reason || 'scheduled',
+    });
+
+    if (response && response.ok) {
+        const nextMap = {};
+        (Array.isArray(response.participants) ? response.participants : []).forEach(function (participant) {
+            const candidateKey = normalizeWhitespace(participant && participant.candidate_key ? participant.candidate_key : '');
+            if (!candidateKey) {
+                return;
+            }
+            nextMap[candidateKey] = participant;
+        });
+        participantHistoryByCandidateKey = nextMap;
+        participantHistoryLookupGroupReference = normalizeWhitespace(response.groupReference || '');
+        participantHistoryLookupLastSignature = signature;
+        participantHistoryLookupLastFetchedAt = Date.now();
+        participantHistoryLookupError = '';
+    } else {
+        participantHistoryLookupError = normalizeWhitespace(response && response.error ? response.error : 'Could not load participant moderation history from Tools.');
+        participantHistoryLookupGroupReference = '';
+        participantHistoryLookupLastSignature = signature;
+        participantHistoryLookupLastFetchedAt = 0;
+        participantHistoryByCandidateKey = {};
+    }
+
+    participantHistoryLookupInFlight = false;
+    rerenderParticipantHistoryTargets();
+
+    if (participantHistoryLookupQueued) {
+        participantHistoryLookupQueued = false;
+        scheduleParticipantHistoryLookup((reason || 'scheduled') + '-queued');
+    }
+}
+
+function scheduleParticipantHistoryLookup(reason) {
+    if (!participantScannerFeatureEnabled || !isFacebookParticipantRequestsPage()) {
+        return;
+    }
+
+    if (participantHistoryLookupTimerId) {
+        window.clearTimeout(participantHistoryLookupTimerId);
+    }
+
+    participantHistoryLookupTimerId = window.setTimeout(function () {
+        participantHistoryLookupTimerId = null;
+        runParticipantHistoryLookup(reason || 'scheduled');
+    }, PARTICIPANT_HISTORY_LOOKUP_DEBOUNCE_MS);
+}
+
 function closeParticipantScannerConfigBox() {
     if (participantScannerConfigBox && document.contains(participantScannerConfigBox)) {
         participantScannerConfigBox.remove();
@@ -3212,6 +3473,37 @@ function countParticipantActionMatches(container, regex) {
     return count;
 }
 
+function extractDistinctParticipantRequestAnchorUrls(container, pattern) {
+    if (!container || !container.querySelectorAll) {
+        return [];
+    }
+
+    const matcher = pattern instanceof RegExp ? pattern : null;
+    const seen = new Set();
+    const urls = [];
+    const anchors = container.querySelectorAll('a[href]');
+
+    for (let index = 0; index < anchors.length; index += 1) {
+        const rawHref = String(anchors[index].href || (anchors[index].getAttribute ? anchors[index].getAttribute('href') || '' : '') || '').trim();
+        if (!rawHref) {
+            continue;
+        }
+
+        const normalizedHref = normalizeFacebookUrlForPrompt(rawHref);
+        if (!normalizedHref || (matcher && !matcher.test(normalizedHref))) {
+            continue;
+        }
+
+        if (seen.has(normalizedHref)) {
+            continue;
+        }
+        seen.add(normalizedHref);
+        urls.push(normalizedHref);
+    }
+
+    return urls;
+}
+
 function isParticipantBulkActionLabel(label) {
     const normalized = normalizeWhitespace(label || '').toLowerCase();
     if (!normalized) {
@@ -3276,6 +3568,8 @@ function scoreParticipantRequestCardCandidate(container) {
     }
 
     const signalCount = countParticipantRequestSignals(text);
+    const distinctProfileUrls = extractDistinctParticipantRequestAnchorUrls(container, /\/groups\/[^/]+\/user\/(?:\d+|[^/?#]+)/i);
+    const distinctProfileUrlCount = distinctProfileUrls.length;
     if (signalCount < 2) {
         return -1;
     }
@@ -3286,6 +3580,13 @@ function scoreParticipantRequestCardCandidate(container) {
     }
 
     let score = signalCount * 120;
+    if (distinctProfileUrlCount === 1) {
+        score += 180;
+    } else if (distinctProfileUrlCount > 1) {
+        score -= 220 * (distinctProfileUrlCount - 1);
+    } else {
+        score -= 140;
+    }
     score -= Math.abs(approveCount - 1) * 35;
     score -= Math.abs(rejectCount - 1) * 35;
     score -= Math.round(text.length / 35);
@@ -3346,6 +3647,22 @@ function isElementNearViewport(element, margin) {
         && rect.left <= viewportWidth + safeMargin;
 }
 
+function isInsideParticipantPreviewDialogSurface(element) {
+    if (!element || !element.closest) {
+        return false;
+    }
+
+    const dialog = element.closest('[role="dialog"], [aria-modal="true"]');
+    if (!dialog) {
+        return false;
+    }
+
+    const text = normalizeWhitespace(dialog.innerText || dialog.textContent || '');
+    return !text
+        || isParticipantPreviewDialogText(text)
+        || /(förhandsgranska|preview|kommentar|comment|original post|ursprungligt inlägg)/i.test(text);
+}
+
 function resolveParticipantRequestSearchRoots() {
     const roots = [];
     const seen = new Set();
@@ -3366,18 +3683,26 @@ function resolveParticipantRequestSearchRoots() {
     return roots;
 }
 
-function findBestParticipantRequestCardForAction(action, cache) {
+function findBestParticipantRequestCardForAction(action, cache, options) {
     if (!action) {
         return null;
     }
 
+    const settings = options || {};
+    const maxDepth = Number.isFinite(settings.maxDepth) && settings.maxDepth > 0
+        ? settings.maxDepth
+        : PARTICIPANT_REQUEST_CARD_PARENT_DEPTH;
     let current = action;
     let bestNode = null;
     let bestScore = -1;
 
-    for (let depth = 0; depth < 12 && current; depth += 1) {
+    for (let depth = 0; depth < maxDepth && current; depth += 1) {
         current = current.parentElement;
         if (!current) {
+            continue;
+        }
+
+        if (isInsideParticipantPreviewDialogSurface(current)) {
             continue;
         }
 
@@ -3391,43 +3716,139 @@ function findBestParticipantRequestCardForAction(action, cache) {
     return bestScore >= PARTICIPANT_REQUEST_MIN_CARD_SCORE ? bestNode : null;
 }
 
-function findParticipantRequestCards() {
+function collectParticipantRequestCardsFromProfileAnchors(anchors, options) {
+    const settings = options || {};
+    const seen = settings.seen || new Set();
+    const roots = settings.roots || [];
+    const scoreCache = settings.scoreCache || new WeakMap();
+    const requireViewport = settings.requireViewport !== false;
+    const maxDepth = Number.isFinite(settings.maxDepth) && settings.maxDepth > 0
+        ? settings.maxDepth
+        : PARTICIPANT_REQUEST_CARD_PARENT_DEPTH;
+
+    for (let index = 0; index < anchors.length; index += 1) {
+        const anchor = anchors[index];
+        if (!anchor || !anchor.isConnected || isInsideParticipantPreviewDialogSurface(anchor)) {
+            continue;
+        }
+
+        if (requireViewport && !isElementNearViewport(anchor, PARTICIPANT_REQUEST_ACTION_VIEWPORT_MARGIN)) {
+            continue;
+        }
+
+        const href = String(anchor.href || (anchor.getAttribute ? anchor.getAttribute('href') || '' : '') || '').trim();
+        if (!href || !/\/groups\/[^/]+\/user\/(?:\d+|[^/?#]+)/i.test(href)) {
+            continue;
+        }
+
+        const candidate = findBestParticipantRequestCardForAction(anchor, scoreCache, {maxDepth: maxDepth});
+        if (!candidate || seen.has(candidate) || isInsideParticipantPreviewDialogSurface(candidate)) {
+            continue;
+        }
+
+        const distinctProfileUrls = extractDistinctParticipantRequestAnchorUrls(candidate, /\/groups\/[^/]+\/user\/(?:\d+|[^/?#]+)/i);
+        if (!distinctProfileUrls.length) {
+            continue;
+        }
+
+        seen.add(candidate);
+        roots.push(candidate);
+        if (roots.length >= PARTICIPANT_REQUEST_MAX_ACTION_CANDIDATES) {
+            break;
+        }
+    }
+
+    return roots;
+}
+
+function collectParticipantRequestCardsFromActions(actions, options) {
+    const settings = options || {};
+    const seen = settings.seen || new Set();
+    const roots = settings.roots || [];
+    const scoreCache = settings.scoreCache || new WeakMap();
     const approveRegex = /(godkänn|approve)/i;
+    const requireViewport = settings.requireViewport !== false;
+    const maxDepth = Number.isFinite(settings.maxDepth) && settings.maxDepth > 0
+        ? settings.maxDepth
+        : PARTICIPANT_REQUEST_CARD_PARENT_DEPTH;
+
+    for (let index = 0; index < actions.length; index += 1) {
+        const action = actions[index];
+        if (!action || !action.isConnected || isInsideParticipantPreviewDialogSurface(action)) {
+            continue;
+        }
+
+        if (requireViewport && !isElementNearViewport(action, PARTICIPANT_REQUEST_ACTION_VIEWPORT_MARGIN)) {
+            continue;
+        }
+
+        const label = normalizeWhitespace(
+            action.textContent
+            || action.innerText
+            || (action.getAttribute ? (action.getAttribute('aria-label') || action.getAttribute('title') || '') : '')
+        );
+        if (!label || !approveRegex.test(label) || isParticipantBulkActionLabel(label)) {
+            continue;
+        }
+
+        const candidate = findBestParticipantRequestCardForAction(action, scoreCache, {maxDepth: maxDepth});
+        if (!candidate || seen.has(candidate) || isInsideParticipantPreviewDialogSurface(candidate)) {
+            continue;
+        }
+
+        seen.add(candidate);
+        roots.push(candidate);
+        if (roots.length >= PARTICIPANT_REQUEST_MAX_ACTION_CANDIDATES) {
+            break;
+        }
+    }
+
+    return roots;
+}
+
+function findParticipantRequestCards() {
     const roots = [];
     const seen = new Set();
     const scoreCache = new WeakMap();
     const searchRoots = resolveParticipantRequestSearchRoots();
+    const actionSelector = 'button, [role="button"], a';
 
     for (let rootIndex = 0; rootIndex < searchRoots.length; rootIndex += 1) {
         const root = searchRoots[rootIndex];
-        const actions = root.querySelectorAll('button, [role="button"]');
-
-        for (let index = 0; index < actions.length; index += 1) {
-            const action = actions[index];
-            if (!isElementNearViewport(action, PARTICIPANT_REQUEST_ACTION_VIEWPORT_MARGIN)) {
-                continue;
-            }
-
-            const label = normalizeWhitespace(
-                action.textContent
-                || action.innerText
-                || (action.getAttribute ? (action.getAttribute('aria-label') || action.getAttribute('title') || '') : '')
-            );
-            if (!label || !approveRegex.test(label) || isParticipantBulkActionLabel(label)) {
-                continue;
-            }
-
-            const candidate = findBestParticipantRequestCardForAction(action, scoreCache);
-            if (!candidate || seen.has(candidate)) {
-                continue;
-            }
-
-            seen.add(candidate);
-            roots.push(candidate);
-            if (roots.length >= PARTICIPANT_REQUEST_MAX_ACTION_CANDIDATES) {
-                return roots;
-            }
+        if (!root || !root.querySelectorAll || isInsideParticipantPreviewDialogSurface(root)) {
+            continue;
         }
+
+        collectParticipantRequestCardsFromActions(root.querySelectorAll(actionSelector), {
+            roots: roots,
+            seen: seen,
+            scoreCache: scoreCache,
+            requireViewport: true,
+            maxDepth: PARTICIPANT_REQUEST_CARD_PARENT_DEPTH,
+        });
+        if (roots.length >= PARTICIPANT_REQUEST_MAX_ACTION_CANDIDATES) {
+            return roots;
+        }
+    }
+
+    if (roots.length < 2) {
+        collectParticipantRequestCardsFromActions(document.querySelectorAll(actionSelector), {
+            roots: roots,
+            seen: seen,
+            scoreCache: scoreCache,
+            requireViewport: false,
+            maxDepth: PARTICIPANT_REQUEST_CARD_PARENT_DEPTH,
+        });
+    }
+
+    if (roots.length < 2) {
+        collectParticipantRequestCardsFromProfileAnchors(document.querySelectorAll('a[href*="/groups/"][href*="/user/"]'), {
+            roots: roots,
+            seen: seen,
+            scoreCache: scoreCache,
+            requireViewport: false,
+            maxDepth: PARTICIPANT_REQUEST_CARD_PARENT_DEPTH,
+        });
     }
 
     return roots;
@@ -3821,6 +4242,60 @@ function lineMatchesParticipantIdentity(text, summary) {
         || (profileId && normalized.indexOf(profileId) !== -1)
         || doesTextMatchParticipantSummary(normalized, summary)
     );
+}
+
+function collectParticipantContextNeighborhoodLines(lines, summary, limit) {
+    const sourceLines = Array.isArray(lines) ? lines : [];
+    const maxItems = typeof limit === 'number' && limit > 0 ? limit : 10;
+    const meaningfulLines = [];
+
+    sourceLines.forEach(function (line) {
+        const normalized = normalizeWhitespace(line || '');
+        if (!normalized || isParticipantPreviewNoiseLine(normalized)) {
+            return;
+        }
+        meaningfulLines.push(normalized);
+    });
+
+    if (!meaningfulLines.length) {
+        return [];
+    }
+
+    const selectedIndices = new Set();
+    meaningfulLines.forEach(function (line, index) {
+        const identityMatch = lineMatchesParticipantIdentity(line, summary || null);
+        const contentMatch = lineLooksLikeParticipantPreviewContent(line);
+        if (identityMatch) {
+            addParticipantPreviewLineWindow(selectedIndices, index, -2, 3, meaningfulLines.length - 1);
+            return;
+        }
+        if (contentMatch) {
+            addParticipantPreviewLineWindow(selectedIndices, index, -1, 1, meaningfulLines.length - 1);
+        }
+    });
+
+    if (!selectedIndices.size) {
+        meaningfulLines.forEach(function (_line, index) {
+            if (index < maxItems) {
+                selectedIndices.add(index);
+            }
+        });
+    }
+
+    const selectedLines = [];
+    const seen = new Set();
+    Array.from(selectedIndices).sort(function (left, right) {
+        return left - right;
+    }).forEach(function (index) {
+        const line = meaningfulLines[index];
+        if (!line || seen.has(line)) {
+            return;
+        }
+        seen.add(line);
+        selectedLines.push(line);
+    });
+
+    return selectedLines.slice(0, maxItems);
 }
 
 function collectParticipantCommentFocusLines(summary, dialogContext, previewEntries, openedContextLines) {
@@ -4635,6 +5110,7 @@ function buildParticipantContextListRows(summary) {
     const previewEntries = activeParticipantUserAnalysis && Array.isArray(activeParticipantUserAnalysis.previewEntries)
         ? activeParticipantUserAnalysis.previewEntries
         : [];
+    const historyEntry = getParticipantHistoryForSummary(activeSummary);
     const questionPairs = extractParticipantRequestQuestionAnswerPairs(getParticipantSummaryLines(activeSummary));
 
     if (!activeSummary && !dialogContext && !previewEntries.length) {
@@ -4650,6 +5126,9 @@ function buildParticipantContextListRows(summary) {
     }
     if (activeSummary && activeSummary.profileUrl) {
         rows.push(['Profile URL', activeSummary.profileUrl]);
+    }
+    if (historyEntry && historyEntry.summary_text) {
+        rows.push(['Earlier moderation history', historyEntry.summary_text]);
     }
 
     extractParticipantRequestGroupLines(getParticipantSummaryLines(activeSummary)).slice(0, 4).forEach(function (line) {
@@ -5215,6 +5694,7 @@ function buildParticipantRequestContext(card, options) {
     const dialogContext = settings.dialogContext || extractParticipantPreviewDialogContext(summary);
     const previewOnly = !!settings.previewOnly && !!dialogContext;
     const participantCommentFocusLines = collectParticipantCommentFocusLines(summary, dialogContext, previewEntries, openedContextLines);
+    const participantHistory = getParticipantHistoryForSummary(summary);
     const payload = [
         'Facebook participant-request user analysis context',
         'Facebook page URL: ' + location.href,
@@ -5237,6 +5717,12 @@ function buildParticipantRequestContext(card, options) {
     if (participantScannerGroupContext) {
         payload.push('Operator-provided group/user-verifier rules and background:');
         payload.push(clipText(participantScannerGroupContext, 4000));
+        payload.push('');
+    }
+
+    if (participantHistory && participantHistory.summary_text) {
+        payload.push('Earlier moderation history from Tools for matching participant name/profile clues:');
+        payload.push('- ' + clipText(participantHistory.summary_text, 1200));
         payload.push('');
     }
 
@@ -5623,6 +6109,71 @@ function focusParticipantRequestCard(card) {
     }, 2400);
 }
 
+function openParticipantRequestToolbox(card, options) {
+    const settings = options || {};
+    const liveCard = card && document.contains(card) ? card : null;
+    const summary = liveCard
+        ? rememberParticipantRequestSelection(liveCard, settings.reason || 'toolbox-open')
+        : (settings.summary || participantRequestsLastSelectedSummary || getParticipantReferenceSummary());
+    if (!liveCard && !summary) {
+        return;
+    }
+
+    if (liveCard) {
+        focusParticipantRequestCard(liveCard);
+    }
+
+    activateParticipantUserAnalysisContextWatcher(liveCard, settings.reason || 'toolbox-open', {
+        summary: summary,
+        previewOnly: !!settings.previewOnly,
+    });
+    const requestState = getParticipantAnalysisRequestState();
+    openReplyPanelWithImportedContext(requestState.context, {
+        message: ct('contentScript.participantScannerContextImported', {}, 'User analysis imported into Toolbox.'),
+        anchorNode: requestState.anchorElement || liveCard,
+    });
+}
+
+function verifyParticipantRequestCard(card, options) {
+    const settings = options || {};
+    const liveCard = card && document.contains(card) ? card : null;
+    const summary = liveCard
+        ? rememberParticipantRequestSelection(liveCard, settings.reason || 'verify-card')
+        : (settings.summary || participantRequestsLastSelectedSummary || getParticipantReferenceSummary());
+    if (!liveCard && !summary) {
+        return;
+    }
+
+    if (liveCard) {
+        focusParticipantRequestCard(liveCard);
+    }
+
+    activateParticipantUserAnalysisContextWatcher(liveCard, settings.reason || 'verify-card', {
+        summary: summary,
+        previewOnly: !!settings.previewOnly,
+    });
+    const requestState = getParticipantAnalysisRequestState();
+    startFactVerification(requestState.context, {
+        preferPanel: false,
+        anchor: createFactAnchorForNode(requestState.anchorElement || liveCard),
+        sourceLabel: ct('contentScript.participantScannerVerifySource', {}, 'Participant request verify'),
+        sourceUrl: summary.profileUrl || location.href,
+        requestMode: 'verify',
+        extraData: {
+            page_url: location.href,
+            page_title: document.title || '',
+            source_label: 'Facebook participant request verify',
+            facebook_profile_url: summary.profileUrl || '',
+            facebook_user_id: summary.profileUserId || '',
+            facebook_group_url: location.href,
+            facebook_group_context: participantScannerGroupContext || '',
+            facebook_preview_reference_name: summary.name || '',
+            facebook_preview_reference_lines: getParticipantSummaryLines(summary).slice(0, 12),
+            ...buildParticipantPreviewRequestExtraData(),
+        },
+    });
+}
+
 function focusParticipantPreviewElement(summary) {
     const dialogMatch = findParticipantPreviewDialog(summary || getParticipantReferenceSummary());
     if (!dialogMatch || !dialogMatch.element || !document.contains(dialogMatch.element)) {
@@ -5760,10 +6311,25 @@ function updateParticipantRequestsControl() {
         meta.textContent = ct('contentScript.participantScannerMeta', {count: participantRequestsEnhancedCardCount}, 'Cards enhanced: {count}').replace('{count}', String(participantRequestsEnhancedCardCount || 0));
     }
     if (detail) {
+        const matchedHistoryCount = Object.keys(participantHistoryByCandidateKey || {}).map(function (key) {
+            return participantHistoryByCandidateKey[key];
+        }).filter(function (entry) {
+            return !!(entry && entry.matched);
+        }).length;
         const detailParts = [
             'Preview dialog: ' + (dialogContext ? 'yes' : 'no'),
             'GraphQL preview: ' + (previewEntries.length ? 'yes' : 'no'),
         ];
+        if (participantHistoryLookupInFlight) {
+            detailParts.push('History: looking up…');
+        } else if (participantHistoryLookupError) {
+            detailParts.push('History: lookup failed');
+        } else if (participantHistoryLookupLastFetchedAt > 0) {
+            detailParts.push('History matches: ' + String(matchedHistoryCount));
+        }
+        if (participantHistoryLookupGroupReference) {
+            detailParts.push('History group set: ' + participantHistoryLookupGroupReference);
+        }
         if (dialogContext && dialogContext.mountRootId) {
             detailParts.push('Preview mount: ' + dialogContext.mountRootId);
         }
@@ -5813,7 +6379,9 @@ function updateParticipantRequestsControl() {
                     '<div style="margin-top:2px; color:#64748b; line-height:1.4;">' + escapeHtml(description) + '</div>',
                     '<div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">',
                     '<button type="button" data-role="locate-card" data-card-index="' + String(index) + '" style="border:none; border-radius:999px; padding:5px 9px; background:#475569; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.participantScannerLocate', {}, 'Show card')) + '</button>',
-                    '<button type="button" data-role="open-card-toolbox" data-card-index="' + String(index) + '" style="border:none; border-radius:999px; padding:5px 9px; background:#0284c7; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.participantScannerAnalyze', {}, 'Analyze user')) + '</button>',
+                    '<button type="button" data-role="analyze-card" data-card-index="' + String(index) + '" style="border:none; border-radius:999px; padding:5px 9px; background:#0284c7; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.participantScannerAnalyze', {}, 'Analyze user')) + '</button>',
+                    '<button type="button" data-role="open-card-toolbox" data-card-index="' + String(index) + '" style="border:none; border-radius:999px; padding:5px 9px; background:#0f766e; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.openToolbox', {}, 'Open Toolbox')) + '</button>',
+                    '<button type="button" data-role="verify-card" data-card-index="' + String(index) + '" style="border:none; border-radius:999px; padding:5px 9px; background:#7c3aed; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.verifyFact', {}, 'Verify fact')) + '</button>',
                     '</div>',
                     '</div>'
                 ].join('');
@@ -5948,8 +6516,16 @@ function ensureParticipantRequestsControl() {
             focusParticipantRequestCard(card);
             return;
         }
+        if (role === 'analyze-card') {
+            startParticipantUserAnalysis(card, {reason: 'helper-card-list-analyze'});
+            return;
+        }
         if (role === 'open-card-toolbox') {
-            startParticipantUserAnalysis(card);
+            openParticipantRequestToolbox(card, {reason: 'helper-card-list-toolbox'});
+            return;
+        }
+        if (role === 'verify-card') {
+            verifyParticipantRequestCard(card, {reason: 'helper-card-list-verify'});
         }
     });
 
@@ -5969,6 +6545,7 @@ function renderParticipantRequestHelper(card) {
     }
 
     const summary = buildParticipantRequestSummary(card);
+    const historyBadgeMarkup = buildParticipantHistoryBadgeMarkup(getParticipantHistoryForSummary(summary));
     let helper = card.querySelector('[data-sgpt-participant-badge="true"]');
     const attachmentAnchor = findParticipantRequestAttachmentAnchor(card, summary);
     const overflowButton = extractParticipantRequestOverflowButton(card);
@@ -6020,9 +6597,12 @@ function renderParticipantRequestHelper(card) {
 
     helper.innerHTML = [
         '<span style="font-weight:700; color:#5b21b6;">User</span>',
+        historyBadgeMarkup,
         '<button type="button" data-role="analyze" title="' + escapeHtml(ct('contentScript.participantScannerSummary', {}, 'Questions: {questions} · Groups: {groups} · Preview link: {preview}').replace('{questions}', String(summary.questionCount || 0)).replace('{groups}', String(summary.groupCount || 0)).replace('{preview}', summary.hasPreviewLink ? ct('status.yes', {}, 'yes') : ct('status.no', {}, 'no'))) + '" style="border:none; border-radius:999px; padding:5px 9px; background:#0284c7; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.participantScannerAnalyze', {}, 'Analyze user')) + '</button>',
+        '<button type="button" data-role="toolbox" style="border:none; border-radius:999px; padding:5px 9px; background:#0f766e; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.openToolbox', {}, 'Open Toolbox')) + '</button>',
+        '<button type="button" data-role="verify" style="border:none; border-radius:999px; padding:5px 9px; background:#7c3aed; color:#fff; cursor:pointer;">' + escapeHtml(ct('contentScript.verifyFact', {}, 'Verify fact')) + '</button>',
         '<button type="button" data-role="open-config" style="border:none; border-radius:999px; padding:5px 9px; background:#ede9fe; color:#5b21b6; cursor:pointer; font-weight:700;">' + escapeHtml(ct('contentScript.participantScannerConfigOpenInline', {}, 'Rules / group info')) + '</button>'
-    ].join('');
+    ].filter(Boolean).join('');
 
     helper.querySelector('[data-role="analyze"]').addEventListener('click', function (event) {
         event.preventDefault();
@@ -6030,6 +6610,26 @@ function renderParticipantRequestHelper(card) {
         rememberParticipantRequestSelection(card, 'inline-analyze');
         startParticipantUserAnalysis(card);
     });
+
+    const helperToolboxButton = helper.querySelector('[data-role="toolbox"]');
+    if (helperToolboxButton) {
+        helperToolboxButton.addEventListener('click', function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            rememberParticipantRequestSelection(card, 'inline-toolbox');
+            openParticipantRequestToolbox(card, {reason: 'inline-toolbox'});
+        });
+    }
+
+    const helperVerifyButton = helper.querySelector('[data-role="verify"]');
+    if (helperVerifyButton) {
+        helperVerifyButton.addEventListener('click', function (event) {
+            event.preventDefault();
+            event.stopPropagation();
+            rememberParticipantRequestSelection(card, 'inline-verify');
+            verifyParticipantRequestCard(card, {reason: 'inline-verify'});
+        });
+    }
 
     const helperConfigButton = helper.querySelector('[data-role="open-config"]');
     if (helperConfigButton) {
@@ -6108,6 +6708,7 @@ function clearParticipantRequestEnhancements() {
     participantRequestsLastSelectedSummary = null;
     participantRequestsLastSelectedReason = '';
     setParticipantAutoSupplementStatus('', false);
+    resetParticipantHistoryLookupState();
 
     document.querySelectorAll('[data-sgpt-participant-card="true"]').forEach(function (card) {
         removeParticipantRequestHelperFromCard(card);
@@ -6271,6 +6872,7 @@ function runParticipantRequestsScan(reason) {
             ? ct('contentScript.participantScannerFoundCards', {count: cards.length}, 'Enhanced {count} visible participant request cards.').replace('{count}', String(cards.length)) + ' · ' + participantRequestsLastScanDurationMs + ' ms'
             : (activePreviewSurface || ct('contentScript.participantScannerNoCards', {}, 'No visible participant-request cards matched yet.')) + ' · ' + participantRequestsLastScanDurationMs + ' ms';
         updateParticipantRequestsControl();
+        scheduleParticipantHistoryLookup(reason || 'scan');
 
         if (adminDebugEnabled) {
             debugLog({
