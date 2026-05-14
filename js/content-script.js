@@ -70,6 +70,7 @@ let participantRequestsLastSelectedReason = '';
 let activeParticipantUserAnalysis = null;
 let participantAnalysisMutationTimerId = null;
 let participantAnalysisAutoSupplementTimerId = null;
+let participantAnalysisAutoSupplementStatusTimerId = null;
 let participantScannerGroupContext = '';
 let participantScannerConfigBox = null;
 
@@ -3686,6 +3687,191 @@ function isParticipantPreviewDialogText(text) {
     return /(forhandsgranska kommentar|forhandsgranska kommentarer|frhandsgranska kommentar|frhandsgranska kommentarer|preview comment|preview comments|comment preview|comments preview|har skickat en kommentar|sent a comment)/i.test(normalized);
 }
 
+function isParticipantPreviewNoiseLine(text) {
+    const normalized = normalizeWhitespace(text || '');
+    if (!normalized) {
+        return true;
+    }
+
+    return /^(godkänn|approve|avvisa|reject|decline|analyze user|show card|rules \/ group info|find preview element|analyze current preview|see translation|visa översättning|översättning|translation)$/i.test(normalized)
+        || /^(kommentarerna publiceras inte|comments are not published)$/i.test(normalized)
+        || /^(för \d+ minuter sedan|\d+ minutes ago|för \d+ timmar sedan|\d+ hours ago)$/i.test(normalized);
+}
+
+function lineLooksLikeParticipantPreviewContent(text) {
+    const normalized = normalizeWhitespace(text || '');
+    if (!normalized) {
+        return false;
+    }
+
+    return /(kommentar|comment|svar|reply|replied|answered|inlägg|post|original post|ursprungligt inlägg|skickat|sent|skrev|wrote|fråga|question|regler|rules)/i.test(normalized)
+        || /^(idag|today|igår|yesterday)\b/i.test(normalized)
+        || /\b\d{1,2}:\d{2}\b/.test(normalized);
+}
+
+function addParticipantPreviewLineWindow(indices, pivotIndex, startOffset, endOffset, maxIndex) {
+    if (!isFinite(pivotIndex)) {
+        return;
+    }
+
+    const lowerBound = Math.max(0, pivotIndex + startOffset);
+    const upperBound = Math.min(maxIndex, pivotIndex + endOffset);
+    for (let index = lowerBound; index <= upperBound; index += 1) {
+        indices.add(index);
+    }
+}
+
+function collectRelevantParticipantPreviewLines(lines, summary, limit) {
+    const sourceLines = Array.isArray(lines) ? lines : [];
+    const maxItems = typeof limit === 'number' && limit > 0 ? limit : 14;
+    const normalizedName = normalizeParticipantIdentityText(summary && summary.name ? summary.name : '');
+    const normalizedProfileId = normalizeWhitespace(summary && summary.profileUserId ? summary.profileUserId : '');
+    const meaningfulLines = [];
+
+    sourceLines.forEach(function (line) {
+        const normalized = normalizeWhitespace(line || '');
+        if (!normalized || isParticipantPreviewNoiseLine(normalized)) {
+            return;
+        }
+        meaningfulLines.push(normalized);
+    });
+
+    if (!meaningfulLines.length) {
+        return [];
+    }
+
+    const selectedIndices = new Set();
+    meaningfulLines.forEach(function (line, index) {
+        const normalizedLine = normalizeParticipantIdentityText(line);
+        const matchesIdentity = !!(
+            (normalizedName && normalizedLine.indexOf(normalizedName) !== -1)
+            || (normalizedProfileId && line.indexOf(normalizedProfileId) !== -1)
+            || doesTextMatchParticipantSummary(line, summary)
+        );
+        const contentHint = lineLooksLikeParticipantPreviewContent(line);
+
+        if (matchesIdentity) {
+            addParticipantPreviewLineWindow(selectedIndices, index, -1, 3, meaningfulLines.length - 1);
+        }
+
+        if (contentHint) {
+            addParticipantPreviewLineWindow(selectedIndices, index, -1, 2, meaningfulLines.length - 1);
+        }
+    });
+
+    const tailStart = Math.max(0, meaningfulLines.length - Math.min(8, meaningfulLines.length));
+    for (let index = tailStart; index < meaningfulLines.length; index += 1) {
+        if (lineLooksLikeParticipantPreviewContent(meaningfulLines[index]) || index >= meaningfulLines.length - 4) {
+            selectedIndices.add(index);
+        }
+    }
+
+    if (!selectedIndices.size) {
+        meaningfulLines.forEach(function (_line, index) {
+            if (index < maxItems) {
+                selectedIndices.add(index);
+            }
+        });
+    }
+
+    const selectedLines = [];
+    const seen = new Set();
+    Array.from(selectedIndices).sort(function (left, right) {
+        return left - right;
+    }).forEach(function (index) {
+        const line = meaningfulLines[index];
+        if (!line || seen.has(line)) {
+            return;
+        }
+        seen.add(line);
+        selectedLines.push(line);
+    });
+
+    return selectedLines.slice(0, maxItems);
+}
+
+function splitParticipantContextTextIntoLines(text) {
+    const normalizedText = String(text || '');
+    if (!normalizedText) {
+        return [];
+    }
+
+    let workingText = normalizedText;
+    if ((workingText.match(/\n/g) || []).length < 2 && workingText.length > 220) {
+        workingText = workingText.replace(/([.!?])\s+(?=[A-ZÅÄÖ0-9])/g, '$1\n');
+    }
+
+    return workingText.split(/\n+/).map(function (line) {
+        return normalizeWhitespace(line);
+    }).filter(Boolean);
+}
+
+function lineMatchesParticipantIdentity(text, summary) {
+    const normalized = normalizeWhitespace(text || '');
+    if (!normalized) {
+        return false;
+    }
+
+    const normalizedLine = normalizeParticipantIdentityText(normalized);
+    const normalizedName = normalizeParticipantIdentityText(summary && summary.name ? summary.name : '');
+    const profileId = normalizeWhitespace(summary && summary.profileUserId ? summary.profileUserId : '');
+
+    return !!(
+        (normalizedName && normalizedLine.indexOf(normalizedName) !== -1)
+        || (profileId && normalized.indexOf(profileId) !== -1)
+        || doesTextMatchParticipantSummary(normalized, summary)
+    );
+}
+
+function collectParticipantCommentFocusLines(summary, dialogContext, previewEntries, openedContextLines) {
+    const combinedLines = [];
+    const pushLines = function (lines) {
+        (Array.isArray(lines) ? lines : []).forEach(function (line) {
+            const normalized = normalizeWhitespace(line || '');
+            if (!normalized || isParticipantPreviewNoiseLine(normalized)) {
+                return;
+            }
+            combinedLines.push(normalized);
+        });
+    };
+
+    if (dialogContext && Array.isArray(dialogContext.commentLines)) {
+        pushLines(dialogContext.commentLines);
+    }
+
+    (Array.isArray(previewEntries) ? previewEntries : []).slice(-4).forEach(function (entry) {
+        pushLines(entry && entry.comment_lines);
+        pushLines(entry && entry.post_lines);
+        pushLines(entry && entry.normalized_text_lines);
+        if (Array.isArray(entry && entry.author_names) && entry.author_names.length) {
+            pushLines([entry.author_names.join(' / ')]);
+        }
+    });
+
+    pushLines(openedContextLines);
+
+    const focusedLines = collectRelevantParticipantPreviewLines(combinedLines, summary || null, 14);
+    const identityLines = focusedLines.filter(function (line) {
+        return lineMatchesParticipantIdentity(line, summary || null);
+    });
+    const commentHintLines = focusedLines.filter(function (line) {
+        return lineLooksLikeParticipantPreviewContent(line);
+    });
+    const prioritized = [];
+    const seen = new Set();
+    [identityLines, commentHintLines, focusedLines].forEach(function (bucket) {
+        bucket.forEach(function (line) {
+            if (!line || seen.has(line)) {
+                return;
+            }
+            seen.add(line);
+            prioritized.push(line);
+        });
+    });
+
+    return prioritized.slice(0, 10);
+}
+
 function extractParticipantPreviewDialogSignalLines(dialog) {
     if (!dialog || !dialog.getAttribute) {
         return [];
@@ -3753,6 +3939,55 @@ function collectParticipantPreviewDialogCandidates() {
     return candidates;
 }
 
+function getTrackedParticipantPreviewDialogState() {
+    if (!activeParticipantUserAnalysis || !activeParticipantUserAnalysis.previewDialogState) {
+        return null;
+    }
+
+    const state = activeParticipantUserAnalysis.previewDialogState;
+    if (!state.element || !document.contains(state.element)) {
+        return null;
+    }
+
+    return state;
+}
+
+function rememberTrackedParticipantPreviewDialog(match) {
+    if (!activeParticipantUserAnalysis || !match || !match.element || !document.contains(match.element)) {
+        return;
+    }
+
+    activeParticipantUserAnalysis.previewDialogState = {
+        element: match.element,
+        mountRootId: match.mountRootId || '',
+        signalText: match.signalText || '',
+        lastMatchedAt: Date.now(),
+    };
+}
+
+function shouldReuseTrackedParticipantPreviewState(nextSummary) {
+    if (!activeParticipantUserAnalysis || !activeParticipantUserAnalysis.summary) {
+        return false;
+    }
+
+    const previousSummary = activeParticipantUserAnalysis.summary;
+    const nextProfileId = normalizeWhitespace(nextSummary && nextSummary.profileUserId ? nextSummary.profileUserId : '');
+    const previousProfileId = normalizeWhitespace(previousSummary && previousSummary.profileUserId ? previousSummary.profileUserId : '');
+    if (nextProfileId && previousProfileId && nextProfileId === previousProfileId) {
+        return true;
+    }
+
+    const nextProfileUrl = normalizeFacebookUrlForPrompt(nextSummary && nextSummary.profileUrl ? nextSummary.profileUrl : '');
+    const previousProfileUrl = normalizeFacebookUrlForPrompt(previousSummary && previousSummary.profileUrl ? previousSummary.profileUrl : '');
+    if (nextProfileUrl && previousProfileUrl && (nextProfileUrl === previousProfileUrl || nextProfileUrl.indexOf(previousProfileUrl) !== -1 || previousProfileUrl.indexOf(nextProfileUrl) !== -1)) {
+        return true;
+    }
+
+    const nextName = normalizeParticipantIdentityText(nextSummary && nextSummary.name ? nextSummary.name : '');
+    const previousName = normalizeParticipantIdentityText(previousSummary && previousSummary.name ? previousSummary.name : '');
+    return !!(nextName && previousName && nextName === previousName);
+}
+
 function extractParticipantPreviewDialogLines(dialog) {
     if (!dialog) {
         return [];
@@ -3772,20 +4007,25 @@ function extractParticipantPreviewDialogLines(dialog) {
         if (!normalized || normalized.length > 260 || seen.has(normalized)) {
             return;
         }
-        if (/^(godkänn|approve|avvisa|reject|decline|analyze user|show card|rules \/ group info)$/i.test(normalized)) {
+        if (isParticipantPreviewNoiseLine(normalized)) {
             return;
         }
         seen.add(normalized);
         lines.push(normalized);
     });
 
-    return lines.slice(0, 18);
+    return lines.slice(0, 48);
 }
 
 function findParticipantPreviewDialog(summary) {
     const dialogs = collectParticipantPreviewDialogCandidates();
+    const trackedState = getTrackedParticipantPreviewDialogState();
     let best = null;
     let bestScore = -1;
+
+    if (trackedState && dialogs.indexOf(trackedState.element) === -1) {
+        dialogs.unshift(trackedState.element);
+    }
 
     dialogs.forEach(function (dialog) {
         if (!dialog || !isElementNearViewport(dialog, 160)) {
@@ -3820,6 +4060,12 @@ function findParticipantPreviewDialog(summary) {
         if (mountRoot && mountRoot.id && /^mount_/i.test(mountRoot.id)) {
             score += 40;
         }
+        if (trackedState && trackedState.element === dialog) {
+            score += 260;
+        }
+        if (trackedState && trackedState.mountRootId && mountRoot && mountRoot.id === trackedState.mountRootId) {
+            score += 120;
+        }
 
         if (score > bestScore) {
             bestScore = score;
@@ -3834,7 +4080,12 @@ function findParticipantPreviewDialog(summary) {
         }
     });
 
-    return bestScore >= 220 || (best && isParticipantPreviewDialogText(best.signalText || '')) ? best : null;
+    if (best && (bestScore >= 220 || (best && isParticipantPreviewDialogText(best.signalText || '')) || (trackedState && best.element === trackedState.element && bestScore >= 120))) {
+        rememberTrackedParticipantPreviewDialog(best);
+        return best;
+    }
+
+    return null;
 }
 
 function getActiveParticipantUserAnalysisSurface() {
@@ -3954,6 +4205,8 @@ function extractParticipantPreviewDialogContext(summary) {
         return null;
     }
 
+    const relevantCommentLines = collectRelevantParticipantPreviewLines(dialogMatch.lines, summary || null, 14);
+
     const originalPostLinks = Array.from(dialogMatch.element.querySelectorAll('a[href]')).map(function (anchor) {
         const text = normalizeWhitespace(anchor.textContent || anchor.innerText || '');
         if (!text || !/(visa ursprungligt inlägg|view original post|original post)/i.test(text)) {
@@ -3969,11 +4222,7 @@ function extractParticipantPreviewDialogContext(summary) {
         signalText: dialogMatch.signalText || '',
         mountRootId: dialogMatch.mountRootId || '',
         originalPostLinks: originalPostLinks.slice(0, 4),
-        commentLines: dialogMatch.lines.filter(function (line) {
-            return !isParticipantPreviewDialogText(line)
-                && !/(kommentarerna publiceras inte|comments are not published|visa ursprungligt inlägg|view original post|för \d+ minuter sedan|\d+ minutes ago)/i.test(line)
-                && line.length >= 8;
-        }).slice(0, 6),
+        commentLines: relevantCommentLines,
     };
 }
 
@@ -3982,9 +4231,9 @@ function buildParticipantSummaryFromDialogContext(dialogContext) {
         return null;
     }
 
-    const candidateName = dialogContext.lines.find(function (line) {
+    const candidateName = dialogContext.commentLines.concat(dialogContext.lines).find(function (line) {
         return !isParticipantPreviewDialogText(line)
-            && !/(kommentarerna publiceras inte|comments are not published|visa ursprungligt inlägg|view original post|för \d+ minuter sedan|\d+ minutes ago)/i.test(line)
+            && !isParticipantPreviewNoiseLine(line)
             && line.length >= 4
             && line.length <= 90
             && line.split(/\s+/).length <= 6;
@@ -4015,6 +4264,7 @@ function buildParticipantPreviewDebugState() {
         ? activeParticipantUserAnalysis.previewEntries
         : [];
     const openedContextLines = collectParticipantRequestOpenedContextLines(card, summary);
+    const participantCommentFocusLines = collectParticipantCommentFocusLines(summary, dialogContext, previewEntries, openedContextLines);
     const sections = [];
 
     function normalizeLines(lines, limit) {
@@ -4028,6 +4278,14 @@ function buildParticipantPreviewDebugState() {
             seen.add(line);
             return true;
         }).slice(0, typeof limit === 'number' ? limit : 8);
+    }
+
+    if (participantCommentFocusLines.length) {
+        sections.push({
+            title: 'Participant-focused comment clues',
+            subtitle: summary && summary.name ? 'focused on ' + summary.name : 'focused preview/comment context',
+            lines: normalizeLines(participantCommentFocusLines, 8),
+        });
     }
 
     if (dialogContext) {
@@ -4074,6 +4332,7 @@ function buildParticipantPreviewDebugState() {
         sections: sections,
         capturedLineCount: capturedLineCount,
         hasCapturedLines: capturedLineCount > 0,
+        participantCommentFocusCount: participantCommentFocusLines.length,
         dialogMatched: !!dialogContext,
         previewEntryCount: previewEntries.length,
     };
@@ -4087,6 +4346,7 @@ function buildParticipantPreviewDebugHtml(debugState) {
 
     const summaryText = [
         'Captured lines: ' + String(state.capturedLineCount || 0),
+        'Participant-focused: ' + String(state.participantCommentFocusCount || 0),
         'Preview dialog: ' + (state.dialogMatched ? 'yes' : 'no'),
         'GraphQL entries: ' + String(state.previewEntryCount || 0),
     ].join(' · ');
@@ -4203,6 +4463,59 @@ function clearParticipantAnalysisAutoSupplementTimer() {
     }
 }
 
+function clearParticipantAnalysisAutoSupplementStatusTimer() {
+    if (participantAnalysisAutoSupplementStatusTimerId) {
+        window.clearTimeout(participantAnalysisAutoSupplementStatusTimerId);
+        participantAnalysisAutoSupplementStatusTimerId = null;
+    }
+}
+
+function buildParticipantAutoSupplementStatusMessage() {
+    if (!activeParticipantUserAnalysis) {
+        return '';
+    }
+
+    const debugState = buildParticipantPreviewDebugState();
+    if (!debugState || !debugState.hasCapturedLines) {
+        return '';
+    }
+
+    const summary = activeParticipantUserAnalysis.summary || getParticipantReferenceSummary();
+    const participantName = normalizeWhitespace(summary && summary.name ? summary.name : '');
+    const participantLabel = participantName || 'den här deltagaren';
+
+    if (activeParticipantUserAnalysis.autoSupplementInFlight) {
+        return 'Analysen uppdateras nu med ' + participantLabel + 's kommentar-/förhandsgranskningsledtrådar och vägs mot gruppinfo/regler…';
+    }
+
+    if (activeParticipantUserAnalysis.autoSupplementQueued) {
+        return 'Nya kommentar-/förhandsgranskningsledtrådar hittades för ' + participantLabel + '. Väntar lite till ifall fler kommentarer eller hela originalinlägget hinner laddas innan analysen uppdateras…';
+    }
+
+    const lastChangeAt = Number(activeParticipantUserAnalysis.lastContextChangeAt || 0);
+    if (lastChangeAt > 0 && Date.now() - lastChangeAt < 7000) {
+        return 'Mer Facebook-kontext hittades för ' + participantLabel + '. Om inget mer händer strax vägs kommentaren tydligare mot gruppinfo/regler i nästa analysuppdatering.';
+    }
+
+    return '';
+}
+
+function refreshParticipantAutoSupplementStatus() {
+    clearParticipantAnalysisAutoSupplementStatusTimer();
+    const message = buildParticipantAutoSupplementStatusMessage();
+    if (!message) {
+        setParticipantAutoSupplementStatus('', false);
+        return;
+    }
+
+    setParticipantAutoSupplementStatus(message, true);
+    if (activeParticipantUserAnalysis && !activeParticipantUserAnalysis.autoSupplementInFlight && !activeParticipantUserAnalysis.autoSupplementQueued) {
+        participantAnalysisAutoSupplementStatusTimerId = window.setTimeout(function () {
+            refreshParticipantAutoSupplementStatus();
+        }, 2800);
+    }
+}
+
 function getParticipantAutoSupplementRequestState() {
     if (!activeParticipantUserAnalysis || !lastVerificationRequest || lastVerificationRequest.requestMode !== 'user-analysis') {
         return null;
@@ -4239,7 +4552,7 @@ function runParticipantAnalysisAutoSupplement(reason) {
     clearParticipantAnalysisAutoSupplementTimer();
     const supplementState = getParticipantAutoSupplementRequestState();
     if (!supplementState) {
-        setParticipantAutoSupplementStatus('', false);
+        refreshParticipantAutoSupplementStatus();
         return;
     }
 
@@ -4250,8 +4563,9 @@ function runParticipantAnalysisAutoSupplement(reason) {
 
     activeParticipantUserAnalysis.autoSupplementQueued = false;
     activeParticipantUserAnalysis.autoSupplementInFlight = true;
+    activeParticipantUserAnalysis.lastAutoSupplementStartedAt = Date.now();
     activeParticipantUserAnalysis.autoSupplementContextSignature = supplementState.contextSignature;
-    setParticipantAutoSupplementStatus('Preview comments were captured. Wait a few more seconds while the comment part is analyzed too…', true);
+    refreshParticipantAutoSupplementStatus();
     updateParticipantPreviewDebugView();
 
     startFactVerification(supplementState.requestState.context, {
@@ -4267,10 +4581,15 @@ function runParticipantAnalysisAutoSupplement(reason) {
         showOpenToolboxAction: lastVerificationRequest.showOpenToolboxAction,
         participantAnalysisCard: supplementState.requestState.card,
         participantAnalysisSummary: supplementState.requestState.summary,
-        verificationInstruction: lastVerificationRequest.verificationInstruction,
+        verificationInstruction: ((lastVerificationRequest.verificationInstruction || '')
+            + '\n\nIMPORTANT FOLLOW-UP: New preview/original-post comment context was captured after the first pass. Re-evaluate the participant with extra weight on the participant\'s own visible comment(s) and how those comments align or conflict with the group info/rules/context. If the expanded preview now exposes more of the original post, use that broader thread context to interpret the participant\'s comment more accurately without losing the earlier group-rule framing.').trim(),
         requestMode: lastVerificationRequest.requestMode,
         sourceUrl: lastVerificationRequest.sourceUrl,
-        extraData: lastVerificationRequest.extraData,
+        extraData: Object.assign({}, lastVerificationRequest.extraData || {}, {
+            participant_analysis_phase: 'followup_preview',
+            socialgpt_latency_mode: 'fast_followup',
+            facebook_preview_focus_name: supplementState.requestState.summary && supplementState.requestState.summary.name ? supplementState.requestState.summary.name : '',
+        }),
         loadingSteps: lastVerificationRequest.loadingSteps,
         previewLimit: lastVerificationRequest.previewLimit,
         keepMarks: true,
@@ -4287,12 +4606,14 @@ function scheduleParticipantAnalysisAutoSupplement(reason) {
 
     const supplementState = getParticipantAutoSupplementRequestState();
     if (!supplementState) {
-        setParticipantAutoSupplementStatus('', false);
+        refreshParticipantAutoSupplementStatus();
         return;
     }
 
     activeParticipantUserAnalysis.autoSupplementQueued = true;
+    activeParticipantUserAnalysis.lastAutoSupplementQueuedAt = Date.now();
     updateParticipantPreviewDebugView();
+    refreshParticipantAutoSupplementStatus();
 
     if (pendingAiRequestMode === 'verify') {
         return;
@@ -4306,6 +4627,9 @@ function scheduleParticipantAnalysisAutoSupplement(reason) {
 
 function buildParticipantContextListRows(summary) {
     const activeSummary = summary || getParticipantReferenceSummary();
+    const activeCard = activeParticipantUserAnalysis && activeParticipantUserAnalysis.card
+        ? activeParticipantUserAnalysis.card
+        : participantRequestsLastSelectedCard;
     const rows = [];
     const dialogContext = extractParticipantPreviewDialogContext(activeSummary);
     const previewEntries = activeParticipantUserAnalysis && Array.isArray(activeParticipantUserAnalysis.previewEntries)
@@ -4333,6 +4657,9 @@ function buildParticipantContextListRows(summary) {
     });
     extractParticipantRequestProfileSignalLines(getParticipantSummaryLines(activeSummary)).slice(0, 6).forEach(function (line) {
         rows.push(['Profile signal', line]);
+    });
+    collectParticipantCommentFocusLines(activeSummary, dialogContext, previewEntries, collectParticipantRequestOpenedContextLines(activeCard, activeSummary)).slice(0, 6).forEach(function (line) {
+        rows.push(['Kommentar-/förhandsgranskningsledtrådar', line]);
     });
     questionPairs.slice(0, 4).forEach(function (pair) {
         rows.push(['Question', pair.question]);
@@ -4622,7 +4949,7 @@ function collectParticipantRequestOpenedContextLines(card, summary) {
             return;
         }
         const text = normalizeWhitespace(node.innerText || node.textContent || '');
-        if (text.length < 24 || text.length > 1800 || seen.has(text)) {
+        if (text.length < 24 || text.length > 2400 || seen.has(text)) {
             return;
         }
         if (cardText && cardText.indexOf(text) !== -1) {
@@ -4631,11 +4958,24 @@ function collectParticipantRequestOpenedContextLines(card, summary) {
         if (!/(kommentar|comment|inlägg|post|preview|förhandsgranska|svarade|answered|reply|medlemsfråga|membership question|godkänner du|group rules)/i.test(text)) {
             return;
         }
-        seen.add(text);
-        found.push(clipText(text, 900));
+        const focusedLines = collectRelevantParticipantPreviewLines(splitParticipantContextTextIntoLines(text), activeSummary, 6);
+        if (!focusedLines.length) {
+            return;
+        }
+        focusedLines.forEach(function (line, index) {
+            const decoratedLine = index === 0 && lineMatchesParticipantIdentity(line, activeSummary)
+                ? 'Expanded preview/post: ' + line
+                : line;
+            const normalizedLine = normalizeWhitespace(decoratedLine);
+            if (!normalizedLine || seen.has(normalizedLine)) {
+                return;
+            }
+            seen.add(normalizedLine);
+            found.push(clipText(normalizedLine, 900));
+        });
     });
 
-    return found.slice(0, 8);
+    return found.slice(0, 12);
 }
 
 function normalizeParticipantNetworkEventSnippet(payload) {
@@ -4869,6 +5209,7 @@ function buildParticipantRequestContext(card, options) {
     const previewEntries = settings.previewEntries || (useActiveAnalysisState && activeParticipantUserAnalysis ? activeParticipantUserAnalysis.previewEntries || [] : []);
     const dialogContext = settings.dialogContext || extractParticipantPreviewDialogContext(summary);
     const previewOnly = !!settings.previewOnly && !!dialogContext;
+    const participantCommentFocusLines = collectParticipantCommentFocusLines(summary, dialogContext, previewEntries, openedContextLines);
     const payload = [
         'Facebook participant-request user analysis context',
         'Facebook page URL: ' + location.href,
@@ -4891,6 +5232,14 @@ function buildParticipantRequestContext(card, options) {
     if (participantScannerGroupContext) {
         payload.push('Operator-provided group/user-verifier rules and background:');
         payload.push(clipText(participantScannerGroupContext, 4000));
+        payload.push('');
+    }
+
+    if (participantCommentFocusLines.length) {
+        payload.push('Participant-focused comment/preview clues to weigh against the group info/rules/context:');
+        participantCommentFocusLines.slice(0, 10).forEach(function (line) {
+            payload.push('- ' + line);
+        });
         payload.push('');
     }
 
@@ -5041,7 +5390,7 @@ function buildParticipantRequestContext(card, options) {
 
         payload.push('');
     }
-    payload.push('Instruction: Analyze this participant request as a user-analysis helper. First summarize who the user seems to be from the visible card, then list visible group/friend clues, visible question prompts, whether the questions look unanswered, and any comment/preview signal that may need follow-up. Highlight contradictions, risk signals, useful positive signals, and exactly what should still be checked before approval. When a profile URL or numeric Facebook user id is present, use it as specific lookup context for independent web-search verification where available. Treat the visible Facebook UI text as observational context, not independently verified fact.');
+    payload.push('Instruction: Analyze this participant request as a user-analysis helper. First summarize who the user seems to be from the visible card, then list visible group/friend clues, visible question prompts, whether the questions look unanswered, and any comment/preview signal that may need follow-up. When participant-focused comment/preview clues are present, give the participant\'s own visible comment(s) extra analytical weight and explicitly compare them against the group info/rules/context before concluding. Highlight contradictions, risk signals, useful positive signals, and exactly what should still be checked before approval. When a profile URL or numeric Facebook user id is present, use it as specific lookup context for independent web-search verification where available. Treat the visible Facebook UI text as observational context, not independently verified fact.');
 
     return payload.filter(Boolean).join('\n');
 }
@@ -5057,6 +5406,7 @@ function participantAnalysisContextSignature(card) {
 
 function updateParticipantUserAnalysisNotice() {
     if (!factResultBox || !document.contains(factResultBox) || !activeParticipantUserAnalysis || !activeParticipantUserAnalysis.changed) {
+        refreshParticipantAutoSupplementStatus();
         updateParticipantPreviewDebugView();
         return;
     }
@@ -5080,9 +5430,11 @@ function updateParticipantUserAnalysisNotice() {
         }
     }
     const debugState = buildParticipantPreviewDebugState();
+    const participantName = normalizeWhitespace(activeParticipantUserAnalysis.summary && activeParticipantUserAnalysis.summary.name ? activeParticipantUserAnalysis.summary.name : '');
     notice.textContent = debugState && debugState.hasCapturedLines
-        ? 'New Facebook preview comments were captured for this participant. Wait a few more seconds while the comment part is analyzed too…'
+        ? ('Nya kommentar-/förhandsgranskningsledtrådar' + (participantName ? ' för ' + participantName : '') + ' hittades. Analysen väger nu kommentaren tydligare mot gruppinfo/regler och kompletteras igen om mer preview/original-post-kontext laddas.')
         : ct('contentScript.participantScannerNewContext', {}, 'New Facebook context was loaded for this participant. Use “Update analysis” to include it.');
+    refreshParticipantAutoSupplementStatus();
     updateParticipantPreviewDebugView();
 }
 
@@ -5092,6 +5444,7 @@ function markParticipantUserAnalysisContextChanged(reason) {
     }
     activeParticipantUserAnalysis.changed = true;
     activeParticipantUserAnalysis.changedReason = reason || 'context';
+    activeParticipantUserAnalysis.lastContextChangeAt = Date.now();
     updateParticipantUserAnalysisNotice();
     scheduleParticipantAnalysisAutoSupplement(reason || 'context');
 }
@@ -5124,6 +5477,7 @@ function activateParticipantUserAnalysisContextWatcher(card, reason, options) {
         return;
     }
     clearParticipantAnalysisAutoSupplementTimer();
+    clearParticipantAnalysisAutoSupplementStatusTimer();
     setParticipantAutoSupplementStatus('', false);
     if (activeParticipantUserAnalysis && activeParticipantUserAnalysis.observer) {
         activeParticipantUserAnalysis.observer.disconnect();
@@ -5134,9 +5488,14 @@ function activateParticipantUserAnalysisContextWatcher(card, reason, options) {
         contextSignature: '',
         networkEvents: [],
         previewEntries: [],
+        previewDialogState: shouldReuseTrackedParticipantPreviewState(summary) ? getTrackedParticipantPreviewDialogState() : null,
         previewOnly: !!settings.previewOnly,
         changed: false,
         changedReason: reason || 'focus',
+        lastContextChangeAt: 0,
+        lastAutoSupplementQueuedAt: 0,
+        lastAutoSupplementStartedAt: 0,
+        lastAutoSupplementCompletedAt: 0,
         autoSupplementQueued: false,
         autoSupplementInFlight: false,
         autoSupplementContextSignature: '',
@@ -5325,7 +5684,7 @@ function startParticipantUserAnalysis(card, options) {
         anchor: createFactAnchorForNode(anchorElement),
         sourceLabel: ct('contentScript.participantScannerAnalyzeSource', {}, 'Participant user analysis'),
         sourceUrl: summary.profileUrl || location.href,
-        verificationInstruction: 'Analyze this Facebook participant request as a user-analysis and moderation helper. The visible card text, membership questions, visible answers, rules acknowledgement, comment/preview clues, the candidate profile URL/user id when present, the operator group context, and any newly opened Facebook preview/comment/post context are already included in the request context. Summarize who the user appears to be from those visible signals, which groups or friend clues are visible, which membership questions are shown, whether they look answered or unanswered, and what comment or preview clues exist. Then list positive signs, risk signs, contradictions, and exactly what should still be checked before approval. Use web search for the specific profile URL/user id/name when available, but treat the visible Facebook UI as observational context, not independently verified fact.',
+        verificationInstruction: 'Analyze this Facebook participant request as a user-analysis and moderation helper. The visible card text, membership questions, visible answers, rules acknowledgement, comment/preview clues, the candidate profile URL/user id when present, the operator group context, and any newly opened Facebook preview/comment/post context are already included in the request context. Summarize who the user appears to be from those visible signals, which groups or friend clues are visible, which membership questions are shown, whether they look answered or unanswered, and what comment or preview clues exist. Give the participant\'s own visible comment(s) extra analytical weight, and explicitly compare those comments against the group info/rules/context before concluding. Then list positive signs, risk signs, contradictions, and exactly what should still be checked before approval. Use web search for the specific profile URL/user id/name when available, but treat the visible Facebook UI as observational context, not independently verified fact.',
         requestMode: 'user-analysis',
         extraData: {
             page_url: location.href,
@@ -5338,6 +5697,7 @@ function startParticipantUserAnalysis(card, options) {
             facebook_preview_source: 'merged_dom_graphql',
             facebook_preview_selection_reason: participantRequestsLastSelectedReason || '',
             facebook_preview_reference_name: summary.name || '',
+            participant_analysis_phase: 'initial',
             facebook_preview_reference_lines: getParticipantSummaryLines(summary).slice(0, 12),
             ...buildParticipantPreviewRequestExtraData(),
         },
@@ -5698,6 +6058,7 @@ function disconnectParticipantRequestsObserver() {
 
 function clearParticipantRequestEnhancements() {
     clearParticipantAnalysisAutoSupplementTimer();
+    clearParticipantAnalysisAutoSupplementStatusTimer();
 
     if (participantRequestsScanTimerId) {
         window.clearTimeout(participantRequestsScanTimerId);
@@ -11659,10 +12020,14 @@ function startFactVerification(contextOverride, options) {
 
     if (!settings.participantAutoSupplement) {
         clearParticipantAnalysisAutoSupplementTimer();
+        clearParticipantAnalysisAutoSupplementStatusTimer();
         setParticipantAutoSupplementStatus('', false);
         if (activeParticipantUserAnalysis) {
             activeParticipantUserAnalysis.autoSupplementQueued = false;
             activeParticipantUserAnalysis.autoSupplementInFlight = false;
+            activeParticipantUserAnalysis.lastAutoSupplementQueuedAt = 0;
+            activeParticipantUserAnalysis.lastAutoSupplementStartedAt = 0;
+            activeParticipantUserAnalysis.lastAutoSupplementCompletedAt = 0;
             activeParticipantUserAnalysis.autoSupplementContextSignature = '';
         }
     }
@@ -11714,7 +12079,7 @@ function startFactVerification(contextOverride, options) {
         participantAutoSupplement: !!settings.participantAutoSupplement,
     };
     if (preserveExistingResultDuringLoading) {
-        setParticipantAutoSupplementStatus('Preview comments were captured. Wait a few more seconds while the comment part is analyzed too…', true);
+        refreshParticipantAutoSupplementStatus();
         updateParticipantPreviewDebugView();
     } else {
         showFactVerificationPending(context, factResultAnchor, settings.sourceLabel || 'Fact verification', settings);
@@ -11823,6 +12188,7 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
         if (pendingAiRequestMode === 'verify') {
             if (activeParticipantUserAnalysis) {
                 activeParticipantUserAnalysis.autoSupplementInFlight = false;
+                activeParticipantUserAnalysis.lastAutoSupplementCompletedAt = Date.now();
             }
             showFactResultBox(
                 req.ok ? getReadablePanelText(req.payload) : getReadablePanelErrorText(req.error || req.payload),
@@ -11848,9 +12214,10 @@ safeAddRuntimeMessageListener(function (req, sender, sendResponse) {
             }
             updateParticipantPreviewDebugView();
             if (activeParticipantUserAnalysis && activeParticipantUserAnalysis.changed) {
+                refreshParticipantAutoSupplementStatus();
                 scheduleParticipantAnalysisAutoSupplement('post-response');
             } else {
-                setParticipantAutoSupplementStatus('', false);
+                refreshParticipantAutoSupplementStatus();
             }
             return;
         }
