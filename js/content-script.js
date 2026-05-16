@@ -59,6 +59,8 @@ let participantRequestsAutoScanIntervalId = null;
 let participantRequestsScrollListenerBound = false;
 let participantRequestsScrollHandler = null;
 let participantRequestsScrollTimerId = null;
+let participantPreviewInteractionListenerBound = false;
+let participantPreviewInteractionHandler = null;
 let participantRequestsLastScanAt = 0;
 let participantRequestsEnhancedCardCount = 0;
 let participantRequestsLastSummary = '';
@@ -100,6 +102,7 @@ const SOUND_CLOUD_DIRECT_HOOK_READY_ATTRIBUTE = 'data-tn-soundcloud-hook-ready';
 const SOUND_CLOUD_DIRECT_BUFFER_ELEMENT_ID = 'tn-soundcloud-direct-capture-buffer';
 const SOUND_CLOUD_INSIGHTS_CAPTURE_ENABLED = false;
 const MAX_RECENT_FACEBOOK_COMMENT_ENTRIES = 200;
+const MAX_RECENT_PARTICIPANT_COMMENT_THREAD_ENTRIES = 4;
 const PARTICIPANT_HISTORY_LOOKUP_DEBOUNCE_MS = 650;
 const PARTICIPANT_HISTORY_LOOKUP_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_REPLY_PROMPT = 'Write text that fits the visible context and can be pasted into the selected field.';
@@ -4738,6 +4741,9 @@ function buildParticipantPreviewDebugState() {
     const previewEntries = activeParticipantUserAnalysis && Array.isArray(activeParticipantUserAnalysis.previewEntries)
         ? activeParticipantUserAnalysis.previewEntries
         : [];
+    const commentThreadEntries = activeParticipantUserAnalysis && Array.isArray(activeParticipantUserAnalysis.commentThreadEntries)
+        ? activeParticipantUserAnalysis.commentThreadEntries
+        : [];
     const openedContextLines = collectParticipantRequestOpenedContextLines(card, summary);
     const participantCommentFocusLines = collectParticipantCommentFocusLines(summary, dialogContext, previewEntries, openedContextLines);
     const sections = [];
@@ -4791,6 +4797,27 @@ function buildParticipantPreviewDebugState() {
         });
     });
 
+    commentThreadEntries.slice(-3).forEach(function (entry, index) {
+        const lines = normalizeLines(
+            (Array.isArray(entry.post_lines) ? entry.post_lines.map(function (line) {
+                return 'Post: ' + line;
+            }) : []).concat(
+                Array.isArray(entry.comment_lines) ? entry.comment_lines : [],
+                Array.isArray(entry.normalized_text_lines) ? entry.normalized_text_lines : []
+            ),
+            10
+        );
+        sections.push({
+            title: 'GraphQL thread comments #' + String(index + 1),
+            subtitle: normalizeWhitespace([
+                entry.friendly_name || entry.operation_name || 'Comment thread',
+                entry.comment_total_count ? 'total=' + entry.comment_total_count : '',
+                entry.selected_intent_title ? 'intent=' + entry.selected_intent_title : '',
+            ].join(' · ')),
+            lines: lines,
+        });
+    });
+
     if (openedContextLines.length) {
         sections.push({
             title: 'Fallback opened-preview context',
@@ -4810,6 +4837,14 @@ function buildParticipantPreviewDebugState() {
         participantCommentFocusCount: participantCommentFocusLines.length,
         dialogMatched: !!dialogContext,
         previewEntryCount: previewEntries.length,
+        threadEntryCount: commentThreadEntries.length,
+        threadCommentCount: commentThreadEntries.reduce(function (sum, entry) {
+            const visibleCount = Number(entry && entry.comment_visible_count ? entry.comment_visible_count : 0);
+            if (visibleCount > 0) {
+                return sum + visibleCount;
+            }
+            return sum + (Array.isArray(entry && entry.comment_lines) ? entry.comment_lines.length : 0);
+        }, 0),
     };
 }
 
@@ -4824,6 +4859,7 @@ function buildParticipantPreviewDebugHtml(debugState) {
         'Participant-focused: ' + String(state.participantCommentFocusCount || 0),
         'Preview dialog: ' + (state.dialogMatched ? 'yes' : 'no'),
         'GraphQL entries: ' + String(state.previewEntryCount || 0),
+        'Thread comments: ' + String(state.threadCommentCount || 0),
     ].join(' · ');
 
     const sectionsHtml = (state.sections || []).map(function (section) {
@@ -4846,7 +4882,7 @@ function buildParticipantPreviewDebugHtml(debugState) {
         '<details open style="margin-top:10px; border:1px solid rgba(191,219,254,0.85); border-radius:12px; background:rgba(239,246,255,0.75); padding:10px;">',
         '<summary style="cursor:pointer; font-weight:800; color:#075985;">Preview capture debug</summary>',
         '<div style="margin-top:8px; font-size:12px; color:#0f172a;">' + escapeHtml(summaryText) + '</div>',
-        sectionsHtml || '<div style="margin-top:8px; color:#64748b;">No preview comments captured yet. Open the preview dialog and wait for the comment extraction.</div>',
+        sectionsHtml || '<div style="margin-top:8px; color:#64748b;">No preview or original-post thread comments captured yet. Open the preview/original-post flow and wait for the GraphQL extraction.</div>',
         '</details>'
     ].join('');
 }
@@ -4894,6 +4930,8 @@ function setParticipantAutoSupplementStatus(message, active) {
         return;
     }
 
+    ensureFactResultSpinnerStyle();
+
     const existing = factResultBox.querySelector('[data-role="participant-auto-supplement-status"]');
     if (!active) {
         if (existing) {
@@ -4938,10 +4976,52 @@ function clearParticipantAnalysisAutoSupplementTimer() {
     }
 }
 
+function clearParticipantAnalysisMutationTimer() {
+    if (participantAnalysisMutationTimerId) {
+        window.clearTimeout(participantAnalysisMutationTimerId);
+        participantAnalysisMutationTimerId = null;
+    }
+}
+
 function clearParticipantAnalysisAutoSupplementStatusTimer() {
     if (participantAnalysisAutoSupplementStatusTimerId) {
         window.clearTimeout(participantAnalysisAutoSupplementStatusTimerId);
         participantAnalysisAutoSupplementStatusTimerId = null;
+    }
+}
+
+function clearParticipantUserAnalysisState(options) {
+    const settings = options || {};
+    const hadParticipantAnalysisRequest = !!(lastVerificationRequest && lastVerificationRequest.requestMode === 'user-analysis');
+    const shouldRemoveParticipantFactBox = !!(settings.removeFactResultBox && (hadParticipantAnalysisRequest || activeParticipantUserAnalysis));
+
+    clearParticipantAnalysisAutoSupplementTimer();
+    clearParticipantAnalysisAutoSupplementStatusTimer();
+    clearParticipantAnalysisMutationTimer();
+    setParticipantAutoSupplementStatus('', false);
+
+    if (activeParticipantUserAnalysis && activeParticipantUserAnalysis.observer) {
+        activeParticipantUserAnalysis.observer.disconnect();
+    }
+    activeParticipantUserAnalysis = null;
+
+    if (hadParticipantAnalysisRequest) {
+        lastVerificationRequest = null;
+        if (pendingAiRequestMode === 'verify') {
+            pendingAiRequestMode = null;
+        }
+    }
+
+    if (shouldRemoveParticipantFactBox && factResultBox && document.contains(factResultBox)) {
+        stopFactResultLoadingAnimation(factResultBox);
+        factResultBox.remove();
+    }
+
+    if (shouldRemoveParticipantFactBox) {
+        factResultBox = null;
+        factResultAnchor = null;
+        factResultBoxManualPosition = null;
+        factResultBoxDragState = null;
     }
 }
 
@@ -4958,18 +5038,22 @@ function buildParticipantAutoSupplementStatusMessage() {
     const summary = activeParticipantUserAnalysis.summary || getParticipantReferenceSummary();
     const participantName = normalizeWhitespace(summary && summary.name ? summary.name : '');
     const participantLabel = participantName || 'den här deltagaren';
+    const threadCommentCount = Number(debugState.threadCommentCount || 0);
+    const threadHint = threadCommentCount > 0
+        ? ' samt ' + String(threadCommentCount) + ' GraphQL-fångade trådkommentarer från originalinlägget'
+        : '';
 
     if (activeParticipantUserAnalysis.autoSupplementInFlight) {
-        return 'Analysen uppdateras nu med ' + participantLabel + 's kommentar-/förhandsgranskningsledtrådar och vägs mot gruppinfo/regler…';
+        return 'Analysen uppdateras nu med ' + participantLabel + 's kommentar-/förhandsgranskningsledtrådar' + threadHint + ' och vägs mot gruppinfo/regler…';
     }
 
     if (activeParticipantUserAnalysis.autoSupplementQueued) {
-        return 'Nya kommentar-/förhandsgranskningsledtrådar hittades för ' + participantLabel + '. Väntar lite till ifall fler kommentarer eller hela originalinlägget hinner laddas innan analysen uppdateras…';
+        return 'Nya kommentar-/förhandsgranskningsledtrådar hittades för ' + participantLabel + threadHint + '. Väntar lite till ifall fler kommentarer eller hela originalinlägget hinner laddas innan analysen uppdateras…';
     }
 
     const lastChangeAt = Number(activeParticipantUserAnalysis.lastContextChangeAt || 0);
     if (lastChangeAt > 0 && Date.now() - lastChangeAt < 7000) {
-        return 'Mer Facebook-kontext hittades för ' + participantLabel + '. Om inget mer händer strax vägs kommentaren tydligare mot gruppinfo/regler i nästa analysuppdatering.';
+        return 'Mer Facebook-kontext hittades för ' + participantLabel + threadHint + '. Om inget mer händer strax vägs kommentaren tydligare mot gruppinfo/regler i nästa analysuppdatering.';
     }
 
     return '';
@@ -5110,14 +5194,17 @@ function buildParticipantContextListRows(summary) {
     const previewEntries = activeParticipantUserAnalysis && Array.isArray(activeParticipantUserAnalysis.previewEntries)
         ? activeParticipantUserAnalysis.previewEntries
         : [];
+    const commentThreadEntries = activeParticipantUserAnalysis && Array.isArray(activeParticipantUserAnalysis.commentThreadEntries)
+        ? activeParticipantUserAnalysis.commentThreadEntries
+        : [];
     const historyEntry = getParticipantHistoryForSummary(activeSummary);
     const questionPairs = extractParticipantRequestQuestionAnswerPairs(getParticipantSummaryLines(activeSummary));
 
-    if (!activeSummary && !dialogContext && !previewEntries.length) {
+    if (!activeSummary && !dialogContext && !previewEntries.length && !commentThreadEntries.length) {
         return rows;
     }
 
-    rows.push(['Context source', dialogContext ? 'dialog fallback' : (previewEntries.length ? 'graphql/card' : 'card snapshot')]);
+    rows.push(['Context source', dialogContext ? 'dialog fallback' : (commentThreadEntries.length ? 'graphql thread/card' : (previewEntries.length ? 'graphql/card' : 'card snapshot'))]);
     if (activeSummary && activeSummary.name) {
         rows.push(['Name', activeSummary.name]);
     }
@@ -5185,6 +5272,33 @@ function buildParticipantContextListRows(summary) {
                 entry.original_post_links.slice(0, 2).forEach(function (link) {
                     rows.push(['Original post', link]);
                 });
+            }
+        });
+    }
+
+    if (commentThreadEntries.length) {
+        const capturedThreadCommentCount = commentThreadEntries.reduce(function (sum, entry) {
+            const visibleCount = Number(entry && entry.comment_visible_count ? entry.comment_visible_count : 0);
+            if (visibleCount > 0) {
+                return sum + visibleCount;
+            }
+            return sum + (Array.isArray(entry && entry.comment_lines) ? entry.comment_lines.length : 0);
+        }, 0);
+        rows.push(['GraphQL thread comments', String(capturedThreadCommentCount)]);
+        commentThreadEntries.slice(-2).forEach(function (entry) {
+            if (entry.summary_text) {
+                rows.push(['Thread detail', entry.summary_text]);
+            }
+            if (Array.isArray(entry.post_lines) && entry.post_lines.length) {
+                rows.push(['Original post text', entry.post_lines[0]]);
+            }
+            if (Array.isArray(entry.comment_lines) && entry.comment_lines.length) {
+                entry.comment_lines.slice(0, 4).forEach(function (line) {
+                    rows.push(['Thread comment', line]);
+                });
+            }
+            if (entry.thread_url) {
+                rows.push(['Thread URL', entry.thread_url]);
             }
         });
     }
@@ -5496,6 +5610,20 @@ function normalizeParticipantNetworkEventSnippet(payload) {
             }
         });
     }
+    if (Array.isArray(payload.participant_comment_thread_entries) && payload.participant_comment_thread_entries.length) {
+        payload.participant_comment_thread_entries.slice(0, 2).forEach(function (entry, index) {
+            const summary = normalizeWhitespace((entry && (entry.summary_text || entry.friendly_name || entry.operation_name)) || '');
+            if (summary) {
+                parts.push('comment_thread_' + String(index + 1) + ': ' + clipText(summary, 420));
+            }
+            if (Array.isArray(entry && entry.comment_lines) && entry.comment_lines.length) {
+                parts.push('comment_thread_preview_' + String(index + 1) + ': ' + clipText(entry.comment_lines[0], 420));
+            }
+            if (Array.isArray(entry && entry.post_lines) && entry.post_lines.length) {
+                parts.push('comment_thread_post_' + String(index + 1) + ': ' + clipText(entry.post_lines[0], 420));
+            }
+        });
+    }
 
     const snippet = normalizeWhitespace(parts.join(' | '));
     if (!snippet || !/(participant|member|membership|comment|kommentar|post|inlägg|group|groups|profile|user|question|preview|förhandsgranska)/i.test(snippet)) {
@@ -5522,6 +5650,22 @@ function buildParticipantPreviewEntrySignature(entry) {
         Array.isArray(entry.post_lines) ? entry.post_lines.join(' | ') : '',
         Array.isArray(entry.normalized_text_lines) ? entry.normalized_text_lines.join(' | ') : '',
         Array.isArray(entry.author_names) ? entry.author_names.join(' | ') : '',
+    ].join(' | '));
+}
+
+function buildParticipantCommentThreadEntrySignature(entry) {
+    if (!entry || typeof entry !== 'object') {
+        return '';
+    }
+
+    return normalizeWhitespace([
+        entry.thread_id || '',
+        entry.thread_url || '',
+        entry.friendly_name || entry.operation_name || '',
+        entry.selected_intent_title || '',
+        entry.summary_text || '',
+        Array.isArray(entry.comment_lines) ? entry.comment_lines.join(' | ') : '',
+        Array.isArray(entry.post_lines) ? entry.post_lines.join(' | ') : '',
     ].join(' | '));
 }
 
@@ -5633,6 +5777,53 @@ function rememberParticipantUserAnalysisPreviewEntries(payload) {
     return changed;
 }
 
+function rememberParticipantUserAnalysisCommentThreadEntries(payload) {
+    const activeSurface = getActiveParticipantUserAnalysisSurface();
+    if (!activeParticipantUserAnalysis || !activeSurface) {
+        return false;
+    }
+
+    const entries = Array.isArray(payload && payload.participant_comment_thread_entries) ? payload.participant_comment_thread_entries : [];
+    if (!entries.length) {
+        return false;
+    }
+
+    if (!activeParticipantUserAnalysis.commentThreadEntries) {
+        activeParticipantUserAnalysis.commentThreadEntries = [];
+    }
+
+    let changed = false;
+
+    entries.forEach(function (entry) {
+        const signature = buildParticipantCommentThreadEntrySignature(entry);
+        if (!signature) {
+            return;
+        }
+        const alreadyExists = activeParticipantUserAnalysis.commentThreadEntries.some(function (existing) {
+            return existing && existing.signature === signature;
+        });
+        if (alreadyExists) {
+            return;
+        }
+        activeParticipantUserAnalysis.commentThreadEntries.push(Object.assign({
+            signature: signature,
+        }, entry));
+        changed = true;
+    });
+
+    if (changed) {
+        activeParticipantUserAnalysis.commentThreadEntries = activeParticipantUserAnalysis.commentThreadEntries.slice(-MAX_RECENT_PARTICIPANT_COMMENT_THREAD_ENTRIES);
+        const latestEntry = activeParticipantUserAnalysis.commentThreadEntries[activeParticipantUserAnalysis.commentThreadEntries.length - 1] || null;
+        const visibleCount = Number(latestEntry && latestEntry.comment_visible_count ? latestEntry.comment_visible_count : 0);
+        updateFactResultLoadingProgress(3, visibleCount > 0
+            ? ('Captured ' + String(visibleCount) + ' original-post comments from GraphQL…')
+            : 'Captured original-post thread comments from GraphQL…');
+        markParticipantUserAnalysisContextChanged('graphql-thread-comments');
+    }
+
+    return changed;
+}
+
 function rememberParticipantUserAnalysisNetworkEvent(payload) {
     const activeSurface = getActiveParticipantUserAnalysisSurface();
     if (!activeParticipantUserAnalysis || !activeSurface) {
@@ -5640,6 +5831,7 @@ function rememberParticipantUserAnalysisNetworkEvent(payload) {
     }
 
     rememberParticipantUserAnalysisPreviewEntries(payload);
+    rememberParticipantUserAnalysisCommentThreadEntries(payload);
 
     const snippet = normalizeParticipantNetworkEventSnippet(payload);
     if (!snippet) {
@@ -5691,6 +5883,7 @@ function buildParticipantRequestContext(card, options) {
     const useActiveAnalysisState = !liveCard || (activeParticipantUserAnalysis && activeParticipantUserAnalysis.card === liveCard);
     const networkEvents = settings.networkEvents || (useActiveAnalysisState && activeParticipantUserAnalysis ? activeParticipantUserAnalysis.networkEvents || [] : []);
     const previewEntries = settings.previewEntries || (useActiveAnalysisState && activeParticipantUserAnalysis ? activeParticipantUserAnalysis.previewEntries || [] : []);
+    const commentThreadEntries = settings.commentThreadEntries || (useActiveAnalysisState && activeParticipantUserAnalysis ? activeParticipantUserAnalysis.commentThreadEntries || [] : []);
     const dialogContext = settings.dialogContext || extractParticipantPreviewDialogContext(summary);
     const previewOnly = !!settings.previewOnly && !!dialogContext;
     const participantCommentFocusLines = collectParticipantCommentFocusLines(summary, dialogContext, previewEntries, openedContextLines);
@@ -5862,6 +6055,34 @@ function buildParticipantRequestContext(card, options) {
         payload.push('');
     }
 
+    if (commentThreadEntries.length) {
+        payload.push('Structured Facebook original-post thread comments loaded from GraphQL after opening the preview/image/post:');
+        commentThreadEntries.slice(-2).forEach(function (entry) {
+            payload.push('- ' + (entry.friendly_name || entry.operation_name || 'GraphQL comment thread'));
+            payload.push('  Thread summary: ' + [
+                entry.comment_total_count ? 'total comments=' + entry.comment_total_count : '',
+                entry.comment_visible_count ? 'captured now=' + entry.comment_visible_count : '',
+                entry.selected_intent_title ? 'intent=' + entry.selected_intent_title : '',
+            ].filter(Boolean).join(' · '));
+            if (entry.thread_url) {
+                payload.push('  Thread URL: ' + entry.thread_url);
+            }
+            if (Array.isArray(entry.post_lines) && entry.post_lines.length) {
+                payload.push('  Original post text: ' + entry.post_lines.slice(0, 4).join(' | '));
+            }
+            if (Array.isArray(entry.comment_lines) && entry.comment_lines.length) {
+                payload.push('  Captured comments: ' + entry.comment_lines.slice(0, 6).join(' | '));
+            }
+            if (Array.isArray(entry.author_names) && entry.author_names.length) {
+                payload.push('  Comment authors: ' + entry.author_names.slice(0, 6).join(' | '));
+            }
+            if (Array.isArray(entry.created_times) && entry.created_times.length) {
+                payload.push('  Comment timestamps: ' + entry.created_times.slice(0, 6).join(' | '));
+            }
+        });
+        payload.push('');
+    }
+
     if (networkEvents.length) {
         payload.push('Recent Facebook Graph/XHR snippets observed after focusing this card:');
         networkEvents.slice(-8).forEach(function (line) {
@@ -5881,7 +6102,7 @@ function buildParticipantRequestContext(card, options) {
 
         payload.push('');
     }
-    payload.push('Instruction: Analyze this participant request as a user-analysis helper. First summarize who the user seems to be from the visible card, then list visible group/friend clues, visible question prompts, whether the questions look unanswered, and any comment/preview signal that may need follow-up. When participant-focused comment/preview clues are present, give the participant\'s own visible comment(s) extra analytical weight and explicitly compare them against the group info/rules/context before concluding. Highlight contradictions, risk signals, useful positive signals, and exactly what should still be checked before approval. When a profile URL or numeric Facebook user id is present, use it as specific lookup context for independent web-search verification where available. Treat the visible Facebook UI text as observational context, not independently verified fact.');
+    payload.push('Instruction: Analyze this participant request as a user-analysis helper. First summarize who the user seems to be from the visible card, then list visible group/friend clues, visible question prompts, whether the questions look unanswered, and any comment/preview signal that may need follow-up. When participant-focused comment/preview clues are present, give the participant\'s own visible comment(s) extra analytical weight and explicitly compare them against the group info/rules/context before concluding. When structured original-post thread comments are present, explicitly say that deeper preview/original-post comment context was included and use those later comments as surrounding thread context rather than silently ignoring them. Highlight contradictions, risk signals, useful positive signals, and exactly what should still be checked before approval. When a profile URL or numeric Facebook user id is present, use it as specific lookup context for independent web-search verification where available. Treat the visible Facebook UI text as observational context, not independently verified fact.');
 
     return payload.filter(Boolean).join('\n');
 }
@@ -5891,6 +6112,7 @@ function participantAnalysisContextSignature(card) {
         summary: activeParticipantUserAnalysis && activeParticipantUserAnalysis.summary ? activeParticipantUserAnalysis.summary : null,
         networkEvents: activeParticipantUserAnalysis ? activeParticipantUserAnalysis.networkEvents || [] : [],
         previewEntries: activeParticipantUserAnalysis ? activeParticipantUserAnalysis.previewEntries || [] : [],
+        commentThreadEntries: activeParticipantUserAnalysis ? activeParticipantUserAnalysis.commentThreadEntries || [] : [],
         openedContextLines: collectParticipantRequestOpenedContextLines(card, activeParticipantUserAnalysis && activeParticipantUserAnalysis.summary ? activeParticipantUserAnalysis.summary : null),
     })).slice(0, 6000);
 }
@@ -5922,8 +6144,9 @@ function updateParticipantUserAnalysisNotice() {
     }
     const debugState = buildParticipantPreviewDebugState();
     const participantName = normalizeWhitespace(activeParticipantUserAnalysis.summary && activeParticipantUserAnalysis.summary.name ? activeParticipantUserAnalysis.summary.name : '');
+    const threadCommentCount = debugState ? Number(debugState.threadCommentCount || 0) : 0;
     notice.textContent = debugState && debugState.hasCapturedLines
-        ? ('Nya kommentar-/förhandsgranskningsledtrådar' + (participantName ? ' för ' + participantName : '') + ' hittades. Analysen väger nu kommentaren tydligare mot gruppinfo/regler och kompletteras igen om mer preview/original-post-kontext laddas.')
+        ? ('Nya kommentar-/förhandsgranskningsledtrådar' + (participantName ? ' för ' + participantName : '') + (threadCommentCount > 0 ? (' och ' + String(threadCommentCount) + ' GraphQL-fångade trådkommentarer') : '') + ' hittades. Analysen väger nu kommentaren tydligare mot gruppinfo/regler och kompletteras igen om mer preview/original-post-kontext laddas.')
         : ct('contentScript.participantScannerNewContext', {}, 'New Facebook context was loaded for this participant. Use “Update analysis” to include it.');
     refreshParticipantAutoSupplementStatus();
     updateParticipantPreviewDebugView();
@@ -5938,6 +6161,35 @@ function markParticipantUserAnalysisContextChanged(reason) {
     activeParticipantUserAnalysis.lastContextChangeAt = Date.now();
     updateParticipantUserAnalysisNotice();
     scheduleParticipantAnalysisAutoSupplement(reason || 'context');
+}
+
+function isParticipantPreviewRefreshTriggerLabel(label) {
+    const normalized = normalizeWhitespace(label || '');
+    if (!normalized) {
+        return false;
+    }
+
+    return /(förhandsgranska|preview|visa ursprungligt inlägg|view original post|original post|visa mer|see more|se mer|analyze current preview|analysera aktuell preview)/i.test(normalized);
+}
+
+function scheduleParticipantPreviewRefreshBurst(reason, delays) {
+    if (!activeParticipantUserAnalysis) {
+        return;
+    }
+
+    const refreshDelays = Array.isArray(delays) && delays.length
+        ? delays
+        : [220, 900, 1800, 3200, 5200];
+
+    refreshDelays.forEach(function (delayMs) {
+        window.setTimeout(function () {
+            if (!activeParticipantUserAnalysis) {
+                return;
+            }
+            scheduleParticipantUserAnalysisContextCheck();
+            forceParticipantPreviewContextRefresh((reason || 'preview-refresh') + '-' + String(delayMs));
+        }, Math.max(0, parseInt(delayMs, 10) || 0));
+    });
 }
 
 function scheduleParticipantUserAnalysisContextCheck() {
@@ -5979,6 +6231,7 @@ function activateParticipantUserAnalysisContextWatcher(card, reason, options) {
         contextSignature: '',
         networkEvents: [],
         previewEntries: [],
+        commentThreadEntries: [],
         previewDialogState: shouldReuseTrackedParticipantPreviewState(summary) ? getTrackedParticipantPreviewDialogState() : null,
         previewOnly: !!settings.previewOnly,
         changed: false,
@@ -6012,6 +6265,7 @@ function buildUpdatedParticipantUserAnalysisContext(card) {
         openedContextLines: collectParticipantRequestOpenedContextLines(card, activeParticipantUserAnalysis && activeParticipantUserAnalysis.summary ? activeParticipantUserAnalysis.summary : null),
         networkEvents: activeParticipantUserAnalysis ? activeParticipantUserAnalysis.networkEvents || [] : [],
         previewEntries: activeParticipantUserAnalysis ? activeParticipantUserAnalysis.previewEntries || [] : [],
+        commentThreadEntries: activeParticipantUserAnalysis ? activeParticipantUserAnalysis.commentThreadEntries || [] : [],
         previewOnly: !!(activeParticipantUserAnalysis && activeParticipantUserAnalysis.previewOnly),
     });
     if (activeParticipantUserAnalysis) {
@@ -6049,10 +6303,14 @@ function buildParticipantPreviewRequestExtraData() {
     const previewEntries = activeParticipantUserAnalysis && Array.isArray(activeParticipantUserAnalysis.previewEntries)
         ? activeParticipantUserAnalysis.previewEntries.slice(-3)
         : [];
+    const commentThreadEntries = activeParticipantUserAnalysis && Array.isArray(activeParticipantUserAnalysis.commentThreadEntries)
+        ? activeParticipantUserAnalysis.commentThreadEntries.slice(-2)
+        : [];
 
     return {
         facebook_preview_count: previewEntries.length,
         facebook_preview_dialog_visible: !!extractParticipantPreviewDialogContext(getParticipantReferenceSummary()),
+        facebook_comment_thread_count: commentThreadEntries.length,
         facebook_preview_entries: previewEntries.map(function (entry) {
             return {
                 candidate_name: entry.candidate_name || entry.request_name || '',
@@ -6066,6 +6324,19 @@ function buildParticipantPreviewRequestExtraData() {
                 comment_urls: Array.isArray(entry.comment_urls) ? entry.comment_urls.slice(0, 2) : [],
                 feedback_urls: Array.isArray(entry.feedback_urls) ? entry.feedback_urls.slice(0, 2) : [],
                 original_post_links: Array.isArray(entry.original_post_links) ? entry.original_post_links.slice(0, 2) : [],
+            };
+        }),
+        facebook_comment_thread_entries: commentThreadEntries.map(function (entry) {
+            return {
+                friendly_name: entry.friendly_name || entry.operation_name || '',
+                thread_url: entry.thread_url || '',
+                comment_total_count: Number(entry.comment_total_count || 0),
+                comment_visible_count: Number(entry.comment_visible_count || 0),
+                selected_intent_title: entry.selected_intent_title || '',
+                post_lines: Array.isArray(entry.post_lines) ? entry.post_lines.slice(0, 4) : [],
+                comment_lines: Array.isArray(entry.comment_lines) ? entry.comment_lines.slice(0, 6) : [],
+                author_names: Array.isArray(entry.author_names) ? entry.author_names.slice(0, 6) : [],
+                created_times: Array.isArray(entry.created_times) ? entry.created_times.slice(0, 6) : [],
             };
         }),
     };
@@ -6201,12 +6472,7 @@ function focusParticipantPreviewElement(summary) {
     }, 2400);
 
     if (activeParticipantUserAnalysis) {
-        window.setTimeout(function () {
-            forceParticipantPreviewContextRefresh('locate-preview-context');
-        }, 180);
-        window.setTimeout(function () {
-            forceParticipantPreviewContextRefresh('locate-preview-context-late');
-        }, 900);
+        scheduleParticipantPreviewRefreshBurst('locate-preview-context', [180, 900, 1800, 3200, 5200]);
     }
 
     return true;
@@ -6278,8 +6544,8 @@ function startParticipantUserAnalysis(card, options) {
         loadingSteps: [
             ct('contentScript.participantScannerStepCard', {}, 'Reading visible request card text…'),
             ct('contentScript.participantScannerStepQuestions', {}, 'Collecting membership questions and visible answers…'),
-            ct('contentScript.participantScannerStepPreview', {}, 'Watching for opened comment/post preview context…'),
-            ct('contentScript.participantScannerStepGraph', {}, 'Including recent Facebook Graph/XHR snippets when relevant…'),
+            ct('contentScript.participantScannerStepPreview', {}, 'Watching for opened comment/post preview and original-post thread context…'),
+            ct('contentScript.participantScannerStepGraph', {}, 'Including GraphQL comment threads and other Facebook Graph/XHR snippets when relevant…'),
             ct('contentScript.participantScannerStepAi', {}, 'Asking Tools for user analysis…'),
         ],
     });
@@ -6301,6 +6567,9 @@ function updateParticipantRequestsControl() {
     const previewEntries = activeParticipantUserAnalysis && Array.isArray(activeParticipantUserAnalysis.previewEntries)
         ? activeParticipantUserAnalysis.previewEntries
         : [];
+    const commentThreadEntries = activeParticipantUserAnalysis && Array.isArray(activeParticipantUserAnalysis.commentThreadEntries)
+        ? activeParticipantUserAnalysis.commentThreadEntries
+        : [];
     const contextRows = buildParticipantContextListRows(referenceSummary);
     if (state) {
         state.textContent = participantRequestsLastSummary || (participantScannerFeatureEnabled
@@ -6319,6 +6588,10 @@ function updateParticipantRequestsControl() {
         const detailParts = [
             'Preview dialog: ' + (dialogContext ? 'yes' : 'no'),
             'GraphQL preview: ' + (previewEntries.length ? 'yes' : 'no'),
+            'GraphQL comments: ' + (commentThreadEntries.length ? ('yes (' + String(commentThreadEntries.reduce(function (sum, entry) {
+                const visibleCount = Number(entry && entry.comment_visible_count ? entry.comment_visible_count : 0);
+                return sum + (visibleCount > 0 ? visibleCount : (Array.isArray(entry && entry.comment_lines) ? entry.comment_lines.length : 0));
+            }, 0)) + ')') : 'no'),
         ];
         if (participantHistoryLookupInFlight) {
             detailParts.push('History: looking up…');
@@ -6648,14 +6921,16 @@ function renderParticipantRequestHelper(card) {
             }
             const target = event.target && event.target.closest ? event.target.closest('a, button, [role="button"]') : null;
             const targetLabel = normalizeWhitespace(target ? (target.textContent || target.innerText || target.getAttribute('aria-label') || '') : '');
-            rememberParticipantRequestSelection(card, /förhandsgranska|preview/i.test(targetLabel) ? 'preview-click' : 'card-click');
-            activateParticipantUserAnalysisContextWatcher(card, /förhandsgranska|preview/i.test(targetLabel) ? 'preview-click' : 'card-click', {
+            const isPreviewClick = /förhandsgranska|preview/i.test(targetLabel);
+            rememberParticipantRequestSelection(card, isPreviewClick ? 'preview-click' : 'card-click');
+            activateParticipantUserAnalysisContextWatcher(card, isPreviewClick ? 'preview-click' : 'card-click', {
                 summary: participantRequestsLastSelectedSummary || buildParticipantRequestSummary(card),
             });
             scheduleParticipantUserAnalysisContextCheck();
-            if (/förhandsgranska|preview/i.test(targetLabel)) {
+            if (isPreviewClick) {
                 updateFactResultLoadingProgress(2, 'Looking for the opened preview dialog…');
                 scheduleParticipantRequestsScan('preview-click');
+                scheduleParticipantPreviewRefreshBurst('preview-click', [220, 900, 1800, 3200, 5200]);
             }
         }, true);
     }
@@ -6671,8 +6946,7 @@ function disconnectParticipantRequestsObserver() {
 }
 
 function clearParticipantRequestEnhancements() {
-    clearParticipantAnalysisAutoSupplementTimer();
-    clearParticipantAnalysisAutoSupplementStatusTimer();
+    clearParticipantUserAnalysisState({removeFactResultBox: true});
 
     if (participantRequestsScanTimerId) {
         window.clearTimeout(participantRequestsScanTimerId);
@@ -6694,6 +6968,12 @@ function clearParticipantRequestEnhancements() {
         participantRequestsScrollHandler = null;
     }
 
+    if (participantPreviewInteractionListenerBound && participantPreviewInteractionHandler) {
+        document.removeEventListener('click', participantPreviewInteractionHandler, true);
+        participantPreviewInteractionHandler = null;
+        participantPreviewInteractionListenerBound = false;
+    }
+
     disconnectParticipantRequestsObserver();
     participantRequestsObservedRoot = null;
     participantRequestsScanScheduled = false;
@@ -6707,7 +6987,6 @@ function clearParticipantRequestEnhancements() {
     participantRequestsLastSelectedCard = null;
     participantRequestsLastSelectedSummary = null;
     participantRequestsLastSelectedReason = '';
-    setParticipantAutoSupplementStatus('', false);
     resetParticipantHistoryLookupState();
 
     document.querySelectorAll('[data-sgpt-participant-card="true"]').forEach(function (card) {
@@ -6774,6 +7053,39 @@ function ensureParticipantRequestsAutomation() {
                 scheduleParticipantRequestsScan('interval');
             }
         }, PARTICIPANT_REQUEST_AUTO_SCAN_INTERVAL_MS);
+    }
+
+    if (!participantPreviewInteractionListenerBound) {
+        participantPreviewInteractionListenerBound = true;
+        participantPreviewInteractionHandler = function (event) {
+            if (!activeParticipantUserAnalysis || !isFacebookParticipantRequestsPage()) {
+                return;
+            }
+
+            const target = event.target && event.target.closest ? event.target.closest('a, button, [role="button"]') : null;
+            if (!target || (target.closest && target.closest('#sgpt-factbox, #sgpt-participant-requests-control, [data-sgpt-participant-badge="true"]'))) {
+                return;
+            }
+
+            const targetLabel = normalizeWhitespace(target.textContent || target.innerText || target.getAttribute('aria-label') || '');
+            if (!isParticipantPreviewRefreshTriggerLabel(targetLabel)) {
+                return;
+            }
+
+            const insideDialog = !!(target.closest && target.closest('[role="dialog"], [aria-modal="true"]'));
+            if (!insideDialog && !/förhandsgranska|preview/i.test(targetLabel)) {
+                return;
+            }
+
+            updateFactResultLoadingProgress(2, 'Waiting for the opened preview/original-post dialog…');
+            scheduleParticipantPreviewRefreshBurst(
+                /ursprungligt inlägg|original post/i.test(targetLabel)
+                    ? 'original-post-click'
+                    : (/visa mer|see more|se mer/i.test(targetLabel) ? 'preview-expand-click' : 'preview-dialog-click'),
+                [220, 900, 1800, 3200, 5200, 7600]
+            );
+        };
+        document.addEventListener('click', participantPreviewInteractionHandler, true);
     }
 }
 
@@ -7797,6 +8109,9 @@ function showFactResultBox(content, anchor, options) {
     closeBtn.style.fontSize = '18px';
     closeBtn.style.cursor = 'pointer';
     closeBtn.addEventListener('click', () => {
+        if (factResultBox === box && lastVerificationRequest && lastVerificationRequest.requestMode === 'user-analysis') {
+            clearParticipantUserAnalysisState({removeFactResultBox: false});
+        }
         stopFactResultLoadingAnimation(box);
         box.remove();
         if (factResultBox === box) {

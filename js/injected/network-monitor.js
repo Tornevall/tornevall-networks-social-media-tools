@@ -1338,6 +1338,265 @@
         return results;
     }
 
+    function extractParticipantCommentThreadSource(value) {
+        var renderer = value && value.comment_list_renderer && typeof value.comment_list_renderer === 'object'
+            ? value.comment_list_renderer
+            : (value && value.__typename && /commentlistrenderer/i.test(String(value.__typename || '')) ? value : null);
+        var feedback = renderer && renderer.feedback && typeof renderer.feedback === 'object'
+            ? renderer.feedback
+            : (value && value.feedback && typeof value.feedback === 'object' ? value.feedback : null);
+        var comments = feedback && feedback.comment_rendering_instance_for_feed_location && feedback.comment_rendering_instance_for_feed_location.comments
+            ? feedback.comment_rendering_instance_for_feed_location.comments
+            : (feedback && feedback.comment_rendering_instance && feedback.comment_rendering_instance.comments
+                ? feedback.comment_rendering_instance.comments
+                : (value && value.comments && typeof value.comments === 'object' ? value.comments : null));
+        var edges = Array.isArray(comments && comments.edges) ? comments.edges : [];
+        var nodes = edges.map(function (edge) {
+            return edge && edge.node && typeof edge.node === 'object' ? edge.node : edge;
+        }).filter(function (node) {
+            return !!(node && typeof node === 'object');
+        });
+
+        if (!nodes.length) {
+            return null;
+        }
+
+        return {
+            renderer: renderer,
+            feedback: feedback,
+            comments: comments,
+            nodes: nodes,
+        };
+    }
+
+    function extractParticipantCommentThreadPostLines(parsedResponse, source) {
+        var data = parsedResponse && parsedResponse.data && typeof parsedResponse.data === 'object'
+            ? parsedResponse.data
+            : parsedResponse;
+        var candidates = [];
+        var found = [];
+        var currMedia = data && data.currMedia && typeof data.currMedia === 'object' ? data.currMedia : null;
+        var feedback = source && source.feedback ? source.feedback : null;
+
+        if (currMedia) {
+            candidates.push(currMedia);
+            if (currMedia.creation_story && typeof currMedia.creation_story === 'object') {
+                candidates.push(currMedia.creation_story);
+            }
+            if (currMedia.container_story && typeof currMedia.container_story === 'object') {
+                candidates.push(currMedia.container_story);
+            }
+        }
+        if (feedback && feedback.parent_object_ent && typeof feedback.parent_object_ent === 'object') {
+            candidates.push(feedback.parent_object_ent);
+        }
+
+        candidates.forEach(function (candidate) {
+            if (!candidate || typeof candidate !== 'object' || found.length >= 6) {
+                return;
+            }
+
+            [
+                candidate.message && candidate.message.text,
+                candidate.preferred_body && candidate.preferred_body.text,
+                candidate.body_renderer && candidate.body_renderer.text,
+                candidate.body && candidate.body.text,
+                candidate.story && candidate.story.message && candidate.story.message.text,
+            ].forEach(function (value) {
+                if (found.length >= 6) {
+                    return;
+                }
+                pushUniqueText(found, value);
+            });
+
+            extractParticipantPreviewLines(candidate, 4).forEach(function (line) {
+                if (found.length >= 6) {
+                    return;
+                }
+                pushUniqueText(found, line);
+            });
+        });
+
+        return found.slice(0, 6);
+    }
+
+    function extractParticipantCommentThreadUrl(parsedResponse, source) {
+        var data = parsedResponse && parsedResponse.data && typeof parsedResponse.data === 'object'
+            ? parsedResponse.data
+            : parsedResponse;
+        var currMedia = data && data.currMedia && typeof data.currMedia === 'object' ? data.currMedia : null;
+        var feedback = source && source.feedback ? source.feedback : null;
+        var candidates = [
+            feedback && feedback.url,
+            feedback && feedback.parent_object_ent && feedback.parent_object_ent.url,
+            currMedia && currMedia.url,
+            currMedia && currMedia.creation_story && currMedia.creation_story.url,
+            currMedia && currMedia.container_story && currMedia.container_story.url,
+        ];
+
+        for (var index = 0; index < candidates.length; index += 1) {
+            var url = normalizeWhitespace(candidates[index]);
+            if (/^https?:\/\//i.test(url) && url.indexOf('facebook.com') !== -1) {
+                return url;
+            }
+        }
+
+        return '';
+    }
+
+    function buildParticipantCommentThreadEntry(value, parsedResponse, bodyMeta, base) {
+        var source = extractParticipantCommentThreadSource(value);
+        if (!source) {
+            return null;
+        }
+
+        var commentRecords = buildParticipantPreviewCommentRecords(source.nodes, 8);
+        var commentLines = [];
+        var normalizedTextLines = [];
+        var authorNames = [];
+        var createdTimes = [];
+        var commentUrls = [];
+        var feedbackUrls = [];
+        var postLines = extractParticipantCommentThreadPostLines(parsedResponse, source);
+        var threadUrl = extractParticipantCommentThreadUrl(parsedResponse, source);
+        var totalCount = source.comments && typeof source.comments.total_count !== 'undefined'
+            ? Number(source.comments.total_count) || 0
+            : (source.comments && typeof source.comments.count !== 'undefined' ? Number(source.comments.count) || 0 : 0);
+        var pageSize = source.comments && typeof source.comments.page_size !== 'undefined'
+            ? Number(source.comments.page_size) || 0
+            : 0;
+        var selectedIntentTitle = normalizeWhitespace(
+            source.feedback
+            && source.feedback.comment_rendering_instance_for_feed_location
+            && source.feedback.comment_rendering_instance_for_feed_location.selected_intent
+            && source.feedback.comment_rendering_instance_for_feed_location.selected_intent.title
+                ? source.feedback.comment_rendering_instance_for_feed_location.selected_intent.title
+                : ''
+        );
+        var threadId = normalizeWhitespace(
+            (source.feedback && (source.feedback.id || source.feedback.subscription_target_id))
+            || (source.feedback && source.feedback.parent_object_ent && source.feedback.parent_object_ent.id)
+            || threadUrl
+            || ''
+        );
+
+        commentRecords.forEach(function (record) {
+            var decoratedText = [record.author_name, record.text].filter(Boolean).join(': ');
+            pushUniqueText(commentLines, decoratedText || record.text);
+            pushUniqueText(normalizedTextLines, record.text);
+            pushUniqueText(normalizedTextLines, record.original_post_text);
+            pushUniqueText(authorNames, record.author_name);
+            pushUniqueText(createdTimes, record.created_time);
+            pushUniqueText(commentUrls, record.comment_url);
+            pushUniqueText(feedbackUrls, record.feedback_url);
+        });
+
+        source.nodes.slice(0, 6).forEach(function (node) {
+            pushUniqueText(normalizedTextLines, extractCommentText(node));
+        });
+        postLines.forEach(function (line) {
+            pushUniqueText(normalizedTextLines, line);
+        });
+
+        if (!commentLines.length && !postLines.length) {
+            return null;
+        }
+
+        return {
+            key: normalizeWhitespace([
+                threadId || 'comment-thread',
+                base && (base.friendly_name || base.operation_name) ? (base.friendly_name || base.operation_name) : '',
+                commentLines[0] || postLines[0] || '',
+            ].join('|')),
+            thread_id: threadId,
+            thread_url: threadUrl,
+            friendly_name: normalizeWhitespace(base && base.friendly_name ? base.friendly_name : ''),
+            operation_name: normalizeWhitespace(base && base.operation_name ? base.operation_name : ''),
+            doc_id: normalizeWhitespace(bodyMeta && bodyMeta.doc_id ? bodyMeta.doc_id : ''),
+            comment_total_count: totalCount,
+            comment_page_size: pageSize,
+            comment_visible_count: commentRecords.length,
+            selected_intent_title: selectedIntentTitle,
+            post_lines: postLines.slice(0, 4),
+            comment_lines: commentLines.slice(0, 8),
+            normalized_text_lines: normalizedTextLines.slice(0, 12),
+            author_names: authorNames.slice(0, 8),
+            created_times: createdTimes.slice(0, 8),
+            comment_urls: commentUrls.slice(0, 4),
+            feedback_urls: feedbackUrls.slice(0, 4),
+            comment_records: commentRecords.slice(0, 6),
+            summary_text: clip([
+                totalCount ? 'comments=' + String(totalCount) : '',
+                selectedIntentTitle ? 'intent=' + selectedIntentTitle : '',
+                postLines.length ? 'post=' + postLines[0] : '',
+                commentLines.length ? 'comment=' + commentLines[0] : '',
+            ].filter(Boolean).join(' | '), 700),
+        };
+    }
+
+    function walkForParticipantCommentThreadEntries(value, results, seenKeys, bodyMeta, parsedResponse, base) {
+        if (!value || results.length >= 4) {
+            return;
+        }
+
+        if (Array.isArray(value)) {
+            value.slice(0, 20).forEach(function (item) {
+                walkForParticipantCommentThreadEntries(item, results, seenKeys, bodyMeta, parsedResponse, base);
+            });
+            return;
+        }
+
+        if (typeof value !== 'object') {
+            return;
+        }
+
+        var parsedEntry = buildParticipantCommentThreadEntry(value, parsedResponse, bodyMeta, base);
+        if (parsedEntry && parsedEntry.key && !seenKeys[parsedEntry.key]) {
+            seenKeys[parsedEntry.key] = true;
+            results.push(parsedEntry);
+        }
+
+        Object.keys(value).forEach(function (key) {
+            if (results.length >= 4) {
+                return;
+            }
+            if (/^(extensions|prefetch_uris|big_pipe|relay|serialized_state|tracking|cursor|jsmods|allResources|tieredResources)$/i.test(String(key || ''))) {
+                return;
+            }
+            walkForParticipantCommentThreadEntries(value[key], results, seenKeys, bodyMeta, parsedResponse, base);
+        });
+    }
+
+    function isFacebookParticipantCommentThreadRequest(base, bodyMeta, responseMeta) {
+        var friendlyName = normalizeWhitespace(
+            base && (base.friendly_name || base.operation_name)
+                ? (base.friendly_name || base.operation_name)
+                : (bodyMeta && bodyMeta.friendly_name ? bodyMeta.friendly_name : '')
+        ).toLowerCase();
+        var preview = String(bodyMeta && bodyMeta.preview ? bodyMeta.preview : '').toLowerCase();
+        var responsePreview = String(responseMeta && responseMeta.response_preview ? responseMeta.response_preview : '').toLowerCase();
+
+        return friendlyName.indexOf('cometphotorootcontentquery') !== -1
+            || friendlyName.indexOf('cometfocusedstoryviewufiquery') !== -1
+            || friendlyName.indexOf('cometmediaviewer') !== -1
+            || (preview.indexOf('shouldshowcomments') !== -1 && (preview.indexOf('nodeid') !== -1 || preview.indexOf('focuscommentid') !== -1))
+            || (responsePreview.indexOf('comment_list_renderer') !== -1 && (responsePreview.indexOf('currmedia') !== -1 || responsePreview.indexOf('commentsapimediaviewer') !== -1));
+    }
+
+    function parseParticipantCommentThreadEntries(base, bodyMeta) {
+        var parsedResponse = base && base.response_json && typeof base.response_json === 'object'
+            ? base.response_json
+            : safeJsonParse(base && base.response_text ? base.response_text : '');
+        var results = [];
+
+        if (!parsedResponse || typeof parsedResponse !== 'object') {
+            return results;
+        }
+
+        walkForParticipantCommentThreadEntries(parsedResponse, results, {}, bodyMeta || null, parsedResponse, base || null);
+        return results;
+    }
+
     function buildUrlMeta(url) {
         try {
             var parsed = new URL(url, window.location.origin);
@@ -2018,6 +2277,10 @@
         var participantPreviewEntries = Array.isArray(base.participant_preview_entries_override)
             ? base.participant_preview_entries_override
             : (shouldParseParticipantPreview ? parseParticipantPreviewEntries(base, bodyMeta) : []);
+        var shouldParseParticipantCommentThreads = !!(urlMeta.is_graphql && isFacebookParticipantCommentThreadRequest(base, bodyMeta, responseMeta));
+        var participantCommentThreadEntries = Array.isArray(base.participant_comment_thread_entries_override)
+            ? base.participant_comment_thread_entries_override
+            : (shouldParseParticipantCommentThreads ? parseParticipantCommentThreadEntries(base, bodyMeta) : []);
 
         return {
             transport: base.transport,
@@ -2046,6 +2309,8 @@
             detected_comment_count: detectedComments.length,
             participant_preview_entries: participantPreviewEntries,
             participant_preview_count: participantPreviewEntries.length,
+            participant_comment_thread_entries: participantCommentThreadEntries,
+            participant_comment_thread_count: participantCommentThreadEntries.length,
             soundcloud_capture: soundcloudCapture,
             bootstrap_debug: base.bootstrap_debug || null,
         };
