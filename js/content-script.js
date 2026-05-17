@@ -1,4 +1,5 @@
 let markedElements = [], isClickMarkingActive = false, panel, activeComposer = null, composerActionButton = null, quickResponseActionButton = null, adminActivitiesControl = null, soundCloudInsightsControl = null, participantRequestsControl = null;
+let extensionOverlayRoot = null;
 let panelAttachedComposer = null;
 let panelContextDirty = false;
 let panelDragState = null;
@@ -7750,11 +7751,51 @@ function getDocumentHeadHost() {
     return document.head || document.documentElement || null;
 }
 
-function appendToDocumentBody(element) {
+function markOverlaySubtreeNonEditable(element) {
+    if (!element || !element.setAttribute) {
+        return element;
+    }
+
+    element.setAttribute('contenteditable', 'false');
+    element.setAttribute('spellcheck', 'false');
+    element.setAttribute('data-sgpt-overlay', 'true');
+
+    return element;
+}
+
+function ensureExtensionOverlayRoot() {
+    if (extensionOverlayRoot && document.contains(extensionOverlayRoot)) {
+        return extensionOverlayRoot;
+    }
+
     const host = getDocumentBodyHost();
+    if (!host) {
+        return null;
+    }
+
+    let root = document.getElementById('sgpt-overlay-root');
+    if (!root) {
+        root = document.createElement('div');
+        root.id = 'sgpt-overlay-root';
+        root.setAttribute('aria-hidden', 'false');
+        root.style.position = 'static';
+        root.style.zIndex = '2147483646';
+        markOverlaySubtreeNonEditable(root);
+        host.appendChild(root);
+    } else {
+        markOverlaySubtreeNonEditable(root);
+    }
+
+    extensionOverlayRoot = root;
+    return extensionOverlayRoot;
+}
+
+function appendToDocumentBody(element) {
+    const host = ensureExtensionOverlayRoot();
     if (!host || !element) {
         return false;
     }
+    markOverlaySubtreeNonEditable(element);
     host.appendChild(element);
     return true;
 }

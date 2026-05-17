@@ -26,6 +26,8 @@ Verify-fact note: when the backend decides that a check requires independent ver
 
 Timeout note: if Tools temporarily hits a slow OpenAI upstream call, the API can now return a friendlier `user_message` plus additive retry metadata instead of only exposing a raw transport error. Verify/source-check flows can also keep the preliminary answer visible when only the last OpenAI refinement step times out, together with a small backend `notice` telling the client that the answer is still the preliminary version.
 
+Toolbox mounting note: when you open Toolbox from a rich-text editor or another editable document surface, the floating SocialGPT UI now mounts inside a dedicated non-editable overlay root so the panel labels and controls do not become editable page content.
+
 **On specific platforms:**
 - 📘 **Facebook admin activities**: per-tab activity reporting with manual queue controls that can now retry directly to Tools if the extension runtime handoff stalls
 - 👥 **Facebook participant requests**: a lighter moderation helper on `/groups/*/participant_requests` that now prefers compact actions near the card's existing action/`...` area instead of injecting a larger helper block into every card, plus a floating fallback scanner panel that can list visible request cards, jump to the right card, and open **Analyze user**, **Open Toolbox**, or **Verify fact** directly from that panel when Facebook's DOM makes inline attachment awkward

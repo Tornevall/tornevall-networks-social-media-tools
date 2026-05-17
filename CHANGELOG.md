@@ -25,6 +25,7 @@
 - Participant-request **Analyze user** now keeps the candidate profile URL as the verification source when Facebook exposes it, preserves extra verification metadata across **Refresh** / **Update analysis** / **Dig deeper**, and keeps the operator-supplied group rules in sync when they are edited from the new inline config box.
 
 ### Fixed
+- Toolbox and the other floating SocialGPT overlays now mount inside a dedicated non-editable overlay root, so opening Toolbox from rich-text editors or editable frame bodies no longer makes the panel labels and controls behave like editable page content.
 - Participant-request preview/original-post autoscanning now keeps running even when Facebook mounts the preview dialog outside `body` in separate root-level `mount_*` wrappers. The active user-analysis watcher now listens from the full document root again and keeps polling lightly while a matched preview/context surface is open, so new preview/original-post text is much less likely to require a manual **Find preview element** rescue click.
 - Participant-request **Analyze user** result boxes now close themselves when you leave Facebook `/groups/*/participant_requests`, and any stale participant-analysis follow-up state is cleared so an old analysis cannot keep hanging around on unrelated pages.
 - Participant-request user analysis now updates its waiting/progress wording more clearly when those later GraphQL thread comments arrive, so operators can see that extra comment context was actually picked up while the analysis is still running.
